@@ -1,0 +1,7 @@
+backend/out/
+frontend/dist/
+frontend/node_modules/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
