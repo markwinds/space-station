@@ -27,4 +27,18 @@ cmake --build --preset x64-debug-vcpkg
 .\out\build\x64-debug-vcpkg\space-station.exe
 ```
 
+On Linux:
+
+```bash
+cd frontend
+npm install
+npm run build
+
+cd ../backend
+export VCPKG_ROOT=/path/to/vcpkg
+cmake --preset linux-debug-vcpkg
+cmake --build --preset linux-debug-vcpkg
+./out/build/linux-debug-vcpkg/space-station
+```
+
 The backend listens on `127.0.0.1:34827` by default.
