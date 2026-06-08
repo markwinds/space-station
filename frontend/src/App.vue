@@ -68,6 +68,7 @@
             </header>
 
             <json-formatter-tool v-if="activeToolId === 'jsonFormatter'" />
+            <certificate-tool v-if="activeToolId === 'certificate'" />
             <runtime-settings v-if="activeToolId === 'runtime'" />
           </section>
         </main>
@@ -78,15 +79,16 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { CodeSlashOutline, CubeOutline, HomeOutline, TimerOutline, WifiOutline } from "@vicons/ionicons5";
+import { CodeSlashOutline, CubeOutline, HomeOutline, KeyOutline, TimerOutline, WifiOutline } from "@vicons/ionicons5";
 import { NButton, NConfigProvider, NIcon, NMessageProvider } from "naive-ui";
 import RuntimeSettings from "@/components/settings/RuntimeSettings.vue";
+import CertificateTool from "@/components/tools/CertificateTool.vue";
 import JsonFormatterTool from "@/components/tools/JsonFormatterTool.vue";
 import { fetchHealth, type HealthResponse } from "@/api";
 
 const HOME_TOOL_ID = "home";
 
-type ToolId = typeof HOME_TOOL_ID | "jsonFormatter" | "network" | "scheduler" | "runtime";
+type ToolId = typeof HOME_TOOL_ID | "jsonFormatter" | "certificate" | "network" | "scheduler" | "runtime";
 
 interface ToolDefinition {
   id: ToolId;
@@ -111,6 +113,13 @@ const tools: ToolDefinition[] = [
     description: "校验、格式化和压缩 JSON",
     category: "Formatter",
     icon: CodeSlashOutline,
+  },
+  {
+    id: "certificate",
+    title: "证书助手",
+    description: "生成 CA、证书、密钥、CSR，并用 CA 签发证书",
+    category: "Security",
+    icon: KeyOutline,
   },
   {
     id: "network",

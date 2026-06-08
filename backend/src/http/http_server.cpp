@@ -1,5 +1,6 @@
 #include "http/http_server.hpp"
 
+#include "cert/certificate_service.hpp"
 #include "embedded_assets.hpp"
 #include "logging/logger.hpp"
 
@@ -32,6 +33,25 @@ drogon::HttpResponsePtr JsonResponse(const nlohmann::json& payload,
     response->setBody(payload.dump());
     return response;
 }
+
+bool ParseJsonBody(const drogon::HttpRequestPtr& req,
+                   nlohmann::json& body,
+                   std::function<void(const drogon::HttpResponsePtr&)>& callback)
+{
+    body = nlohmann::json::parse(req->body(), nullptr, false);
+    if (body.is_discarded() || !body.is_object())
+    {
+        callback(JsonResponse({{"code", "invalid_json"}, {"message", "request body must be a JSON object"}},
+                              drogon::k400BadRequest));
+        return false;
+    }
+    return true;
+}
+
+drogon::HttpStatusCode StatusForToolResult(const nlohmann::json& result)
+{
+    return result.value("ok", false) ? drogon::k200OK : drogon::k400BadRequest;
+}
 } // namespace
 
 HttpServer::HttpServer(ConfigStore& config_store, std::uint16_t port) : port_(port), config_store_(config_store)
@@ -52,7 +72,8 @@ void HttpServer::Start()
     }
 
     drogon::app().setThreadNum(std::max(2u, std::thread::hardware_concurrency()));
-    drogon::app().addListener("127.0.0.1", port_);
+    drogon::app().disableSigtermHandling();
+    drogon::app().addListener("0.0.0.0", port_);
     server_thread_ = std::thread([] { drogon::app().run(); });
 }
 
@@ -120,6 +141,45 @@ void HttpServer::RegisterRoutes()
             callback(JsonResponse(config_store_.ToJson(config)));
         },
         {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/certificates/generate",
+        [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            const auto result = cert::GenerateCertificateBundle(body);
+            callback(JsonResponse(result, StatusForToolResult(result)));
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/certificates/sign",
+        [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            const auto result = cert::SignCertificateRequest(body);
+            callback(JsonResponse(result, StatusForToolResult(result)));
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/certificates/parse",
+        [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            const auto result = cert::ParseCertificate(body);
+            callback(JsonResponse(result, StatusForToolResult(result)));
+        },
+        {drogon::Post});
 
     drogon::app().registerHandlerViaRegex(
         "^/web(?:/.*)?$",

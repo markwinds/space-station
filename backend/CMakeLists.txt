@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Drogon CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 set(SPACESTATION_FRONTEND_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../frontend/dist")
 set(SPACESTATION_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -34,6 +35,7 @@ add_custom_command(
 
 add_executable(space-station
         src/main.cpp
+        src/cert/certificate_service.cpp
         src/config/config_store.cpp
         src/http/http_server.cpp
         src/logging/logger.cpp
@@ -47,7 +49,8 @@ target_include_directories(space-station
 target_link_libraries(space-station
         PRIVATE
         Drogon::Drogon
-        nlohmann_json::nlohmann_json)
+        nlohmann_json::nlohmann_json
+        OpenSSL::Crypto)
 
 if (WIN32)
     target_compile_definitions(space-station PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
