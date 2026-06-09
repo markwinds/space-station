@@ -5,12 +5,23 @@
 #include "logging/logger.hpp"
 
 #include <nlohmann/json.hpp>
+#include <openssl/bn.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <algorithm>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
 
 namespace spacestation
 {
 namespace
 {
+template <typename T, void (*Deleter)(T*)>
+using OpenSslPtr = std::unique_ptr<T, decltype(Deleter)>;
+
 std::string StripPrefix(std::string path, std::string_view prefix)
 {
     if (path == prefix)
@@ -52,9 +63,116 @@ drogon::HttpStatusCode StatusForToolResult(const nlohmann::json& result)
 {
     return result.value("ok", false) ? drogon::k200OK : drogon::k400BadRequest;
 }
+
+void AddCertificateExtension(X509* certificate, int nid, const char* value)
+{
+    X509V3_CTX context{};
+    X509V3_set_ctx(&context, certificate, certificate, nullptr, nullptr, 0);
+    OpenSslPtr<X509_EXTENSION, X509_EXTENSION_free> extension(
+        X509V3_EXT_conf_nid(nullptr, &context, nid, const_cast<char*>(value)),
+        X509_EXTENSION_free);
+    if (!extension || X509_add_ext(certificate, extension.get(), -1) != 1)
+    {
+        throw std::runtime_error("TLS 默认证书扩展生成失败。");
+    }
+}
+
+void WritePrivateKey(EVP_PKEY* key, const std::filesystem::path& path)
+{
+    if (path.has_parent_path())
+    {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    OpenSslPtr<BIO, BIO_free_all> bio(BIO_new_file(path.string().c_str(), "w"), BIO_free_all);
+    if (!bio || PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0, nullptr, nullptr) != 1)
+    {
+        throw std::runtime_error("TLS 默认私钥写入失败。");
+    }
+}
+
+void WriteCertificate(X509* certificate, const std::filesystem::path& path)
+{
+    if (path.has_parent_path())
+    {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    OpenSslPtr<BIO, BIO_free_all> bio(BIO_new_file(path.string().c_str(), "w"), BIO_free_all);
+    if (!bio || PEM_write_bio_X509(bio.get(), certificate) != 1)
+    {
+        throw std::runtime_error("TLS 默认证书写入失败。");
+    }
+}
+
+void GenerateDefaultTlsCertificate(const std::filesystem::path& certificate_path,
+                                   const std::filesystem::path& private_key_path)
+{
+    OpenSslPtr<EVP_PKEY_CTX, EVP_PKEY_CTX_free> key_context(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr),
+                                                            EVP_PKEY_CTX_free);
+    EVP_PKEY* raw_key = nullptr;
+    if (!key_context || EVP_PKEY_keygen_init(key_context.get()) != 1 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(key_context.get(), 2048) != 1 ||
+        EVP_PKEY_keygen(key_context.get(), &raw_key) != 1)
+    {
+        throw std::runtime_error("TLS 默认私钥生成失败。");
+    }
+    OpenSslPtr<EVP_PKEY, EVP_PKEY_free> key(raw_key, EVP_PKEY_free);
+
+    OpenSslPtr<X509, X509_free> certificate(X509_new(), X509_free);
+    OpenSslPtr<BIGNUM, BN_free> serial(BN_new(), BN_free);
+    OpenSslPtr<ASN1_INTEGER, ASN1_INTEGER_free> serial_integer(ASN1_INTEGER_new(), ASN1_INTEGER_free);
+    if (!certificate || !serial || !serial_integer || BN_rand(serial.get(), 128, 0, 0) != 1 ||
+        BN_to_ASN1_INTEGER(serial.get(), serial_integer.get()) == nullptr ||
+        X509_set_version(certificate.get(), 2L) != 1 ||
+        X509_set_serialNumber(certificate.get(), serial_integer.get()) != 1 ||
+        X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0) == nullptr ||
+        X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3650L * 24L * 60L * 60L) == nullptr ||
+        X509_set_pubkey(certificate.get(), key.get()) != 1)
+    {
+        throw std::runtime_error("TLS 默认证书生成失败。");
+    }
+
+    X509_NAME* name = X509_get_subject_name(certificate.get());
+    if (!name ||
+        X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                   reinterpret_cast<const unsigned char*>("localhost"), -1, -1, 0) != 1 ||
+        X509_set_issuer_name(certificate.get(), name) != 1)
+    {
+        throw std::runtime_error("TLS 默认证书主题生成失败。");
+    }
+
+    AddCertificateExtension(certificate.get(), NID_basic_constraints, "critical,CA:FALSE");
+    AddCertificateExtension(certificate.get(), NID_key_usage, "critical,digitalSignature,keyEncipherment");
+    AddCertificateExtension(certificate.get(), NID_ext_key_usage, "serverAuth");
+    AddCertificateExtension(certificate.get(), NID_subject_alt_name, "DNS:localhost,IP:127.0.0.1");
+
+    if (X509_sign(certificate.get(), key.get(), EVP_sha256()) <= 0)
+    {
+        throw std::runtime_error("TLS 默认证书签名失败。");
+    }
+
+    WritePrivateKey(key.get(), private_key_path);
+    WriteCertificate(certificate.get(), certificate_path);
+}
+
+void EnsureTlsCertificate(const std::string& certificate_path, const std::string& private_key_path)
+{
+    const auto cert = std::filesystem::path(certificate_path);
+    const auto key = std::filesystem::path(private_key_path);
+    if (std::filesystem::exists(cert) && std::filesystem::exists(key))
+    {
+        return;
+    }
+    GenerateDefaultTlsCertificate(cert, key);
+}
 } // namespace
 
-HttpServer::HttpServer(ConfigStore& config_store, std::uint16_t port) : port_(port), config_store_(config_store)
+HttpServer::HttpServer(ConfigStore& config_store, AppConfig config)
+    : port_(static_cast<std::uint16_t>(config.port)),
+      http_enabled_(config.http_enabled),
+      http_port_(static_cast<std::uint16_t>(config.http_port)),
+      certificate_path_(std::move(config.certificate_path)),
+      private_key_path_(std::move(config.private_key_path)),
+      config_store_(config_store)
 {
     RegisterRoutes();
 }
@@ -73,7 +191,12 @@ void HttpServer::Start()
 
     drogon::app().setThreadNum(std::max(2u, std::thread::hardware_concurrency()));
     drogon::app().disableSigtermHandling();
-    drogon::app().addListener("0.0.0.0", port_);
+    EnsureTlsCertificate(certificate_path_, private_key_path_);
+    if (http_enabled_)
+    {
+        drogon::app().addListener("0.0.0.0", http_port_, false);
+    }
+    drogon::app().addListener("0.0.0.0", port_, true, certificate_path_, private_key_path_);
     server_thread_ = std::thread([] { drogon::app().run(); });
 }
 
@@ -93,7 +216,7 @@ void HttpServer::Stop()
 
 std::string HttpServer::UiUrl() const
 {
-    return "http://127.0.0.1:" + std::to_string(port_) + "/web/";
+    return "https://127.0.0.1:" + std::to_string(port_) + "/web/";
 }
 
 void HttpServer::RegisterRoutes()

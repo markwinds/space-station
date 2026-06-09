@@ -9,12 +9,12 @@
 
 namespace spacestation
 {
-inline constexpr std::uint16_t kDefaultPort = 34827;
+inline constexpr std::uint16_t kDefaultPort = 443;
 
 class HttpServer
 {
   public:
-    explicit HttpServer(ConfigStore& config_store, std::uint16_t port = kDefaultPort);
+    explicit HttpServer(ConfigStore& config_store, AppConfig config);
     ~HttpServer();
 
     void Start();
@@ -27,6 +27,10 @@ class HttpServer
                            std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
     std::uint16_t port_;
+    bool http_enabled_;
+    std::uint16_t http_port_;
+    std::string certificate_path_;
+    std::string private_key_path_;
     ConfigStore& config_store_;
     std::thread server_thread_;
     std::atomic<bool> started_{false};

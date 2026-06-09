@@ -10,6 +10,10 @@ export interface AppConfig {
   dataPath: string;
   logLevel: "trace" | "debug" | "info" | "warn" | "error";
   port: number;
+  httpEnabled: boolean;
+  httpPort: number;
+  certificatePath: string;
+  privateKeyPath: string;
   configPath: string;
   logPath: string;
 }
@@ -110,7 +114,9 @@ export async function fetchConfig(): Promise<AppConfig> {
   return data;
 }
 
-export async function updateConfig(payload: Partial<Pick<AppConfig, "dataPath" | "logLevel" | "port">>): Promise<AppConfig> {
+export async function updateConfig(
+  payload: Partial<Pick<AppConfig, "dataPath" | "logLevel" | "port" | "httpEnabled" | "httpPort" | "certificatePath" | "privateKeyPath">>,
+): Promise<AppConfig> {
   const { data } = await api.put<AppConfig>("/config", payload);
   return data;
 }

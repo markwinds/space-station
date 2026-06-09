@@ -191,6 +191,12 @@ input {
   min-width: 0;
 }
 
+.result-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
 .result-meta {
   display: flex;
   justify-content: space-between;
@@ -405,10 +411,42 @@ input {
   white-space: pre-wrap;
 }
 
+.settings-sections {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-section h3 {
+  margin: 0;
+  color: #243645;
+  font-size: 15px;
+  font-weight: 800;
+}
+
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(160px, 220px) minmax(140px, 180px);
   gap: 14px;
+}
+
+.settings-grid-basic {
+  grid-template-columns: minmax(280px, 1fr) minmax(160px, 220px);
+}
+
+.settings-grid-tls {
+  grid-template-columns: minmax(140px, 180px) minmax(260px, 1fr);
+}
+
+.settings-grid-tls .n-form-item:first-child {
+  grid-row: span 2;
+}
+
+.settings-grid-http {
+  grid-template-columns: minmax(140px, 180px) minmax(140px, 180px);
 }
 
 .config-paths {
@@ -486,12 +524,19 @@ input {
   }
 
   .settings-grid,
+  .settings-grid-basic,
+  .settings-grid-tls,
+  .settings-grid-http,
   .certificate-form-grid,
   .certificate-form-grid.compact,
   .san-grid,
   .info-grid {
     grid-template-columns: 1fr;
     gap: 0;
+  }
+
+  .settings-grid-tls .n-form-item:first-child {
+    grid-row: auto;
   }
 
   .action-row .n-button {

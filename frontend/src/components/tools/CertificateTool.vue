@@ -133,6 +133,11 @@
           </n-card>
 
           <n-card class="tool-panel" title="生成结果" embedded>
+            <div class="result-actions">
+              <n-button type="primary" :disabled="generateOutputItems.length === 0" @click="downloadGeneratedBundleZip">
+                下载压缩包
+              </n-button>
+            </div>
             <pem-result-list :items="generateOutputItems" @copy="copyPem" @download="downloadPem" />
           </n-card>
         </div>
@@ -399,6 +404,7 @@ import {
   type CertificateSubject,
 } from "@/api";
 import { writeClipboard } from "@/utils/clipboard";
+import { createZipBlob } from "@/utils/zip";
 
 type MessageState = { type: "success" | "warning" | "error"; text: string };
 type SanText = { dns: string; ips: string; emails: string; uris: string };
@@ -657,14 +663,7 @@ async function copyPem(value: string) {
 
 function downloadPem(item: PemItem) {
   const blob = new Blob([item.value], { type: "application/x-pem-file;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = item.filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, item.filename);
 
   const message = `${item.title} 已下载。`;
   if (activeTab.value === "generate") {
@@ -672,6 +671,29 @@ function downloadPem(item: PemItem) {
   } else {
     signMessage.value = { type: "success", text: message };
   }
+}
+
+function downloadGeneratedBundleZip() {
+  if (!generateOutputItems.value.length) {
+    return;
+  }
+
+  const blob = createZipBlob(generateOutputItems.value.map((item) => ({ filename: item.filename, content: item.value })));
+  downloadBlob(blob, "certificate-bundle.zip");
+  const message = "证书压缩包已下载。";
+  toast.success(message);
+  generateMessage.value = { type: "success", text: message };
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function importPemFile(event: Event, field: PemInputField) {

@@ -12,7 +12,11 @@ struct AppConfig
 {
     std::string data_path;
     std::string log_level = "info";
-    int port = 34827;
+    int port = 443;
+    bool http_enabled = false;
+    int http_port = 80;
+    std::string certificate_path;
+    std::string private_key_path;
 };
 
 class ConfigStore
@@ -27,6 +31,8 @@ class ConfigStore
 
     static std::filesystem::path DefaultDataPath();
     static std::filesystem::path DefaultConfigPath();
+    static std::filesystem::path DefaultCertificatePath();
+    static std::filesystem::path DefaultPrivateKeyPath();
 
   private:
     nlohmann::json LoadJsonUnlocked();

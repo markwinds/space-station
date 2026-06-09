@@ -30,7 +30,7 @@ int main()
     spacestation::Logger::Instance().Init(spacestation::ParseLogLevel(config.log_level), log_path);
     logI("Starting Space Station");
 
-    spacestation::HttpServer server(config_store, static_cast<std::uint16_t>(config.port));
+    spacestation::HttpServer server(config_store, config);
     server.Start();
     logI("Backend listening");
     std::cout << "Space Station backend listening at " << server.UiUrl() << '\n';
