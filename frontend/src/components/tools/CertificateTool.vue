@@ -385,6 +385,7 @@ import {
   NTabPane,
   NTabs,
   NTooltip,
+  useMessage,
 } from "naive-ui";
 import {
   generateCertificateBundle,
@@ -465,6 +466,7 @@ const caKeyFileInput = ref<HTMLInputElement | null>(null);
 const csrFileInput = ref<HTMLInputElement | null>(null);
 const parseCertFileInput = ref<HTMLInputElement | null>(null);
 const parseCertificatePem = ref("");
+const toast = useMessage();
 
 const generateForm = reactive<GenerateCertificateRequest>({
   subject: {
@@ -640,11 +642,16 @@ function parseLines(value: string) {
 
 async function copyPem(value: string) {
   const copied = await writeClipboard(value);
-  const message = copied ? "PEM 已复制到剪贴板。" : "当前浏览器不支持剪贴板写入。";
-  if (activeTab.value === "generate") {
-    generateMessage.value = { type: copied ? "success" : "warning", text: message };
+  const feedback = copied ? "PEM 已复制到剪贴板。" : "当前浏览器不支持剪贴板写入。";
+  if (copied) {
+    toast.success(feedback);
   } else {
-    signMessage.value = { type: copied ? "success" : "warning", text: message };
+    toast.warning(feedback);
+  }
+  if (activeTab.value === "generate") {
+    generateMessage.value = { type: copied ? "success" : "warning", text: feedback };
+  } else {
+    signMessage.value = { type: copied ? "success" : "warning", text: feedback };
   }
 }
 
