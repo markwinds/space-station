@@ -180,8 +180,8 @@ std::vector<std::pair<std::string, std::string>> BuildMutualTlsConfig(const std:
 
     return {
         {"VerifyCAFile", trusted_root_certificate_path},
-        {"ClientCAFile", trusted_root_certificate_path},
-        {"VerifyMode", "Require"},
+        {"RequestCAFile", trusted_root_certificate_path},
+        {"VerifyMode", "Request,Require"},
     };
 }
 } // namespace
@@ -221,8 +221,13 @@ void HttpServer::Start()
     if (!mutual_tls_config.empty())
     {
         logI("HTTPS mutual TLS enabled");
+        drogon::app().setSSLFiles(certificate_path_, private_key_path_);
+        drogon::app().setSSLConfigCommands(mutual_tls_config);
+        drogon::app().addListener("0.0.0.0", port_, true);
+        server_thread_ = std::thread([] { drogon::app().run(); });
+        return;
     }
-    drogon::app().addListener("0.0.0.0", port_, true, certificate_path_, private_key_path_, false, mutual_tls_config);
+    drogon::app().addListener("0.0.0.0", port_, true, certificate_path_, private_key_path_);
     server_thread_ = std::thread([] { drogon::app().run(); });
 }
 
