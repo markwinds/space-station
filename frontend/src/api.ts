@@ -94,6 +94,21 @@ export interface ParsedCsrResponse {
   extendedKeyUsageText: string;
 }
 
+export interface CreateP12Request {
+  certificatePem: string;
+  privateKeyPem: string;
+  caCertificatePem?: string;
+  password?: string;
+  friendlyName?: string;
+}
+
+export interface CreateP12Response {
+  ok: boolean;
+  error?: string;
+  filename: string;
+  p12Base64: string;
+}
+
 export interface ParseCertificateRequest {
   certificatePem: string;
 }
@@ -165,6 +180,11 @@ export async function signCertificateRequest(payload: SignCertificateRequest): P
 
 export async function parseCsr(payload: ParseCsrRequest): Promise<ParsedCsrResponse> {
   const { data } = await api.post<ParsedCsrResponse>("/certificates/parse-csr", payload);
+  return data;
+}
+
+export async function createP12(payload: CreateP12Request): Promise<CreateP12Response> {
+  const { data } = await api.post<CreateP12Response>("/certificates/p12", payload);
   return data;
 }
 

@@ -277,6 +277,61 @@
         </div>
       </n-tab-pane>
 
+      <n-tab-pane name="p12" tab="P12">
+        <div class="certificate-grid">
+          <n-card class="tool-panel" title="P12 输入" embedded>
+            <n-space vertical :size="16">
+              <n-form label-placement="top">
+                <n-form-item label="证书 PEM">
+                  <div class="pem-input-stack">
+                    <n-input v-model:value="p12Form.certificatePem" class="pem-input" type="textarea" :autosize="{ minRows: 6 }" placeholder="粘贴证书 PEM，或导入 .pem/.crt/.cer 文件。" />
+                    <n-button tertiary @click="p12CertFileInput?.click()">导入证书</n-button>
+                    <input ref="p12CertFileInput" class="hidden-file-input" type="file" accept=".pem,.crt,.cer,.txt" @change="importP12PemFile($event, 'certificatePem')" />
+                  </div>
+                </n-form-item>
+                <n-form-item label="私钥 PEM">
+                  <div class="pem-input-stack">
+                    <n-input v-model:value="p12Form.privateKeyPem" class="pem-input" type="textarea" :autosize="{ minRows: 6 }" placeholder="粘贴私钥 PEM，或导入 .pem/.key 文件。" />
+                    <n-button tertiary @click="p12KeyFileInput?.click()">导入私钥</n-button>
+                    <input ref="p12KeyFileInput" class="hidden-file-input" type="file" accept=".pem,.key,.txt" @change="importP12PemFile($event, 'privateKeyPem')" />
+                  </div>
+                </n-form-item>
+                <n-form-item label="CA 链 PEM">
+                  <div class="pem-input-stack">
+                    <n-input v-model:value="p12Form.caCertificatePem" class="pem-input" type="textarea" :autosize="{ minRows: 5 }" placeholder="可选。可粘贴一张或多张 CA 证书 PEM。" />
+                    <n-button tertiary @click="p12CaFileInput?.click()">导入 CA 链</n-button>
+                    <input ref="p12CaFileInput" class="hidden-file-input" type="file" accept=".pem,.crt,.cer,.txt" @change="importP12PemFile($event, 'caCertificatePem')" />
+                  </div>
+                </n-form-item>
+
+                <div class="certificate-form-grid compact">
+                  <n-form-item label="友好名称">
+                    <n-input v-model:value="p12Form.friendlyName" placeholder="space-station" />
+                  </n-form-item>
+                  <n-form-item label="导出密码">
+                    <n-input v-model:value="p12Form.password" type="password" show-password-on="click" placeholder="可留空" />
+                  </n-form-item>
+                </div>
+              </n-form>
+
+              <div class="action-row">
+                <n-button type="primary" :loading="creatingP12" :disabled="!p12Form.certificatePem || !p12Form.privateKeyPem" @click="createP12Now">合成 P12</n-button>
+                <n-button tertiary :disabled="!generateResult" @click="useGeneratedForP12">使用生成结果</n-button>
+                <n-button tertiary :disabled="!signResult || !generateResult" @click="useSignedForP12">使用签发结果</n-button>
+                <n-button quaternary @click="clearP12">清空</n-button>
+              </div>
+              <n-alert v-if="p12Message" :type="p12Message.type" :show-icon="false">
+                {{ p12Message.text }}
+              </n-alert>
+            </n-space>
+          </n-card>
+
+          <n-card class="tool-panel" title="P12 结果" embedded>
+            <pre class="pem-output empty">{{ p12Result?.ok ? `${p12Result.filename} 已生成并下载。` : "P12 结果会下载到本地。" }}</pre>
+          </n-card>
+        </div>
+      </n-tab-pane>
+
       <n-tab-pane name="parse" tab="解析">
         <div class="certificate-grid">
           <n-card class="tool-panel" title="证书输入" embedded>
@@ -395,10 +450,13 @@ import {
   useMessage,
 } from "naive-ui";
 import {
+  createP12,
   generateCertificateBundle,
   parseCsr,
   parseCertificate,
   signCertificateRequest,
+  type CreateP12Request,
+  type CreateP12Response,
   type GenerateCertificateRequest,
   type GenerateCertificateResponse,
   type ParsedCertificateResponse,
@@ -413,6 +471,7 @@ type MessageState = { type: "success" | "warning" | "error"; text: string };
 type SanText = { dns: string; ips: string; emails: string; uris: string };
 type PemItem = { title: string; value: string; filename: string };
 type PemInputField = "caCertificatePem" | "caPrivateKeyPem" | "csrPem";
+type P12PemInputField = "certificatePem" | "privateKeyPem" | "caCertificatePem";
 
 const PemResultList = defineComponent({
   name: "PemResultList",
@@ -460,21 +519,27 @@ const PemResultList = defineComponent({
   },
 });
 
-const activeTab = ref<"generate" | "sign" | "parse">("generate");
+const activeTab = ref<"generate" | "sign" | "p12" | "parse">("generate");
 const generating = ref(false);
 const signing = ref(false);
 const parsing = ref(false);
 const parsingCsr = ref(false);
+const creatingP12 = ref(false);
 const generateResult = ref<GenerateCertificateResponse | null>(null);
 const signResult = ref<SignCertificateResponse | null>(null);
 const parseResult = ref<ParsedCertificateResponse | null>(null);
+const p12Result = ref<CreateP12Response | null>(null);
 const generateMessage = ref<MessageState | null>(null);
 const signMessage = ref<MessageState | null>(null);
 const parseMessage = ref<MessageState | null>(null);
+const p12Message = ref<MessageState | null>(null);
 const caCertFileInput = ref<HTMLInputElement | null>(null);
 const caKeyFileInput = ref<HTMLInputElement | null>(null);
 const csrFileInput = ref<HTMLInputElement | null>(null);
 const parseCertFileInput = ref<HTMLInputElement | null>(null);
+const p12CertFileInput = ref<HTMLInputElement | null>(null);
+const p12KeyFileInput = ref<HTMLInputElement | null>(null);
+const p12CaFileInput = ref<HTMLInputElement | null>(null);
 const parseCertificatePem = ref("");
 const toast = useMessage();
 let csrParseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -521,6 +586,14 @@ const signSan = reactive<SanText>({
   ips: "",
   emails: "",
   uris: "",
+});
+
+const p12Form = reactive<CreateP12Request>({
+  certificatePem: "",
+  privateKeyPem: "",
+  caCertificatePem: "",
+  password: "",
+  friendlyName: "space-station",
 });
 
 const keyAlgorithmOptions = [
@@ -643,6 +716,31 @@ async function parseCertificateNow() {
   }
 }
 
+async function createP12Now() {
+  creatingP12.value = true;
+  p12Message.value = null;
+  try {
+    p12Result.value = await createP12({
+      certificatePem: p12Form.certificatePem,
+      privateKeyPem: p12Form.privateKeyPem,
+      caCertificatePem: p12Form.caCertificatePem || undefined,
+      password: p12Form.password || undefined,
+      friendlyName: p12Form.friendlyName || "certificate",
+    });
+    if (!p12Result.value.ok) {
+      p12Message.value = { type: "error", text: p12Result.value.error || "P12 合成失败。" };
+      return;
+    }
+
+    downloadBase64(p12Result.value.p12Base64, p12Result.value.filename || "certificate.p12", "application/x-pkcs12");
+    p12Message.value = { type: "success", text: `${p12Result.value.filename} 已生成。` };
+  } catch {
+    p12Message.value = { type: "error", text: "P12 合成失败，请确认后端正在运行。" };
+  } finally {
+    creatingP12.value = false;
+  }
+}
+
 function buildSan(source: SanText) {
   return {
     dns: parseLines(source.dns),
@@ -709,6 +807,15 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function downloadBase64(base64: string, filename: string, contentType: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; ++i) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  downloadBlob(new Blob([bytes], { type: contentType }), filename);
+}
+
 async function importPemFile(event: Event, field: PemInputField) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -721,6 +828,23 @@ async function importPemFile(event: Event, field: PemInputField) {
     signMessage.value = { type: "success", text: `${file.name} 已导入。` };
   } catch {
     signMessage.value = { type: "error", text: "文件读取失败，请确认文件内容是文本格式 PEM。" };
+  } finally {
+    input.value = "";
+  }
+}
+
+async function importP12PemFile(event: Event, field: P12PemInputField) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  try {
+    p12Form[field] = await file.text();
+    p12Message.value = { type: "success", text: `${file.name} 已导入。` };
+  } catch {
+    p12Message.value = { type: "error", text: "文件读取失败，请确认文件内容是文本格式 PEM。" };
   } finally {
     input.value = "";
   }
@@ -820,6 +944,30 @@ function useGeneratedCsr() {
   void parseCurrentCsr(true);
 }
 
+function useGeneratedForP12() {
+  if (!generateResult.value?.ok) {
+    return;
+  }
+  p12Form.certificatePem = generateResult.value.certificatePem;
+  p12Form.privateKeyPem = generateResult.value.privateKeyPem;
+  p12Form.caCertificatePem = "";
+  p12Form.friendlyName = generateForm.subject.commonName || "certificate";
+  activeTab.value = "p12";
+  p12Message.value = { type: "success", text: "已填入生成结果，可设置密码后合成 P12。" };
+}
+
+function useSignedForP12() {
+  if (!signResult.value?.ok || !generateResult.value?.ok) {
+    return;
+  }
+  p12Form.certificatePem = signResult.value.certificatePem;
+  p12Form.privateKeyPem = generateResult.value.privateKeyPem;
+  p12Form.caCertificatePem = signForm.caCertificatePem;
+  p12Form.friendlyName = generateForm.subject.commonName || "certificate";
+  activeTab.value = "p12";
+  p12Message.value = { type: "success", text: "已填入签发证书、生成私钥和 CA 链，可合成 P12。" };
+}
+
 function useGeneratedCertificateForParse() {
   if (!generateResult.value?.ok) {
     return;
@@ -869,6 +1017,15 @@ function clearParseResult() {
   parseCertificatePem.value = "";
   parseResult.value = null;
   parseMessage.value = null;
+}
+
+function clearP12() {
+  p12Form.certificatePem = "";
+  p12Form.privateKeyPem = "";
+  p12Form.caCertificatePem = "";
+  p12Form.password = "";
+  p12Result.value = null;
+  p12Message.value = null;
 }
 
 function joinValues(values?: string[]) {

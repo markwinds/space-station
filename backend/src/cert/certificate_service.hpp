@@ -8,4 +8,5 @@ nlohmann::json GenerateCertificateBundle(const nlohmann::json& request);
 nlohmann::json SignCertificateRequest(const nlohmann::json& request);
 nlohmann::json ParseCertificate(const nlohmann::json& request);
 nlohmann::json ParseCsr(const nlohmann::json& request);
+nlohmann::json CreatePkcs12(const nlohmann::json& request);
 } // namespace spacestation::cert

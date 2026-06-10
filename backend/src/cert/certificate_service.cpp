@@ -6,6 +6,7 @@
 #include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -30,6 +31,7 @@ using BioPtr = OpenSslPtr<BIO, BIO_free>;
 using BnPtr = OpenSslPtr<BIGNUM, BN_free>;
 using EvpPkeyPtr = OpenSslPtr<EVP_PKEY, EVP_PKEY_free>;
 using EvpPkeyCtxPtr = OpenSslPtr<EVP_PKEY_CTX, EVP_PKEY_CTX_free>;
+using Pkcs12Ptr = OpenSslPtr<PKCS12, PKCS12_free>;
 using X509Ptr = OpenSslPtr<X509, X509_free>;
 using X509ReqPtr = OpenSslPtr<X509_REQ, X509_REQ_free>;
 using Asn1IntegerPtr = OpenSslPtr<ASN1_INTEGER, ASN1_INTEGER_free>;
@@ -43,6 +45,11 @@ void OpenSslFree(void* value)
 void X509ExtensionStackFree(STACK_OF(X509_EXTENSION)* extensions)
 {
     sk_X509_EXTENSION_pop_free(extensions, X509_EXTENSION_free);
+}
+
+void X509StackFree(STACK_OF(X509)* certificates)
+{
+    sk_X509_pop_free(certificates, X509_free);
 }
 
 struct SubjectAltNames
@@ -154,12 +161,41 @@ std::string BioToString(BIO* bio)
     return std::string(buffer->data, buffer->length);
 }
 
+std::string Base64Encode(const std::string& bytes)
+{
+    if (bytes.empty())
+    {
+        return {};
+    }
+
+    std::string output(4 * ((bytes.size() + 2) / 3), '\0');
+    const int length = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(output.data()),
+                                       reinterpret_cast<const unsigned char*>(bytes.data()),
+                                       static_cast<int>(bytes.size()));
+    if (length < 0)
+    {
+        throw std::runtime_error("P12 Base64 编码失败。");
+    }
+    output.resize(static_cast<std::size_t>(length));
+    return output;
+}
+
 std::string PrivateKeyPem(EVP_PKEY* key)
 {
     BioPtr bio(BIO_new(BIO_s_mem()), BIO_free);
     if (!bio || PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0, nullptr, nullptr) != 1)
     {
         throw std::runtime_error("私钥导出失败。");
+    }
+    return BioToString(bio.get());
+}
+
+std::string Pkcs12Der(PKCS12* pkcs12)
+{
+    BioPtr bio(BIO_new(BIO_s_mem()), BIO_free);
+    if (!bio || i2d_PKCS12_bio(bio.get(), pkcs12) != 1)
+    {
+        throw std::runtime_error("P12 导出失败。");
     }
     return BioToString(bio.get());
 }
@@ -571,6 +607,43 @@ X509ReqPtr ReadCsr(const std::string& pem)
         throw std::runtime_error("CSR 解析失败。");
     }
     return request;
+}
+
+OpenSslPtr<STACK_OF(X509), X509StackFree> ReadCertificateChain(const std::string& pem)
+{
+    OpenSslPtr<STACK_OF(X509), X509StackFree> certificates(nullptr, X509StackFree);
+    if (pem.empty())
+    {
+        return certificates;
+    }
+
+    BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
+    certificates.reset(sk_X509_new_null());
+    if (!bio || !certificates)
+    {
+        throw std::runtime_error("CA 链证书集合创建失败。");
+    }
+
+    while (true)
+    {
+        X509* raw_certificate = PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr);
+        if (!raw_certificate)
+        {
+            break;
+        }
+        X509Ptr certificate(raw_certificate, X509_free);
+        if (sk_X509_push(certificates.get(), certificate.get()) <= 0)
+        {
+            throw std::runtime_error("CA 链证书写入失败。");
+        }
+        certificate.release();
+    }
+
+    if (sk_X509_num(certificates.get()) == 0)
+    {
+        throw std::runtime_error("CA 链证书解析失败。");
+    }
+    return certificates;
 }
 
 EvpPkeyPtr GenerateKey(const nlohmann::json& request)
@@ -1047,6 +1120,56 @@ nlohmann::json ParseCsr(const nlohmann::json& request)
             {"extendedKeyUsage", ParseExtendedKeyUsageValues(extended_key_usage_extension)},
             {"keyUsageText", CsrExtensionValueByNid(extensions.get(), NID_key_usage)},
             {"extendedKeyUsageText", CsrExtensionValueByNid(extensions.get(), NID_ext_key_usage)},
+        };
+    }
+    catch (const std::exception& error)
+    {
+        return ErrorJson(error);
+    }
+}
+
+nlohmann::json CreatePkcs12(const nlohmann::json& request)
+{
+    try
+    {
+        const auto certificate_pem = StringValue(request, "certificatePem");
+        const auto private_key_pem = StringValue(request, "privateKeyPem");
+        const auto ca_certificate_pem = StringValue(request, "caCertificatePem");
+        const auto password = StringValue(request, "password");
+        const auto friendly_name = StringValue(request, "friendlyName", "space-station");
+        if (certificate_pem.empty() || private_key_pem.empty())
+        {
+            throw std::runtime_error("请提供证书 PEM 和私钥 PEM。");
+        }
+
+        auto certificate = ReadCertificate(certificate_pem);
+        auto private_key = ReadPrivateKey(private_key_pem);
+        auto ca_chain = ReadCertificateChain(ca_certificate_pem);
+        if (X509_check_private_key(certificate.get(), private_key.get()) != 1)
+        {
+            throw std::runtime_error("证书和私钥不匹配。");
+        }
+
+        Pkcs12Ptr pkcs12(PKCS12_create(password.c_str(),
+                                       friendly_name.c_str(),
+                                       private_key.get(),
+                                       certificate.get(),
+                                       ca_chain.get(),
+                                       0,
+                                       0,
+                                       0,
+                                       0,
+                                       0),
+                         PKCS12_free);
+        if (!pkcs12)
+        {
+            throw std::runtime_error("P12 合成失败。");
+        }
+
+        return {
+            {"ok", true},
+            {"filename", friendly_name.empty() ? "certificate.p12" : friendly_name + ".p12"},
+            {"p12Base64", Base64Encode(Pkcs12Der(pkcs12.get()))},
         };
     }
     catch (const std::exception& error)
