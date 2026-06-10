@@ -192,6 +192,7 @@
                   </template>
                   <div class="pem-input-stack">
                     <n-input v-model:value="signForm.csrPem" class="pem-input" type="textarea" :autosize="{ minRows: 6 }" placeholder="粘贴 CSR PEM，或点击下方按钮导入 .csr/.pem 文件。" />
+                    <n-button tertiary :loading="parsingCsr" :disabled="!signForm.csrPem" @click="parseCurrentCsr(true)">识别 CSR</n-button>
                     <n-button tertiary @click="csrFileInput?.click()">导入 CSR</n-button>
                     <input ref="csrFileInput" class="hidden-file-input" type="file" accept=".csr,.pem,.txt" @change="importPemFile($event, 'csrPem')" />
                   </div>
@@ -260,6 +261,7 @@
 
               <div class="action-row">
                 <n-button type="primary" :loading="signing" @click="sign">签发证书</n-button>
+                <n-button tertiary :disabled="!generateResult" @click="useGeneratedCsr">使用生成 CSR</n-button>
                 <n-button tertiary :disabled="!generateResult" @click="useGeneratedAsCa">使用生成结果作为 CA</n-button>
                 <n-button quaternary @click="clearSignResult">清空结果</n-button>
               </div>
@@ -375,7 +377,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, reactive, ref } from "vue";
+import { computed, defineComponent, h, reactive, ref, watch } from "vue";
 import {
   NAlert,
   NButton,
@@ -394,6 +396,7 @@ import {
 } from "naive-ui";
 import {
   generateCertificateBundle,
+  parseCsr,
   parseCertificate,
   signCertificateRequest,
   type GenerateCertificateRequest,
@@ -461,6 +464,7 @@ const activeTab = ref<"generate" | "sign" | "parse">("generate");
 const generating = ref(false);
 const signing = ref(false);
 const parsing = ref(false);
+const parsingCsr = ref(false);
 const generateResult = ref<GenerateCertificateResponse | null>(null);
 const signResult = ref<SignCertificateResponse | null>(null);
 const parseResult = ref<ParsedCertificateResponse | null>(null);
@@ -473,6 +477,8 @@ const csrFileInput = ref<HTMLInputElement | null>(null);
 const parseCertFileInput = ref<HTMLInputElement | null>(null);
 const parseCertificatePem = ref("");
 const toast = useMessage();
+let csrParseTimer: ReturnType<typeof setTimeout> | null = null;
+let lastParsedCsr = "";
 
 const generateForm = reactive<GenerateCertificateRequest>({
   subject: {
@@ -546,6 +552,13 @@ const extendedKeyUsageOptions = [
   { label: "timeStamping", value: "timeStamping" },
   { label: "OCSPSigning", value: "OCSPSigning" },
 ];
+
+watch(
+  () => signForm.csrPem,
+  (value) => {
+    scheduleCsrParse(value);
+  },
+);
 
 const generateOutputItems = computed<PemItem[]>(() => {
   if (!generateResult.value?.ok) {
@@ -713,6 +726,65 @@ async function importPemFile(event: Event, field: PemInputField) {
   }
 }
 
+function scheduleCsrParse(value: string) {
+  if (csrParseTimer) {
+    clearTimeout(csrParseTimer);
+    csrParseTimer = null;
+  }
+
+  if (!isCompleteCsr(value) || value === lastParsedCsr) {
+    return;
+  }
+
+  csrParseTimer = setTimeout(() => {
+    void parseCurrentCsr();
+  }, 250);
+}
+
+function isCompleteCsr(value: string) {
+  return value.includes("-----BEGIN CERTIFICATE REQUEST-----") && value.includes("-----END CERTIFICATE REQUEST-----");
+}
+
+async function parseCurrentCsr(force = false) {
+  if (!signForm.csrPem) {
+    return;
+  }
+  if (!force && signForm.csrPem === lastParsedCsr) {
+    return;
+  }
+
+  parsingCsr.value = true;
+  try {
+    const result = await parseCsr({ csrPem: signForm.csrPem });
+    if (!result.ok) {
+      signMessage.value = { type: "error", text: result.error || "CSR 识别失败。" };
+      return;
+    }
+
+    lastParsedCsr = signForm.csrPem;
+    signSan.dns = result.san.dns.join("\n");
+    signSan.ips = result.san.ips.join("\n");
+    signSan.emails = result.san.emails.join("\n");
+    signSan.uris = result.san.uris.join("\n");
+    if (result.keyUsage.length > 0) {
+      signForm.keyUsage = result.keyUsage;
+    }
+    if (result.extendedKeyUsage.length > 0) {
+      signForm.extendedKeyUsage = result.extendedKeyUsage;
+    }
+
+    const subject = result.subject.commonName ? `，CN=${result.subject.commonName}` : "";
+    signMessage.value = {
+      type: result.signatureValid ? "success" : "warning",
+      text: `CSR 已识别${subject}，SAN 和用途已填入，可继续修改后签发。`,
+    };
+  } catch {
+    signMessage.value = { type: "error", text: "CSR 识别失败，请确认后端正在运行。" };
+  } finally {
+    parsingCsr.value = false;
+  }
+}
+
 async function importParseCertificateFile(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -737,6 +809,15 @@ function useGeneratedAsCa() {
   signForm.caCertificatePem = generateResult.value.certificatePem;
   signForm.caPrivateKeyPem = generateResult.value.privateKeyPem;
   activeTab.value = "sign";
+}
+
+function useGeneratedCsr() {
+  if (!generateResult.value?.ok) {
+    return;
+  }
+  signForm.csrPem = generateResult.value.csrPem;
+  activeTab.value = "sign";
+  void parseCurrentCsr(true);
 }
 
 function useGeneratedCertificateForParse() {

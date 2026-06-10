@@ -75,6 +75,25 @@ export interface SignCertificateResponse {
   certificatePem: string;
 }
 
+export interface ParseCsrRequest {
+  csrPem: string;
+}
+
+export interface ParsedCsrResponse {
+  ok: boolean;
+  error?: string;
+  subject: CertificateSubject & { raw: string };
+  publicKeyAlgorithm: string;
+  publicKeyBits: number;
+  signatureAlgorithm: string;
+  signatureValid: boolean;
+  san: Required<CertificateSan>;
+  keyUsage: string[];
+  extendedKeyUsage: string[];
+  keyUsageText: string;
+  extendedKeyUsageText: string;
+}
+
 export interface ParseCertificateRequest {
   certificatePem: string;
 }
@@ -141,6 +160,11 @@ export async function generateCertificateBundle(payload: GenerateCertificateRequ
 
 export async function signCertificateRequest(payload: SignCertificateRequest): Promise<SignCertificateResponse> {
   const { data } = await api.post<SignCertificateResponse>("/certificates/sign", payload);
+  return data;
+}
+
+export async function parseCsr(payload: ParseCsrRequest): Promise<ParsedCsrResponse> {
+  const { data } = await api.post<ParsedCsrResponse>("/certificates/parse-csr", payload);
   return data;
 }
 

@@ -40,6 +40,11 @@ void OpenSslFree(void* value)
     OPENSSL_free(value);
 }
 
+void X509ExtensionStackFree(STACK_OF(X509_EXTENSION)* extensions)
+{
+    sk_X509_EXTENSION_pop_free(extensions, X509_EXTENSION_free);
+}
+
 struct SubjectAltNames
 {
     std::vector<std::string> dns;
@@ -309,27 +314,27 @@ std::string ExtensionValueByNid(X509* certificate, int nid)
     return extension ? ExtensionToString(extension) : "";
 }
 
-nlohmann::json ParseSubjectAltNames(X509* certificate)
+nlohmann::json EmptySanJson()
 {
-    nlohmann::json san = {
+    return {
         {"dns", nlohmann::json::array()},
         {"ips", nlohmann::json::array()},
         {"emails", nlohmann::json::array()},
         {"uris", nlohmann::json::array()},
     };
+}
 
-    OpenSslPtr<GENERAL_NAMES, GENERAL_NAMES_free> names(
-        static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(certificate, NID_subject_alt_name, nullptr, nullptr)),
-        GENERAL_NAMES_free);
+void AppendGeneralNamesToJson(GENERAL_NAMES* names, nlohmann::json& san)
+{
     if (!names)
     {
-        return san;
+        return;
     }
 
-    const int count = sk_GENERAL_NAME_num(names.get());
+    const int count = sk_GENERAL_NAME_num(names);
     for (int i = 0; i < count; ++i)
     {
-        const GENERAL_NAME* name = sk_GENERAL_NAME_value(names.get(), i);
+        const GENERAL_NAME* name = sk_GENERAL_NAME_value(names, i);
         if (!name)
         {
             continue;
@@ -379,7 +384,144 @@ nlohmann::json ParseSubjectAltNames(X509* certificate)
             }
         }
     }
+}
+
+nlohmann::json ParseSubjectAltNames(X509* certificate)
+{
+    nlohmann::json san = EmptySanJson();
+
+    OpenSslPtr<GENERAL_NAMES, GENERAL_NAMES_free> names(
+        static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(certificate, NID_subject_alt_name, nullptr, nullptr)),
+        GENERAL_NAMES_free);
+    AppendGeneralNamesToJson(names.get(), san);
     return san;
+}
+
+X509_EXTENSION* ExtensionByNid(const STACK_OF(X509_EXTENSION)* extensions, int nid)
+{
+    if (!extensions)
+    {
+        return nullptr;
+    }
+
+    for (int i = 0; i < sk_X509_EXTENSION_num(extensions); ++i)
+    {
+        X509_EXTENSION* extension = sk_X509_EXTENSION_value(extensions, i);
+        const ASN1_OBJECT* object = extension ? X509_EXTENSION_get_object(extension) : nullptr;
+        if (object && OBJ_obj2nid(object) == nid)
+        {
+            return extension;
+        }
+    }
+    return nullptr;
+}
+
+std::string CsrExtensionValueByNid(const STACK_OF(X509_EXTENSION)* extensions, int nid)
+{
+    X509_EXTENSION* extension = ExtensionByNid(extensions, nid);
+    return extension ? ExtensionToString(extension) : "";
+}
+
+nlohmann::json ParseSubjectAltNamesFromExtension(X509_EXTENSION* extension)
+{
+    nlohmann::json san = EmptySanJson();
+    if (!extension)
+    {
+        return san;
+    }
+
+    OpenSslPtr<GENERAL_NAMES, GENERAL_NAMES_free> names(
+        static_cast<GENERAL_NAMES*>(X509V3_EXT_d2i(extension)),
+        GENERAL_NAMES_free);
+    AppendGeneralNamesToJson(names.get(), san);
+    return san;
+}
+
+std::vector<std::string> ParseKeyUsageValues(X509_EXTENSION* extension)
+{
+    std::vector<std::string> values;
+    if (!extension)
+    {
+        return values;
+    }
+
+    if (X509_EXTENSION_get_critical(extension))
+    {
+        values.push_back("critical");
+    }
+
+    OpenSslPtr<ASN1_BIT_STRING, ASN1_BIT_STRING_free> usage(
+        static_cast<ASN1_BIT_STRING*>(X509V3_EXT_d2i(extension)),
+        ASN1_BIT_STRING_free);
+    if (!usage)
+    {
+        return values;
+    }
+
+    const std::vector<std::pair<int, std::string>> known_usages = {
+        {0, "digitalSignature"},
+        {2, "keyEncipherment"},
+        {3, "dataEncipherment"},
+        {4, "keyAgreement"},
+        {5, "keyCertSign"},
+        {6, "cRLSign"},
+    };
+    for (const auto& [bit, value] : known_usages)
+    {
+        if (ASN1_BIT_STRING_get_bit(usage.get(), bit))
+        {
+            values.push_back(value);
+        }
+    }
+    return values;
+}
+
+std::vector<std::string> ParseExtendedKeyUsageValues(X509_EXTENSION* extension)
+{
+    std::vector<std::string> values;
+    if (!extension)
+    {
+        return values;
+    }
+
+    OpenSslPtr<EXTENDED_KEY_USAGE, EXTENDED_KEY_USAGE_free> usages(
+        static_cast<EXTENDED_KEY_USAGE*>(X509V3_EXT_d2i(extension)),
+        EXTENDED_KEY_USAGE_free);
+    if (!usages)
+    {
+        return values;
+    }
+
+    for (int i = 0; i < sk_ASN1_OBJECT_num(usages.get()); ++i)
+    {
+        const ASN1_OBJECT* object = sk_ASN1_OBJECT_value(usages.get(), i);
+        const int nid = object ? OBJ_obj2nid(object) : NID_undef;
+        if (nid == NID_server_auth)
+        {
+            values.push_back("serverAuth");
+        }
+        else if (nid == NID_client_auth)
+        {
+            values.push_back("clientAuth");
+        }
+        else if (nid == NID_code_sign)
+        {
+            values.push_back("codeSigning");
+        }
+        else if (nid == NID_email_protect)
+        {
+            values.push_back("emailProtection");
+        }
+        else if (nid == NID_time_stamp)
+        {
+            values.push_back("timeStamping");
+        }
+        else if (nid == NID_OCSP_sign)
+        {
+            values.push_back("OCSPSigning");
+        }
+    }
+    return values;
 }
 
 std::string PublicKeyAlgorithm(EVP_PKEY* key)
@@ -578,6 +720,44 @@ std::string BuildExtendedKeyUsage(const nlohmann::json& request)
     return Join(StringArrayValue(request, "extendedKeyUsage"), ",");
 }
 
+void AddCsrExtension(STACK_OF(X509_EXTENSION)* extensions, X509_REQ* request, int nid, const std::string& value)
+{
+    if (value.empty())
+    {
+        return;
+    }
+
+    X509V3_CTX context;
+    X509V3_set_ctx(&context, nullptr, nullptr, request, nullptr, 0);
+    X509_EXTENSION* raw_extension = X509V3_EXT_conf_nid(nullptr, &context, nid, value.c_str());
+    OpenSslPtr<X509_EXTENSION, X509_EXTENSION_free> extension(raw_extension, X509_EXTENSION_free);
+    if (!extension || sk_X509_EXTENSION_push(extensions, extension.get()) <= 0)
+    {
+        throw std::runtime_error("CSR 扩展写入失败。");
+    }
+    extension.release();
+}
+
+void AddCsrExtensionRequest(X509_REQ* request, const nlohmann::json& source)
+{
+    OpenSslPtr<STACK_OF(X509_EXTENSION), X509ExtensionStackFree> extensions(
+        sk_X509_EXTENSION_new_null(),
+        X509ExtensionStackFree);
+    if (!extensions)
+    {
+        throw std::runtime_error("CSR 扩展集合创建失败。");
+    }
+
+    AddCsrExtension(extensions.get(), request, NID_key_usage, BuildKeyUsage(BoolValue(source, "isCa", false), source));
+    AddCsrExtension(extensions.get(), request, NID_ext_key_usage, BuildExtendedKeyUsage(source));
+    AddCsrExtension(extensions.get(), request, NID_subject_alt_name, BuildSanExtensionValue(ParseSans(source)));
+
+    if (sk_X509_EXTENSION_num(extensions.get()) > 0 && X509_REQ_add_extensions(request, extensions.get()) != 1)
+    {
+        throw std::runtime_error("CSR 扩展请求写入失败。");
+    }
+}
+
 void SetSerialNumber(X509* certificate, const nlohmann::json& request)
 {
     const auto serial_text = StringValue(request, "serialNumber");
@@ -632,7 +812,13 @@ void SetValidity(X509* certificate, int days)
     }
 }
 
-X509ReqPtr BuildCsr(EVP_PKEY* key, const nlohmann::json& subject_json)
+nlohmann::json SubjectFromRequest(const nlohmann::json& request)
+{
+    const auto subject = request.value("subject", nlohmann::json::object());
+    return subject.is_object() ? subject : nlohmann::json::object();
+}
+
+X509ReqPtr BuildCsr(EVP_PKEY* key, const nlohmann::json& source)
 {
     X509ReqPtr request(X509_REQ_new(), X509_REQ_free);
     if (!request || X509_REQ_set_version(request.get(), 0L) != 1)
@@ -640,10 +826,16 @@ X509ReqPtr BuildCsr(EVP_PKEY* key, const nlohmann::json& subject_json)
         throw std::runtime_error("CSR 创建失败。");
     }
 
+    const auto subject_json = SubjectFromRequest(source);
     OpenSslPtr<X509_NAME, X509_NAME_free> subject(BuildSubjectName(subject_json), X509_NAME_free);
-    if (X509_REQ_set_subject_name(request.get(), subject.get()) != 1 ||
-        X509_REQ_set_pubkey(request.get(), key) != 1 ||
-        X509_REQ_sign(request.get(), key, EVP_sha256()) <= 0)
+    if (X509_REQ_set_subject_name(request.get(), subject.get()) != 1 || X509_REQ_set_pubkey(request.get(), key) != 1)
+    {
+        throw std::runtime_error("CSR 主题或公钥写入失败。");
+    }
+
+    AddCsrExtensionRequest(request.get(), source);
+
+    if (X509_REQ_sign(request.get(), key, EVP_sha256()) <= 0)
     {
         throw std::runtime_error("CSR 签名失败。");
     }
@@ -698,12 +890,6 @@ nlohmann::json ErrorJson(const std::exception& error)
     };
 }
 
-nlohmann::json SubjectFromRequest(const nlohmann::json& request)
-{
-    const auto subject = request.value("subject", nlohmann::json::object());
-    return subject.is_object() ? subject : nlohmann::json::object();
-}
-
 } // namespace
 
 nlohmann::json GenerateCertificateBundle(const nlohmann::json& request)
@@ -712,7 +898,7 @@ nlohmann::json GenerateCertificateBundle(const nlohmann::json& request)
     {
         auto key = GenerateKey(request);
         const auto subject_json = SubjectFromRequest(request);
-        auto csr = BuildCsr(key.get(), subject_json);
+        auto csr = BuildCsr(key.get(), request);
         const bool is_ca = BoolValue(request, "isCa", false);
 
         OpenSslPtr<X509_NAME, X509_NAME_free> subject(BuildSubjectName(subject_json), X509_NAME_free);
@@ -815,6 +1001,52 @@ nlohmann::json ParseCertificate(const nlohmann::json& request)
             {"basicConstraints", basic_constraints},
             {"keyUsage", key_usage},
             {"extendedKeyUsage", extended_key_usage},
+        };
+    }
+    catch (const std::exception& error)
+    {
+        return ErrorJson(error);
+    }
+}
+
+nlohmann::json ParseCsr(const nlohmann::json& request)
+{
+    try
+    {
+        const auto csr_pem = StringValue(request, "csrPem");
+        if (csr_pem.empty())
+        {
+            throw std::runtime_error("请提供 CSR PEM。");
+        }
+
+        auto csr = ReadCsr(csr_pem);
+        EvpPkeyPtr public_key(X509_REQ_get_pubkey(csr.get()), EVP_PKEY_free);
+        if (!public_key)
+        {
+            throw std::runtime_error("CSR 公钥读取失败。");
+        }
+
+        OpenSslPtr<STACK_OF(X509_EXTENSION), X509ExtensionStackFree> extensions(
+            X509_REQ_get_extensions(csr.get()),
+            X509ExtensionStackFree);
+        X509_EXTENSION* san_extension = ExtensionByNid(extensions.get(), NID_subject_alt_name);
+        X509_EXTENSION* key_usage_extension = ExtensionByNid(extensions.get(), NID_key_usage);
+        X509_EXTENSION* extended_key_usage_extension = ExtensionByNid(extensions.get(), NID_ext_key_usage);
+        const int signature_nid = X509_REQ_get_signature_nid(csr.get());
+        const char* signature_name = OBJ_nid2ln(signature_nid);
+
+        return {
+            {"ok", true},
+            {"subject", NameToJson(X509_REQ_get_subject_name(csr.get()))},
+            {"publicKeyAlgorithm", PublicKeyAlgorithm(public_key.get())},
+            {"publicKeyBits", PublicKeyBits(public_key.get())},
+            {"signatureAlgorithm", signature_name ? signature_name : ""},
+            {"signatureValid", X509_REQ_verify(csr.get(), public_key.get()) == 1},
+            {"san", ParseSubjectAltNamesFromExtension(san_extension)},
+            {"keyUsage", ParseKeyUsageValues(key_usage_extension)},
+            {"extendedKeyUsage", ParseExtendedKeyUsageValues(extended_key_usage_extension)},
+            {"keyUsageText", CsrExtensionValueByNid(extensions.get(), NID_key_usage)},
+            {"extendedKeyUsageText", CsrExtensionValueByNid(extensions.get(), NID_ext_key_usage)},
         };
     }
     catch (const std::exception& error)

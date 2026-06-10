@@ -330,6 +330,19 @@ void HttpServer::RegisterRoutes()
         },
         {drogon::Post});
 
+    drogon::app().registerHandler(
+        "/api/certificates/parse-csr",
+        [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            const auto result = cert::ParseCsr(body);
+            callback(JsonResponse(result, StatusForToolResult(result)));
+        },
+        {drogon::Post});
+
     drogon::app().registerHandlerViaRegex(
         "^/web(?:/.*)?$",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
