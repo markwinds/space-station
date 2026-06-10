@@ -109,13 +109,16 @@ export interface CreateP12Response {
   p12Base64: string;
 }
 
+export interface ParseP12Request {
+  p12Base64: string;
+  password?: string;
+}
+
 export interface ParseCertificateRequest {
   certificatePem: string;
 }
 
-export interface ParsedCertificateResponse {
-  ok: boolean;
-  error?: string;
+export interface ParsedCertificateInfo {
   version: number;
   serialNumber: string;
   serialNumberHex: string;
@@ -132,6 +135,27 @@ export interface ParsedCertificateResponse {
   basicConstraints: string;
   keyUsage: string;
   extendedKeyUsage: string;
+}
+
+export interface ParsedCertificateResponse extends ParsedCertificateInfo {
+  ok: boolean;
+  error?: string;
+}
+
+export interface ParsedP12Certificate extends ParsedCertificateInfo {
+  role: "certificate" | "ca";
+}
+
+export interface ParsedP12Response {
+  ok: boolean;
+  error?: string;
+  friendlyName: string;
+  hasPrivateKey: boolean;
+  privateKeyAlgorithm: string;
+  privateKeyBits: number;
+  certificateCount: number;
+  caCertificateCount: number;
+  certificates: ParsedP12Certificate[];
 }
 
 const api = axios.create({
@@ -185,6 +209,11 @@ export async function parseCsr(payload: ParseCsrRequest): Promise<ParsedCsrRespo
 
 export async function createP12(payload: CreateP12Request): Promise<CreateP12Response> {
   const { data } = await api.post<CreateP12Response>("/certificates/p12", payload);
+  return data;
+}
+
+export async function parseP12(payload: ParseP12Request): Promise<ParsedP12Response> {
+  const { data } = await api.post<ParsedP12Response>("/certificates/parse-p12", payload);
   return data;
 }
 

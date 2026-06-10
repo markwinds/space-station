@@ -180,6 +180,45 @@ std::string Base64Encode(const std::string& bytes)
     return output;
 }
 
+std::string Base64Decode(const std::string& base64)
+{
+    if (base64.empty())
+    {
+        return {};
+    }
+
+    std::string compact;
+    compact.reserve(base64.size());
+    for (const char c : base64)
+    {
+        if (!std::isspace(static_cast<unsigned char>(c)))
+        {
+            compact.push_back(c);
+        }
+    }
+
+    std::string output(3 * (compact.size() / 4 + 1), '\0');
+    const int length = EVP_DecodeBlock(reinterpret_cast<unsigned char*>(output.data()),
+                                       reinterpret_cast<const unsigned char*>(compact.data()),
+                                       static_cast<int>(compact.size()));
+    if (length < 0)
+    {
+        throw std::runtime_error("P12 Base64 解码失败。");
+    }
+
+    std::size_t padding = 0;
+    if (!compact.empty() && compact.back() == '=')
+    {
+        ++padding;
+        if (compact.size() > 1 && compact[compact.size() - 2] == '=')
+        {
+            ++padding;
+        }
+    }
+    output.resize(static_cast<std::size_t>(length) - padding);
+    return output;
+}
+
 std::string PrivateKeyPem(EVP_PKEY* key)
 {
     BioPtr bio(BIO_new(BIO_s_mem()), BIO_free);
@@ -574,6 +613,42 @@ std::string PublicKeyAlgorithm(EVP_PKEY* key)
 int PublicKeyBits(EVP_PKEY* key)
 {
     return key ? EVP_PKEY_bits(key) : 0;
+}
+
+nlohmann::json CertificateToJson(X509* certificate)
+{
+    EvpPkeyPtr public_key(X509_get_pubkey(certificate), EVP_PKEY_free);
+
+    const auto serial = X509_get_serialNumber(certificate);
+    const auto subject = NameToJson(X509_get_subject_name(certificate));
+    const auto issuer = NameToJson(X509_get_issuer_name(certificate));
+    const auto basic_constraints = ExtensionValueByNid(certificate, NID_basic_constraints);
+    const auto key_usage = ExtensionValueByNid(certificate, NID_key_usage);
+    const auto extended_key_usage = ExtensionValueByNid(certificate, NID_ext_key_usage);
+    const auto san = ParseSubjectAltNames(certificate);
+    const bool self_signed = subject.value("raw", "") == issuer.value("raw", "");
+    const bool is_ca = basic_constraints.find("CA:TRUE") != std::string::npos;
+    const int signature_nid = X509_get_signature_nid(certificate);
+    const char* signature_name = OBJ_nid2ln(signature_nid);
+
+    return {
+        {"version", X509_get_version(certificate) + 1},
+        {"serialNumber", Asn1IntegerToDecimal(serial)},
+        {"serialNumberHex", Asn1IntegerToHex(serial)},
+        {"subject", subject},
+        {"issuer", issuer},
+        {"validFrom", Asn1TimeToString(X509_get0_notBefore(certificate))},
+        {"validTo", Asn1TimeToString(X509_get0_notAfter(certificate))},
+        {"signatureAlgorithm", signature_name ? signature_name : ""},
+        {"publicKeyAlgorithm", PublicKeyAlgorithm(public_key.get())},
+        {"publicKeyBits", PublicKeyBits(public_key.get())},
+        {"isCa", is_ca},
+        {"selfSigned", self_signed},
+        {"san", san},
+        {"basicConstraints", basic_constraints},
+        {"keyUsage", key_usage},
+        {"extendedKeyUsage", extended_key_usage},
+    };
 }
 
 EvpPkeyPtr ReadPrivateKey(const std::string& pem)
@@ -1042,39 +1117,9 @@ nlohmann::json ParseCertificate(const nlohmann::json& request)
         }
 
         auto certificate = ReadCertificate(certificate_pem);
-        EvpPkeyPtr public_key(X509_get_pubkey(certificate.get()), EVP_PKEY_free);
-
-        const auto serial = X509_get_serialNumber(certificate.get());
-        const auto subject = NameToJson(X509_get_subject_name(certificate.get()));
-        const auto issuer = NameToJson(X509_get_issuer_name(certificate.get()));
-        const auto basic_constraints = ExtensionValueByNid(certificate.get(), NID_basic_constraints);
-        const auto key_usage = ExtensionValueByNid(certificate.get(), NID_key_usage);
-        const auto extended_key_usage = ExtensionValueByNid(certificate.get(), NID_ext_key_usage);
-        const auto san = ParseSubjectAltNames(certificate.get());
-        const bool self_signed = subject.value("raw", "") == issuer.value("raw", "");
-        const bool is_ca = basic_constraints.find("CA:TRUE") != std::string::npos;
-        const int signature_nid = X509_get_signature_nid(certificate.get());
-        const char* signature_name = OBJ_nid2ln(signature_nid);
-
-        return {
-            {"ok", true},
-            {"version", X509_get_version(certificate.get()) + 1},
-            {"serialNumber", Asn1IntegerToDecimal(serial)},
-            {"serialNumberHex", Asn1IntegerToHex(serial)},
-            {"subject", subject},
-            {"issuer", issuer},
-            {"validFrom", Asn1TimeToString(X509_get0_notBefore(certificate.get()))},
-            {"validTo", Asn1TimeToString(X509_get0_notAfter(certificate.get()))},
-            {"signatureAlgorithm", signature_name ? signature_name : ""},
-            {"publicKeyAlgorithm", PublicKeyAlgorithm(public_key.get())},
-            {"publicKeyBits", PublicKeyBits(public_key.get())},
-            {"isCa", is_ca},
-            {"selfSigned", self_signed},
-            {"san", san},
-            {"basicConstraints", basic_constraints},
-            {"keyUsage", key_usage},
-            {"extendedKeyUsage", extended_key_usage},
-        };
+        auto result = CertificateToJson(certificate.get());
+        result["ok"] = true;
+        return result;
     }
     catch (const std::exception& error)
     {
@@ -1170,6 +1215,86 @@ nlohmann::json CreatePkcs12(const nlohmann::json& request)
             {"ok", true},
             {"filename", friendly_name.empty() ? "certificate.p12" : friendly_name + ".p12"},
             {"p12Base64", Base64Encode(Pkcs12Der(pkcs12.get()))},
+        };
+    }
+    catch (const std::exception& error)
+    {
+        return ErrorJson(error);
+    }
+}
+
+nlohmann::json ParsePkcs12(const nlohmann::json& request)
+{
+    try
+    {
+        const auto p12_base64 = StringValue(request, "p12Base64");
+        const auto password = StringValue(request, "password");
+        if (p12_base64.empty())
+        {
+            throw std::runtime_error("请提供 P12 文件内容。");
+        }
+
+        const auto p12_der = Base64Decode(p12_base64);
+        BioPtr bio(BIO_new_mem_buf(p12_der.data(), static_cast<int>(p12_der.size())), BIO_free);
+        Pkcs12Ptr pkcs12(d2i_PKCS12_bio(bio.get(), nullptr), PKCS12_free);
+        if (!pkcs12)
+        {
+            throw std::runtime_error("P12 解析失败。");
+        }
+
+        EVP_PKEY* raw_private_key = nullptr;
+        X509* raw_certificate = nullptr;
+        STACK_OF(X509)* raw_ca_chain = nullptr;
+        if (PKCS12_parse(pkcs12.get(), password.c_str(), &raw_private_key, &raw_certificate, &raw_ca_chain) != 1)
+        {
+            throw std::runtime_error("P12 密码错误或内容无效。");
+        }
+
+        EvpPkeyPtr private_key(raw_private_key, EVP_PKEY_free);
+        X509Ptr certificate(raw_certificate, X509_free);
+        OpenSslPtr<STACK_OF(X509), X509StackFree> ca_chain(raw_ca_chain, X509StackFree);
+
+        nlohmann::json certificates = nlohmann::json::array();
+        if (certificate)
+        {
+            auto certificate_json = CertificateToJson(certificate.get());
+            certificate_json["role"] = "certificate";
+            certificates.push_back(certificate_json);
+        }
+
+        const int ca_count = ca_chain ? sk_X509_num(ca_chain.get()) : 0;
+        for (int i = 0; i < ca_count; ++i)
+        {
+            X509* ca_certificate = sk_X509_value(ca_chain.get(), i);
+            if (!ca_certificate)
+            {
+                continue;
+            }
+            auto certificate_json = CertificateToJson(ca_certificate);
+            certificate_json["role"] = "ca";
+            certificates.push_back(certificate_json);
+        }
+
+        std::string friendly_name;
+        if (certificate)
+        {
+            int alias_length = 0;
+            unsigned char* alias = X509_alias_get0(certificate.get(), &alias_length);
+            if (alias && alias_length > 0)
+            {
+                friendly_name.assign(reinterpret_cast<const char*>(alias), static_cast<std::size_t>(alias_length));
+            }
+        }
+
+        return {
+            {"ok", true},
+            {"friendlyName", friendly_name},
+            {"hasPrivateKey", private_key != nullptr},
+            {"privateKeyAlgorithm", PublicKeyAlgorithm(private_key.get())},
+            {"privateKeyBits", PublicKeyBits(private_key.get())},
+            {"certificateCount", certificates.size()},
+            {"caCertificateCount", ca_count},
+            {"certificates", certificates},
         };
     }
     catch (const std::exception& error)

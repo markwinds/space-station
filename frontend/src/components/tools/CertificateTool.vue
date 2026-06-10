@@ -353,10 +353,21 @@
                     <input ref="parseCertFileInput" class="hidden-file-input" type="file" accept=".pem,.crt,.cer,.txt" @change="importParseCertificateFile" />
                   </div>
                 </n-form-item>
+                <n-form-item label="P12 文件">
+                  <div class="pem-input-stack">
+                    <n-input :value="parseP12Filename || '未选择 P12 文件'" readonly />
+                    <n-button tertiary @click="parseP12FileInput?.click()">导入 P12</n-button>
+                    <input ref="parseP12FileInput" class="hidden-file-input" type="file" accept=".p12,.pfx,application/x-pkcs12" @change="importParseP12File" />
+                  </div>
+                </n-form-item>
+                <n-form-item label="P12 密码">
+                  <n-input v-model:value="parseP12Password" type="password" show-password-on="click" placeholder="无密码可留空" />
+                </n-form-item>
               </n-form>
 
               <div class="action-row">
                 <n-button type="primary" :loading="parsing" @click="parseCertificateNow">解析证书</n-button>
+                <n-button type="primary" secondary :loading="parsingP12" :disabled="!parseP12Base64" @click="parseP12Now">解析 P12</n-button>
                 <n-button tertiary :disabled="!generateResult" @click="useGeneratedCertificateForParse">解析生成的证书</n-button>
                 <n-button tertiary :disabled="!signResult" @click="useSignedCertificateForParse">解析签发结果</n-button>
                 <n-button quaternary @click="clearParseResult">清空</n-button>
@@ -368,7 +379,33 @@
           </n-card>
 
           <n-card class="tool-panel" title="解析结果" embedded>
-            <div v-if="parseResult?.ok" class="certificate-info">
+            <div v-if="parseP12Result?.ok" class="certificate-info">
+              <section>
+                <h3>P12 摘要</h3>
+                <div class="info-grid">
+                  <span>友好名称</span><code>{{ parseP12Result.friendlyName || "-" }}</code>
+                  <span>私钥</span><code>{{ parseP12Result.hasPrivateKey ? `${parseP12Result.privateKeyAlgorithm} / ${parseP12Result.privateKeyBits} bits` : "无" }}</code>
+                  <span>证书数量</span><code>{{ parseP12Result.certificateCount }}</code>
+                  <span>CA 链数量</span><code>{{ parseP12Result.caCertificateCount }}</code>
+                </div>
+              </section>
+
+              <section v-for="(certificate, index) in parseP12Result.certificates" :key="`${certificate.role}-${certificate.serialNumberHex}-${index}`">
+                <h3>{{ certificate.role === "certificate" ? "主证书" : `CA 证书 ${index}` }}</h3>
+                <div class="info-grid">
+                  <span>Subject</span><code>{{ certificate.subject.raw }}</code>
+                  <span>Issuer</span><code>{{ certificate.issuer.raw }}</code>
+                  <span>序列号 HEX</span><code>{{ certificate.serialNumberHex }}</code>
+                  <span>有效期</span><code>{{ certificate.validFrom }} / {{ certificate.validTo }}</code>
+                  <span>公钥</span><code>{{ certificate.publicKeyAlgorithm }} / {{ certificate.publicKeyBits }} bits</code>
+                  <span>CA</span><code>{{ certificate.isCa ? "是" : "否" }}</code>
+                  <span>SAN DNS</span><code>{{ joinValues(certificate.san.dns) }}</code>
+                  <span>Key Usage</span><code>{{ certificate.keyUsage || "-" }}</code>
+                  <span>Extended Key Usage</span><code>{{ certificate.extendedKeyUsage || "-" }}</code>
+                </div>
+              </section>
+            </div>
+            <div v-else-if="parseResult?.ok" class="certificate-info">
               <section>
                 <h3>摘要</h3>
                 <div class="info-grid">
@@ -452,6 +489,7 @@ import {
 import {
   createP12,
   generateCertificateBundle,
+  parseP12,
   parseCsr,
   parseCertificate,
   signCertificateRequest,
@@ -460,6 +498,7 @@ import {
   type GenerateCertificateRequest,
   type GenerateCertificateResponse,
   type ParsedCertificateResponse,
+  type ParsedP12Response,
   type SignCertificateRequest,
   type SignCertificateResponse,
   type CertificateSubject,
@@ -525,9 +564,11 @@ const signing = ref(false);
 const parsing = ref(false);
 const parsingCsr = ref(false);
 const creatingP12 = ref(false);
+const parsingP12 = ref(false);
 const generateResult = ref<GenerateCertificateResponse | null>(null);
 const signResult = ref<SignCertificateResponse | null>(null);
 const parseResult = ref<ParsedCertificateResponse | null>(null);
+const parseP12Result = ref<ParsedP12Response | null>(null);
 const p12Result = ref<CreateP12Response | null>(null);
 const generateMessage = ref<MessageState | null>(null);
 const signMessage = ref<MessageState | null>(null);
@@ -537,10 +578,14 @@ const caCertFileInput = ref<HTMLInputElement | null>(null);
 const caKeyFileInput = ref<HTMLInputElement | null>(null);
 const csrFileInput = ref<HTMLInputElement | null>(null);
 const parseCertFileInput = ref<HTMLInputElement | null>(null);
+const parseP12FileInput = ref<HTMLInputElement | null>(null);
 const p12CertFileInput = ref<HTMLInputElement | null>(null);
 const p12KeyFileInput = ref<HTMLInputElement | null>(null);
 const p12CaFileInput = ref<HTMLInputElement | null>(null);
 const parseCertificatePem = ref("");
+const parseP12Base64 = ref("");
+const parseP12Filename = ref("");
+const parseP12Password = ref("");
 const toast = useMessage();
 let csrParseTimer: ReturnType<typeof setTimeout> | null = null;
 let lastParsedCsr = "";
@@ -706,6 +751,7 @@ async function parseCertificateNow() {
   parseMessage.value = null;
   try {
     parseResult.value = await parseCertificate({ certificatePem: parseCertificatePem.value });
+    parseP12Result.value = null;
     parseMessage.value = parseResult.value.ok
       ? { type: "success", text: "证书已解析。" }
       : { type: "error", text: parseResult.value.error || "解析失败。" };
@@ -713,6 +759,29 @@ async function parseCertificateNow() {
     parseMessage.value = { type: "error", text: "解析失败，请确认证书 PEM 有效且后端正在运行。" };
   } finally {
     parsing.value = false;
+  }
+}
+
+async function parseP12Now() {
+  if (!parseP12Base64.value) {
+    return;
+  }
+
+  parsingP12.value = true;
+  parseMessage.value = null;
+  try {
+    parseP12Result.value = await parseP12({
+      p12Base64: parseP12Base64.value,
+      password: parseP12Password.value || undefined,
+    });
+    parseResult.value = null;
+    parseMessage.value = parseP12Result.value.ok
+      ? { type: "success", text: "P12 已解析。" }
+      : { type: "error", text: parseP12Result.value.error || "P12 解析失败。" };
+  } catch {
+    parseMessage.value = { type: "error", text: "P12 解析失败，请确认密码正确且后端正在运行。" };
+  } finally {
+    parsingP12.value = false;
   }
 }
 
@@ -814,6 +883,16 @@ function downloadBase64(base64: string, filename: string, contentType: string) {
     bytes[i] = binary.charCodeAt(i);
   }
   downloadBlob(new Blob([bytes], { type: contentType }), filename);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 async function importPemFile(event: Event, field: PemInputField) {
@@ -926,6 +1005,24 @@ async function importParseCertificateFile(event: Event) {
   }
 }
 
+async function importParseP12File(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  try {
+    parseP12Base64.value = arrayBufferToBase64(await file.arrayBuffer());
+    parseP12Filename.value = file.name;
+    parseMessage.value = { type: "success", text: `${file.name} 已导入。` };
+  } catch {
+    parseMessage.value = { type: "error", text: "文件读取失败，请确认文件是 P12/PFX 格式。" };
+  } finally {
+    input.value = "";
+  }
+}
+
 function useGeneratedAsCa() {
   if (!generateResult.value?.ok) {
     return;
@@ -1015,7 +1112,11 @@ function clearSignResult() {
 
 function clearParseResult() {
   parseCertificatePem.value = "";
+  parseP12Base64.value = "";
+  parseP12Filename.value = "";
+  parseP12Password.value = "";
   parseResult.value = null;
+  parseP12Result.value = null;
   parseMessage.value = null;
 }
 
