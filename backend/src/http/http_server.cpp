@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace spacestation
 {
@@ -164,6 +165,25 @@ void EnsureTlsCertificate(const std::string& certificate_path, const std::string
     }
     GenerateDefaultTlsCertificate(cert, key);
 }
+
+std::vector<std::pair<std::string, std::string>> BuildMutualTlsConfig(const std::string& trusted_root_certificate_path)
+{
+    if (trusted_root_certificate_path.empty())
+    {
+        return {};
+    }
+
+    if (!std::filesystem::exists(trusted_root_certificate_path))
+    {
+        throw std::runtime_error("TLS 客户端根证书文件不存在：" + trusted_root_certificate_path);
+    }
+
+    return {
+        {"VerifyCAFile", trusted_root_certificate_path},
+        {"ClientCAFile", trusted_root_certificate_path},
+        {"VerifyMode", "Require"},
+    };
+}
 } // namespace
 
 HttpServer::HttpServer(ConfigStore& config_store, AppConfig config)
@@ -172,6 +192,7 @@ HttpServer::HttpServer(ConfigStore& config_store, AppConfig config)
       http_port_(static_cast<std::uint16_t>(config.http_port)),
       certificate_path_(std::move(config.certificate_path)),
       private_key_path_(std::move(config.private_key_path)),
+      trusted_root_certificate_path_(std::move(config.trusted_root_certificate_path)),
       config_store_(config_store)
 {
     RegisterRoutes();
@@ -196,7 +217,12 @@ void HttpServer::Start()
     {
         drogon::app().addListener("0.0.0.0", http_port_, false);
     }
-    drogon::app().addListener("0.0.0.0", port_, true, certificate_path_, private_key_path_);
+    const auto mutual_tls_config = BuildMutualTlsConfig(trusted_root_certificate_path_);
+    if (!mutual_tls_config.empty())
+    {
+        logI("HTTPS mutual TLS enabled");
+    }
+    drogon::app().addListener("0.0.0.0", port_, true, certificate_path_, private_key_path_, false, mutual_tls_config);
     server_thread_ = std::thread([] { drogon::app().run(); });
 }
 

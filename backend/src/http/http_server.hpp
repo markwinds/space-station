@@ -31,6 +31,7 @@ class HttpServer
     std::uint16_t http_port_;
     std::string certificate_path_;
     std::string private_key_path_;
+    std::string trusted_root_certificate_path_;
     ConfigStore& config_store_;
     std::thread server_thread_;
     std::atomic<bool> started_{false};

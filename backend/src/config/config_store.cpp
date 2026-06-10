@@ -42,6 +42,16 @@ std::string StringOrFallback(const nlohmann::json& json, const char* key, const 
     return it->get<std::string>();
 }
 
+std::string OptionalString(const nlohmann::json& json, const char* key)
+{
+    const auto it = json.find(key);
+    if (it == json.end() || !it->is_string())
+    {
+        return {};
+    }
+    return it->get<std::string>();
+}
+
 std::string NormalizeLogLevel(std::string level)
 {
     if (level == "trace" || level == "debug" || level == "info" || level == "warn" || level == "error")
@@ -101,6 +111,7 @@ AppConfig ConfigStore::Load()
     config.http_port = ClampHttpPort(json.value("httpPort", 80));
     config.certificate_path = StringOrFallback(json, "certificatePath", DefaultCertificatePath());
     config.private_key_path = StringOrFallback(json, "privateKeyPath", DefaultPrivateKeyPath());
+    config.trusted_root_certificate_path = OptionalString(json, "trustedRootCertificatePath");
     return config;
 }
 
@@ -120,6 +131,7 @@ void ConfigStore::SavePartial(const nlohmann::json& patch)
     current["httpPort"] = ClampHttpPort(current.value("httpPort", 80));
     current["certificatePath"] = StringOrFallback(current, "certificatePath", DefaultCertificatePath());
     current["privateKeyPath"] = StringOrFallback(current, "privateKeyPath", DefaultPrivateKeyPath());
+    current["trustedRootCertificatePath"] = OptionalString(current, "trustedRootCertificatePath");
     if (!current.contains("dataPath") || !current["dataPath"].is_string() || current["dataPath"].get<std::string>().empty())
     {
         current["dataPath"] = DefaultDataPath().string();
@@ -137,6 +149,7 @@ nlohmann::json ConfigStore::ToJson(const AppConfig& config) const
         {"httpPort", config.http_port},
         {"certificatePath", config.certificate_path},
         {"privateKeyPath", config.private_key_path},
+        {"trustedRootCertificatePath", config.trusted_root_certificate_path},
         {"configPath", config_path_.string()},
         {"logPath", (std::filesystem::path(config.data_path) / "logs" / "space-station.log").string()},
     };
@@ -199,6 +212,7 @@ nlohmann::json ConfigStore::BuildDefaultJson() const
         {"httpPort", 80},
         {"certificatePath", DefaultCertificatePath().string()},
         {"privateKeyPath", DefaultPrivateKeyPath().string()},
+        {"trustedRootCertificatePath", ""},
     };
 }
 } // namespace spacestation

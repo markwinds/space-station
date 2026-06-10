@@ -31,6 +31,9 @@
               <n-form-item label="私钥路径">
                 <n-input v-model:value="form.privateKeyPath" />
               </n-form-item>
+              <n-form-item label="信任根证书路径">
+                <n-input v-model:value="form.trustedRootCertificatePath" placeholder="留空则不启用双向认证" />
+              </n-form-item>
             </div>
           </section>
 
@@ -90,7 +93,17 @@ import {
 } from "naive-ui";
 import { fetchConfig, updateConfig, type AppConfig } from "@/api";
 
-type ConfigForm = Pick<AppConfig, "dataPath" | "logLevel" | "port" | "httpEnabled" | "httpPort" | "certificatePath" | "privateKeyPath">;
+type ConfigForm = Pick<
+  AppConfig,
+  | "dataPath"
+  | "logLevel"
+  | "port"
+  | "httpEnabled"
+  | "httpPort"
+  | "certificatePath"
+  | "privateKeyPath"
+  | "trustedRootCertificatePath"
+>;
 
 const logLevelOptions = [
   { label: "Trace", value: "trace" },
@@ -126,6 +139,7 @@ async function load() {
       httpPort: nextConfig.httpPort,
       certificatePath: nextConfig.certificatePath,
       privateKeyPath: nextConfig.privateKeyPath,
+      trustedRootCertificatePath: nextConfig.trustedRootCertificatePath,
     });
   } catch {
     loadError.value = "未连接到后端，暂时无法读取配置。";
@@ -151,6 +165,7 @@ async function save() {
       httpPort: form.value.httpPort,
       certificatePath: form.value.certificatePath,
       privateKeyPath: form.value.privateKeyPath,
+      trustedRootCertificatePath: form.value.trustedRootCertificatePath,
     });
     config.value = nextConfig;
     form.value = reactive({
@@ -161,6 +176,7 @@ async function save() {
       httpPort: nextConfig.httpPort,
       certificatePath: nextConfig.certificatePath,
       privateKeyPath: nextConfig.privateKeyPath,
+      trustedRootCertificatePath: nextConfig.trustedRootCertificatePath,
     });
     saved.value = true;
   } catch {

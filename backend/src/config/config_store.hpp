@@ -17,6 +17,7 @@ struct AppConfig
     int http_port = 80;
     std::string certificate_path;
     std::string private_key_path;
+    std::string trusted_root_certificate_path;
 };
 
 class ConfigStore

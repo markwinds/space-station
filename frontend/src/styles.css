@@ -442,7 +442,7 @@ input {
 }
 
 .settings-grid-tls .n-form-item:first-child {
-  grid-row: span 2;
+  grid-row: span 3;
 }
 
 .settings-grid-http {

@@ -14,6 +14,7 @@ export interface AppConfig {
   httpPort: number;
   certificatePath: string;
   privateKeyPath: string;
+  trustedRootCertificatePath: string;
   configPath: string;
   logPath: string;
 }
@@ -115,7 +116,19 @@ export async function fetchConfig(): Promise<AppConfig> {
 }
 
 export async function updateConfig(
-  payload: Partial<Pick<AppConfig, "dataPath" | "logLevel" | "port" | "httpEnabled" | "httpPort" | "certificatePath" | "privateKeyPath">>,
+  payload: Partial<
+    Pick<
+      AppConfig,
+      | "dataPath"
+      | "logLevel"
+      | "port"
+      | "httpEnabled"
+      | "httpPort"
+      | "certificatePath"
+      | "privateKeyPath"
+      | "trustedRootCertificatePath"
+    >
+  >,
 ): Promise<AppConfig> {
   const { data } = await api.put<AppConfig>("/config", payload);
   return data;
