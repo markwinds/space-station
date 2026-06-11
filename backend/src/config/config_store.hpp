@@ -29,6 +29,10 @@ class ConfigStore
     AppConfig Load();
     void SavePartial(const nlohmann::json& patch);
     nlohmann::json ToJson(const AppConfig& config) const;
+    nlohmann::json LoadSchedulerState();
+    void SaveSchedulerState(const nlohmann::json& json);
+    nlohmann::json LoadFileShares();
+    void SaveFileShares(const nlohmann::json& json);
 
     static std::filesystem::path DefaultDataPath();
     static std::filesystem::path DefaultConfigPath();
@@ -39,6 +43,8 @@ class ConfigStore
     nlohmann::json LoadJsonUnlocked();
     void SaveJsonUnlocked(const nlohmann::json& json);
     nlohmann::json BuildDefaultJson() const;
+    nlohmann::json BuildDefaultSchedulerStateJson() const;
+    nlohmann::json BuildDefaultFileSharesJson() const;
 
     std::filesystem::path config_path_;
     mutable std::mutex mutex_;

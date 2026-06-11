@@ -155,6 +155,106 @@ nlohmann::json ConfigStore::ToJson(const AppConfig& config) const
     };
 }
 
+nlohmann::json ConfigStore::LoadSchedulerState()
+{
+    std::lock_guard lock(mutex_);
+    auto json = LoadJsonUnlocked();
+    auto state = json.value("schedulerState", BuildDefaultSchedulerStateJson());
+    if (!state.is_object())
+    {
+        state = BuildDefaultSchedulerStateJson();
+    }
+    if (!state.contains("tasks") || !state["tasks"].is_array())
+    {
+        state["tasks"] = nlohmann::json::array();
+    }
+    if (!state.contains("tags") || !state["tags"].is_array())
+    {
+        state["tags"] = nlohmann::json::array();
+    }
+    if (!state.contains("settings") || !state["settings"].is_object())
+    {
+        state["settings"] = BuildDefaultSchedulerStateJson()["settings"];
+    }
+    if (!state.contains("scenes") || !state["scenes"].is_array())
+    {
+        state["scenes"] = nlohmann::json::array();
+    }
+    return state;
+}
+
+void ConfigStore::SaveSchedulerState(const nlohmann::json& json)
+{
+    std::lock_guard lock(mutex_);
+    auto current = LoadJsonUnlocked();
+    auto state = BuildDefaultSchedulerStateJson();
+    if (json.is_object())
+    {
+        state.merge_patch(json);
+    }
+    if (!state["tasks"].is_array())
+    {
+        state["tasks"] = nlohmann::json::array();
+    }
+    if (!state["tags"].is_array())
+    {
+        state["tags"] = nlohmann::json::array();
+    }
+    if (!state["settings"].is_object())
+    {
+        state["settings"] = BuildDefaultSchedulerStateJson()["settings"];
+    }
+    if (!state["scenes"].is_array())
+    {
+        state["scenes"] = nlohmann::json::array();
+    }
+    current["schedulerState"] = state;
+    SaveJsonUnlocked(current);
+}
+
+nlohmann::json ConfigStore::LoadFileShares()
+{
+    std::lock_guard lock(mutex_);
+    auto json = LoadJsonUnlocked();
+    auto shares = json.value("fileShares", BuildDefaultFileSharesJson());
+    if (!shares.is_array())
+    {
+        shares = BuildDefaultFileSharesJson();
+    }
+    return shares;
+}
+
+void ConfigStore::SaveFileShares(const nlohmann::json& json)
+{
+    std::lock_guard lock(mutex_);
+    auto current = LoadJsonUnlocked();
+    auto shares = nlohmann::json::array();
+    if (json.is_array())
+    {
+        for (const auto& item : json)
+        {
+            if (!item.is_object())
+            {
+                continue;
+            }
+            const auto id = item.value("id", "");
+            const auto name = item.value("name", "");
+            const auto path = item.value("path", "");
+            if (id.empty() || name.empty() || path.empty())
+            {
+                continue;
+            }
+            shares.push_back({
+                {"id", id},
+                {"name", name},
+                {"path", path},
+            });
+        }
+    }
+    current["fileShares"] = shares;
+    SaveJsonUnlocked(current);
+}
+
 std::filesystem::path ConfigStore::DefaultDataPath()
 {
     return ExecutableDirectory() / "data";
@@ -213,6 +313,35 @@ nlohmann::json ConfigStore::BuildDefaultJson() const
         {"certificatePath", DefaultCertificatePath().string()},
         {"privateKeyPath", DefaultPrivateKeyPath().string()},
         {"trustedRootCertificatePath", ""},
+        {"schedulerState", BuildDefaultSchedulerStateJson()},
+        {"fileShares", BuildDefaultFileSharesJson()},
     };
+}
+
+nlohmann::json ConfigStore::BuildDefaultSchedulerStateJson() const
+{
+    return {
+        {"tasks", nlohmann::json::array()},
+        {"tags", nlohmann::json::array()},
+        {"scenes", nlohmann::json::array()},
+        {"settings",
+         {
+             {"horizonDays", 14},
+             {"overdueDays", 3},
+             {"dayStartHour", 8},
+             {"dayEndHour", 22},
+         }},
+    };
+}
+
+nlohmann::json ConfigStore::BuildDefaultFileSharesJson() const
+{
+    return nlohmann::json::array({
+        {
+            {"id", "default"},
+            {"name", "默认共享"},
+            {"path", (DefaultDataPath() / "shared").string()},
+        },
+    });
 }
 } // namespace spacestation

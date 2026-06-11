@@ -1,6 +1,6 @@
-import { CodeSlashOutline, CubeOutline, KeyOutline, TimerOutline, WifiOutline } from "@vicons/ionicons5";
+import { CodeSlashOutline, CubeOutline, FolderOpenOutline, KeyOutline, TimerOutline, WifiOutline } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "network" | "scheduler" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "network" | "scheduler" | "fileShare" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -41,11 +41,18 @@ export const tools: ToolDefinition[] = [
   {
     id: "scheduler",
     title: "任务调度",
-    description: "预留入口",
-    category: "Reserved",
+    description: "规划任务时间、依赖和执行顺序",
+    category: "Planning",
     icon: TimerOutline,
     path: "/tools/scheduler",
-    disabled: true,
+  },
+  {
+    id: "fileShare",
+    title: "共享文件",
+    description: "映射本机目录并上传下载文件",
+    category: "Storage",
+    icon: FolderOpenOutline,
+    path: "/tools/file-share",
   },
   {
     id: "runtime",

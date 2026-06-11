@@ -158,6 +158,76 @@ export interface ParsedP12Response {
   certificates: ParsedP12Certificate[];
 }
 
+export type SchedulerTaskStatus = "todo" | "done";
+export type SchedulerTaskPriority = "low" | "normal" | "high" | "urgent";
+
+export interface SchedulerTask {
+  id: string;
+  title: string;
+  dueAt: string;
+  estimatedMinutes: number;
+  priority: SchedulerTaskPriority;
+  tagIds: string[];
+  dependencyIds: string[];
+  status: SchedulerTaskStatus;
+  notes: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface SchedulerTag {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export interface SchedulerSettings {
+  horizonDays: number;
+  overdueDays: number;
+  dayStartHour: number;
+  dayEndHour: number;
+}
+
+export interface SchedulerScene {
+  id: string;
+  name: string;
+  activeTagIds: string[];
+  tagOrder: string[];
+  zoom: number;
+  scrollHours: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SchedulerState {
+  tasks: SchedulerTask[];
+  tags: SchedulerTag[];
+  settings: SchedulerSettings;
+  scenes: SchedulerScene[];
+}
+
+export interface FileShare {
+  id: string;
+  name: string;
+  path: string;
+  exists?: boolean;
+}
+
+export interface FileShareItem {
+  name: string;
+  path: string;
+  type: "directory" | "file" | "symlink";
+  size: number;
+  modifiedAt: number;
+}
+
+export interface FileShareListResponse {
+  share: FileShare;
+  path: string;
+  parentPath: string;
+  items: FileShareItem[];
+}
+
 const api = axios.create({
   baseURL: "/api",
   timeout: 10000,
@@ -220,4 +290,55 @@ export async function parseP12(payload: ParseP12Request): Promise<ParsedP12Respo
 export async function parseCertificate(payload: ParseCertificateRequest): Promise<ParsedCertificateResponse> {
   const { data } = await api.post<ParsedCertificateResponse>("/certificates/parse", payload);
   return data;
+}
+
+export async function fetchSchedulerState(): Promise<SchedulerState> {
+  const { data } = await api.get<SchedulerState>("/tools/scheduler/state");
+  return data;
+}
+
+export async function saveSchedulerState(payload: SchedulerState): Promise<void> {
+  await api.put("/tools/scheduler/state", payload);
+}
+
+export async function fetchFileShareState(): Promise<{ shares: FileShare[] }> {
+  const { data } = await api.get<{ shares: FileShare[] }>("/tools/file-share/state");
+  return data;
+}
+
+export async function saveFileShares(shares: FileShare[]): Promise<void> {
+  await api.put("/tools/file-share/shares", { shares });
+}
+
+export async function listFileShare(shareId: string, path = ""): Promise<FileShareListResponse> {
+  const { data } = await api.get<FileShareListResponse>("/tools/file-share/list", {
+    params: { shareId, path },
+  });
+  return data;
+}
+
+export async function uploadFileShareFiles(shareId: string, path: string, files: FileList | File[]): Promise<void> {
+  const formData = new FormData();
+  formData.append("shareId", shareId);
+  formData.append("path", path);
+  Array.from(files).forEach((file) => {
+    formData.append("files", file);
+  });
+  await api.post("/tools/file-share/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 120000,
+  });
+}
+
+export async function createFileShareFolder(payload: { shareId: string; path: string; name: string }): Promise<void> {
+  await api.post("/tools/file-share/folder", payload);
+}
+
+export async function deleteFileShareItem(payload: { shareId: string; path: string }): Promise<void> {
+  await api.delete("/tools/file-share/item", { data: payload });
+}
+
+export function fileShareDownloadUrl(shareId: string, path: string) {
+  const params = new URLSearchParams({ shareId, path });
+  return `/api/tools/file-share/download?${params.toString()}`;
 }
