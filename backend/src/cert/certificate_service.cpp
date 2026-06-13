@@ -4,6 +4,7 @@
 #include <openssl/bn.h>
 #include <openssl/crypto.h>
 #include <openssl/ec.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/pkcs12.h>
@@ -237,6 +238,71 @@ std::string Pkcs12Der(PKCS12* pkcs12)
         throw std::runtime_error("P12 导出失败。");
     }
     return BioToString(bio.get());
+}
+
+std::string OpenSslErrorMessage()
+{
+    std::string message;
+    unsigned long code = 0;
+    while ((code = ERR_get_error()) != 0)
+    {
+        char buffer[256] = {};
+        ERR_error_string_n(code, buffer, sizeof(buffer));
+        if (!message.empty())
+        {
+            message += "; ";
+        }
+        message += buffer;
+    }
+    return message;
+}
+
+const char* Pkcs12Password(const std::string& password)
+{
+    return password.empty() ? nullptr : password.c_str();
+}
+
+bool ParsePkcs12(PKCS12* pkcs12,
+                 const std::string& password,
+                 EVP_PKEY** private_key,
+                 X509** certificate,
+                 STACK_OF(X509)** ca_chain)
+{
+    const auto* password_arg = Pkcs12Password(password);
+    if (PKCS12_parse(pkcs12, password_arg, private_key, certificate, ca_chain) == 1)
+    {
+        return true;
+    }
+    if (!password.empty())
+    {
+        return false;
+    }
+
+    ERR_clear_error();
+    return PKCS12_parse(pkcs12, "", private_key, certificate, ca_chain) == 1;
+}
+
+void EnsurePkcs12CanParse(const std::string& der, const std::string& password)
+{
+    BioPtr bio(BIO_new_mem_buf(der.data(), static_cast<int>(der.size())), BIO_free);
+    Pkcs12Ptr pkcs12(d2i_PKCS12_bio(bio.get(), nullptr), PKCS12_free);
+    if (!pkcs12)
+    {
+        throw std::runtime_error("P12 生成后校验失败。");
+    }
+
+    EVP_PKEY* raw_private_key = nullptr;
+    X509* raw_certificate = nullptr;
+    STACK_OF(X509)* raw_ca_chain = nullptr;
+    if (!ParsePkcs12(pkcs12.get(), password, &raw_private_key, &raw_certificate, &raw_ca_chain))
+    {
+        const auto openssl_error = OpenSslErrorMessage();
+        throw std::runtime_error(openssl_error.empty() ? "P12 生成后密码校验失败。" : "P12 生成后密码校验失败：" + openssl_error);
+    }
+
+    EvpPkeyPtr private_key(raw_private_key, EVP_PKEY_free);
+    X509Ptr certificate(raw_certificate, X509_free);
+    OpenSslPtr<STACK_OF(X509), X509StackFree> ca_chain(raw_ca_chain, X509StackFree);
 }
 
 std::string PublicKeyPem(EVP_PKEY* key)
@@ -1195,26 +1261,33 @@ nlohmann::json CreatePkcs12(const nlohmann::json& request)
             throw std::runtime_error("证书和私钥不匹配。");
         }
 
-        Pkcs12Ptr pkcs12(PKCS12_create(password.c_str(),
+        const auto* password_arg = Pkcs12Password(password);
+        Pkcs12Ptr pkcs12(PKCS12_create(password_arg,
                                        friendly_name.c_str(),
                                        private_key.get(),
                                        certificate.get(),
                                        ca_chain.get(),
-                                       0,
-                                       0,
-                                       0,
-                                       0,
+                                       NID_pbe_WithSHA1And3_Key_TripleDES_CBC,
+                                       NID_pbe_WithSHA1And3_Key_TripleDES_CBC,
+                                       PKCS12_DEFAULT_ITER,
+                                       PKCS12_DEFAULT_ITER,
                                        0),
                          PKCS12_free);
         if (!pkcs12)
         {
             throw std::runtime_error("P12 合成失败。");
         }
+        if (PKCS12_set_mac(pkcs12.get(), password_arg, -1, nullptr, 0, PKCS12_DEFAULT_ITER, EVP_sha1()) != 1)
+        {
+            throw std::runtime_error("P12 SHA1 MAC 设置失败。");
+        }
+        const auto p12_der = Pkcs12Der(pkcs12.get());
+        EnsurePkcs12CanParse(p12_der, password);
 
         return {
             {"ok", true},
             {"filename", friendly_name.empty() ? "certificate.p12" : friendly_name + ".p12"},
-            {"p12Base64", Base64Encode(Pkcs12Der(pkcs12.get()))},
+            {"p12Base64", Base64Encode(p12_der)},
         };
     }
     catch (const std::exception& error)
@@ -1245,7 +1318,7 @@ nlohmann::json ParsePkcs12(const nlohmann::json& request)
         EVP_PKEY* raw_private_key = nullptr;
         X509* raw_certificate = nullptr;
         STACK_OF(X509)* raw_ca_chain = nullptr;
-        if (PKCS12_parse(pkcs12.get(), password.c_str(), &raw_private_key, &raw_certificate, &raw_ca_chain) != 1)
+        if (!ParsePkcs12(pkcs12.get(), password, &raw_private_key, &raw_certificate, &raw_ca_chain))
         {
             throw std::runtime_error("P12 密码错误或内容无效。");
         }

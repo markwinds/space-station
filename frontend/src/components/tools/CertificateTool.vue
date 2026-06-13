@@ -801,8 +801,13 @@ async function createP12Now() {
       return;
     }
 
-    downloadBase64(p12Result.value.p12Base64, p12Result.value.filename || "certificate.p12", "application/x-pkcs12");
-    p12Message.value = { type: "success", text: `${p12Result.value.filename} 已生成。` };
+    const filename = p12Result.value.filename || "certificate.p12";
+    downloadBase64(p12Result.value.p12Base64, filename, "application/x-pkcs12");
+    parseP12Base64.value = p12Result.value.p12Base64;
+    parseP12Filename.value = filename;
+    parseP12Password.value = p12Form.password || "";
+    parseP12Result.value = null;
+    p12Message.value = { type: "success", text: `${filename} 已生成。` };
   } catch {
     p12Message.value = { type: "error", text: "P12 合成失败，请确认后端正在运行。" };
   } finally {
