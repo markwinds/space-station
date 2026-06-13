@@ -35,7 +35,7 @@
                     </n-switch>
                   </n-form-item>
                   <n-form-item label="有效天数">
-                    <n-input-number v-model:value="generateForm.validDays" :min="1" :max="36500" />
+                    <n-input-number v-model:value="generateForm.validDays" :min="1" :max="generateForm.isCa ? 36500 : 825" />
                   </n-form-item>
                   <n-form-item label="密钥算法">
                     <n-select v-model:value="generateForm.keyAlgorithm" :options="keyAlgorithmOptions" />
@@ -200,7 +200,7 @@
 
                 <div class="certificate-form-grid compact">
                   <n-form-item label="有效天数">
-                    <n-input-number v-model:value="signForm.validDays" :min="1" :max="36500" />
+                    <n-input-number v-model:value="signForm.validDays" :min="1" :max="825" />
                   </n-form-item>
                   <n-form-item>
                     <template #label>
@@ -712,6 +712,8 @@ async function generate() {
     if (payload.isCa) {
       payload.validDays = Math.max(payload.validDays, 3650);
       payload.keyUsage = ["critical", "keyCertSign", "cRLSign"];
+    } else {
+      payload.validDays = Math.min(payload.validDays, 825);
     }
     generateResult.value = await generateCertificateBundle(payload);
     generateMessage.value = generateResult.value.ok
@@ -733,6 +735,7 @@ async function sign() {
       san: buildSan(signSan),
       keyUsage: signForm.keyUsage,
       extendedKeyUsage: signForm.extendedKeyUsage,
+      validDays: Math.min(signForm.validDays, 825),
       serialNumber: signForm.serialNumber || undefined,
     };
     signResult.value = await signCertificateRequest(payload);

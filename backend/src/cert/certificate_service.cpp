@@ -1016,9 +1016,9 @@ void SetSerialNumber(X509* certificate, const nlohmann::json& request)
     }
 }
 
-void SetValidity(X509* certificate, int days)
+void SetValidity(X509* certificate, int days, bool is_ca)
 {
-    const auto safe_days = std::clamp(days, 1, 36500);
+    const auto safe_days = std::clamp(days, 1, is_ca ? 36500 : 825);
     if (X509_gmtime_adj(X509_getm_notBefore(certificate), 0) == nullptr ||
         X509_gmtime_adj(X509_getm_notAfter(certificate), static_cast<long>(safe_days) * 24L * 60L * 60L) == nullptr)
     {
@@ -1071,7 +1071,7 @@ X509Ptr BuildCertificate(EVP_PKEY* subject_key,
     }
 
     SetSerialNumber(certificate.get(), request);
-    SetValidity(certificate.get(), IntValue(request, "validDays", is_ca ? 3650 : 825));
+    SetValidity(certificate.get(), IntValue(request, "validDays", is_ca ? 3650 : 825), is_ca);
 
     if (X509_set_subject_name(certificate.get(), subject) != 1)
     {
