@@ -204,7 +204,12 @@ std::string SanitizeFileName(std::string file_name)
 
 std::filesystem::path NormalizeRootPath(const std::string& path)
 {
-    const auto absolute = std::filesystem::absolute(std::filesystem::path(path)).lexically_normal();
+    auto parsed = std::filesystem::path(path);
+    if (!parsed.is_absolute())
+    {
+        parsed = ConfigStore::DefaultDataPath().parent_path() / parsed;
+    }
+    const auto absolute = std::filesystem::absolute(parsed).lexically_normal();
     std::error_code ec;
     const auto canonical = std::filesystem::weakly_canonical(absolute, ec);
     return ec ? absolute : canonical;

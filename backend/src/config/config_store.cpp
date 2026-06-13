@@ -14,6 +14,8 @@ namespace spacestation
 {
 namespace
 {
+std::filesystem::path ExecutableDirectory();
+
 int ClampPort(int port)
 {
     if (port < 1 || port > 65535)
@@ -42,6 +44,72 @@ std::string StringOrFallback(const nlohmann::json& json, const char* key, const 
     return it->get<std::string>();
 }
 
+std::filesystem::path RelativeDefaultDataPath()
+{
+    return "data";
+}
+
+std::filesystem::path RelativeDefaultCertificatePath()
+{
+    return RelativeDefaultDataPath() / "tls" / "server.crt";
+}
+
+std::filesystem::path RelativeDefaultPrivateKeyPath()
+{
+    return RelativeDefaultDataPath() / "tls" / "server.key";
+}
+
+std::filesystem::path ResolveExecutableRelativePath(const std::string& path)
+{
+    const auto parsed = std::filesystem::path(path);
+    if (parsed.is_absolute())
+    {
+        return parsed.lexically_normal();
+    }
+    return (ExecutableDirectory() / parsed).lexically_normal();
+}
+
+std::string ResolvePathString(const std::string& path)
+{
+    if (path.empty())
+    {
+        return {};
+    }
+    return ResolveExecutableRelativePath(path).string();
+}
+
+bool IsPathInside(const std::filesystem::path& root, const std::filesystem::path& path)
+{
+    const auto normalized_root = root.lexically_normal();
+    const auto normalized_path = path.lexically_normal();
+    auto root_it = normalized_root.begin();
+    auto path_it = normalized_path.begin();
+    for (; root_it != normalized_root.end(); ++root_it, ++path_it)
+    {
+        if (path_it == normalized_path.end() || *root_it != *path_it)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string DisplayPath(const std::filesystem::path& path)
+{
+    const auto root = ExecutableDirectory().lexically_normal();
+    const auto normalized = path.lexically_normal();
+    if (IsPathInside(root, normalized))
+    {
+        std::error_code ec;
+        const auto relative = std::filesystem::relative(normalized, root, ec);
+        if (!ec && !relative.empty() && relative != ".")
+        {
+            return relative.generic_string();
+        }
+    }
+    return normalized.string();
+}
+
 std::string OptionalString(const nlohmann::json& json, const char* key)
 {
     const auto it = json.find(key);
@@ -50,15 +118,6 @@ std::string OptionalString(const nlohmann::json& json, const char* key)
         return {};
     }
     return it->get<std::string>();
-}
-
-std::string NormalizeLogLevel(std::string level)
-{
-    if (level == "trace" || level == "debug" || level == "info" || level == "warn" || level == "error")
-    {
-        return level;
-    }
-    return "info";
 }
 
 std::filesystem::path ExecutableDirectory()
@@ -89,6 +148,15 @@ std::filesystem::path ExecutableDirectory()
 #endif
     return std::filesystem::current_path();
 }
+
+std::string NormalizeLogLevel(std::string level)
+{
+    if (level == "trace" || level == "debug" || level == "info" || level == "warn" || level == "error")
+    {
+        return level;
+    }
+    return "info";
+}
 } // namespace
 
 ConfigStore::ConfigStore() : ConfigStore(DefaultConfigPath())
@@ -104,14 +172,14 @@ AppConfig ConfigStore::Load()
     std::lock_guard lock(mutex_);
     const auto json = LoadJsonUnlocked();
     AppConfig config;
-    config.data_path = json.value("dataPath", DefaultDataPath().string());
+    config.data_path = ResolvePathString(json.value("dataPath", RelativeDefaultDataPath().string()));
     config.log_level = NormalizeLogLevel(json.value("logLevel", "info"));
     config.port = ClampPort(json.value("port", 443));
     config.http_enabled = json.value("httpEnabled", false);
     config.http_port = ClampHttpPort(json.value("httpPort", 80));
-    config.certificate_path = StringOrFallback(json, "certificatePath", DefaultCertificatePath());
-    config.private_key_path = StringOrFallback(json, "privateKeyPath", DefaultPrivateKeyPath());
-    config.trusted_root_certificate_path = OptionalString(json, "trustedRootCertificatePath");
+    config.certificate_path = ResolvePathString(StringOrFallback(json, "certificatePath", RelativeDefaultCertificatePath()));
+    config.private_key_path = ResolvePathString(StringOrFallback(json, "privateKeyPath", RelativeDefaultPrivateKeyPath()));
+    config.trusted_root_certificate_path = ResolvePathString(OptionalString(json, "trustedRootCertificatePath"));
     return config;
 }
 
@@ -129,12 +197,12 @@ void ConfigStore::SavePartial(const nlohmann::json& patch)
     current["port"] = ClampPort(current.value("port", 443));
     current["httpEnabled"] = current.value("httpEnabled", false);
     current["httpPort"] = ClampHttpPort(current.value("httpPort", 80));
-    current["certificatePath"] = StringOrFallback(current, "certificatePath", DefaultCertificatePath());
-    current["privateKeyPath"] = StringOrFallback(current, "privateKeyPath", DefaultPrivateKeyPath());
+    current["certificatePath"] = StringOrFallback(current, "certificatePath", RelativeDefaultCertificatePath());
+    current["privateKeyPath"] = StringOrFallback(current, "privateKeyPath", RelativeDefaultPrivateKeyPath());
     current["trustedRootCertificatePath"] = OptionalString(current, "trustedRootCertificatePath");
     if (!current.contains("dataPath") || !current["dataPath"].is_string() || current["dataPath"].get<std::string>().empty())
     {
-        current["dataPath"] = DefaultDataPath().string();
+        current["dataPath"] = RelativeDefaultDataPath().string();
     }
     SaveJsonUnlocked(current);
 }
@@ -142,16 +210,17 @@ void ConfigStore::SavePartial(const nlohmann::json& patch)
 nlohmann::json ConfigStore::ToJson(const AppConfig& config) const
 {
     return {
-        {"dataPath", config.data_path},
+        {"dataPath", DisplayPath(config.data_path)},
         {"logLevel", config.log_level},
         {"port", config.port},
         {"httpEnabled", config.http_enabled},
         {"httpPort", config.http_port},
-        {"certificatePath", config.certificate_path},
-        {"privateKeyPath", config.private_key_path},
-        {"trustedRootCertificatePath", config.trusted_root_certificate_path},
+        {"certificatePath", DisplayPath(config.certificate_path)},
+        {"privateKeyPath", DisplayPath(config.private_key_path)},
+        {"trustedRootCertificatePath",
+         config.trusted_root_certificate_path.empty() ? "" : DisplayPath(config.trusted_root_certificate_path)},
         {"configPath", config_path_.string()},
-        {"logPath", (std::filesystem::path(config.data_path) / "logs" / "space-station.log").string()},
+        {"logPath", DisplayPath(std::filesystem::path(config.data_path) / "logs" / "space-station.log")},
     };
 }
 
@@ -305,13 +374,13 @@ void ConfigStore::SaveJsonUnlocked(const nlohmann::json& json)
 nlohmann::json ConfigStore::BuildDefaultJson() const
 {
     return {
-        {"dataPath", DefaultDataPath().string()},
+        {"dataPath", RelativeDefaultDataPath().generic_string()},
         {"logLevel", "info"},
         {"port", 443},
         {"httpEnabled", false},
         {"httpPort", 80},
-        {"certificatePath", DefaultCertificatePath().string()},
-        {"privateKeyPath", DefaultPrivateKeyPath().string()},
+        {"certificatePath", RelativeDefaultCertificatePath().generic_string()},
+        {"privateKeyPath", RelativeDefaultPrivateKeyPath().generic_string()},
         {"trustedRootCertificatePath", ""},
         {"schedulerState", BuildDefaultSchedulerStateJson()},
         {"fileShares", BuildDefaultFileSharesJson()},
@@ -340,7 +409,7 @@ nlohmann::json ConfigStore::BuildDefaultFileSharesJson() const
         {
             {"id", "default"},
             {"name", "默认共享"},
-            {"path", (DefaultDataPath() / "shared").string()},
+            {"path", (RelativeDefaultDataPath() / "shared").generic_string()},
         },
     });
 }
