@@ -91,8 +91,14 @@
           <n-button size="small" tertiary @click="panLanes(-1)">左移</n-button>
           <n-button size="small" tertiary @click="panLanes(1)">右移</n-button>
           <n-button size="small" quaternary @click="resetViewport">回到现在</n-button>
-          <span class="board-hint">滚轮滚动时间，Shift + 滚轮横移，Ctrl/⌘ + 滚轮缩放</span>
+          <span class="board-hint">桌面端：滚轮滚动时间，Shift + 滚轮横移，Ctrl/⌘ + 滚轮缩放</span>
         </n-space>
+      </div>
+      <div class="mobile-action-bar" aria-label="移动端快捷操作">
+        <n-button size="small" tertiary @click="selectAdjacentRecommendedTask(-1)">上一个</n-button>
+        <n-button size="small" tertiary @click="selectAdjacentRecommendedTask(1)">下一个</n-button>
+        <n-button size="small" tertiary :disabled="!selectedTask" @click="jumpToSelectedTask">定位选中</n-button>
+        <n-button size="small" quaternary @click="resetViewport">回到现在</n-button>
       </div>
 
       <div ref="boardRef" class="scheduler-board" @wheel.prevent="handleBoardWheel">
@@ -162,7 +168,7 @@
             :key="task.id"
             class="recommend-row"
             :class="{ blocked: isBlocked(task) }"
-            @click="selectTask(task.id)"
+            @click="selectTask(task.id, true)"
           >
             <strong>{{ index + 1 }}</strong>
             <span>{{ task.title }}</span>
@@ -276,6 +282,7 @@ const laneGap = 16;
 const minLaneWidth = 176;
 const taskInset = 12;
 const maxTaskWidth = 184;
+const mobileBreakpoint = 720;
 
 const state = reactive<SchedulerState>({
   tasks: [],
@@ -294,6 +301,7 @@ const boardSize = reactive({ width: 820, height: 620 });
 const scrollHours = ref(0);
 const zoom = ref(1);
 const selectedTaskId = ref("");
+const isMobileViewport = ref(false);
 const activeTagIds = ref<string[]>([]);
 const newTagName = ref("");
 const sceneName = ref("");
@@ -341,11 +349,17 @@ const dependencyHighlight = computed(() => buildDependencyHighlight(selectedTask
 const doneTasks = computed(() => state.tasks.filter((task) => task.status === "done"));
 const overdueTasks = computed(() => state.tasks.filter((task) => task.status !== "done" && Date.parse(task.dueAt) < Date.now()));
 const recommendedTasks = computed(() => buildRecommendedOrder(visibleTasks.value));
+const selectedRecommendedIndex = computed(() =>
+  recommendedTasks.value.findIndex((task) => task.id === selectedTaskId.value),
+);
 const lanes = computed(() => [
   { id: "", name: "未分类", color: "#64748b" },
   ...state.tags.map((tag) => ({ id: tag.id, name: tag.name, color: tag.color })),
 ]);
-const laneWidth = computed(() => Math.max(minLaneWidth, (boardSize.width - timeGutterWidth - laneGap) / Math.max(1, lanes.value.length)));
+const laneWidth = computed(() => {
+  const compactLaneWidth = isMobileViewport.value ? 148 : minLaneWidth;
+  return Math.max(compactLaneWidth, (boardSize.width - timeGutterWidth - laneGap) / Math.max(1, lanes.value.length));
+});
 const taskWidth = computed(() => Math.max(112, Math.min(maxTaskWidth, laneWidth.value - taskInset * 2)));
 const stageWidth = computed(() => Math.max(boardSize.width, timeGutterWidth + laneGap + lanes.value.length * laneWidth.value));
 const laneBackgrounds = computed(() =>
@@ -497,12 +511,17 @@ onMounted(async () => {
   } catch {
     // Keep the empty local state visible when the backend is not reachable in dev.
   }
+  updateViewportMode();
   resizeObserver = new ResizeObserver(([entry]) => {
     if (!entry) return;
-    boardSize.width = Math.max(520, Math.floor(entry.contentRect.width));
-    boardSize.height = Math.max(520, Math.floor(entry.contentRect.height));
+    updateViewportMode();
+    const minBoardWidth = isMobileViewport.value ? 320 : 520;
+    const minBoardHeight = isMobileViewport.value ? 440 : 520;
+    boardSize.width = Math.max(minBoardWidth, Math.floor(entry.contentRect.width));
+    boardSize.height = Math.max(minBoardHeight, Math.floor(entry.contentRect.height));
     clampScroll();
   });
+  window.addEventListener("resize", updateViewportMode);
   if (boardRef.value) {
     resizeObserver.observe(boardRef.value);
   }
@@ -510,6 +529,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("resize", updateViewportMode);
   resizeObserver?.disconnect();
   if (saveTimer) {
     window.clearTimeout(saveTimer);
@@ -613,8 +633,46 @@ function applyTagOrder(tagOrder: string[]) {
   });
 }
 
-function selectTask(id: string) {
+function selectTask(id: string, focusOnBoard = false) {
   selectedTaskId.value = id;
+  if (focusOnBoard) {
+    requestAnimationFrame(() => focusTaskOnBoard(id));
+  }
+}
+
+function selectAdjacentRecommendedTask(direction: -1 | 1) {
+  if (recommendedTasks.value.length === 0) {
+    return;
+  }
+  const currentIndex = selectedRecommendedIndex.value >= 0 ? selectedRecommendedIndex.value : direction > 0 ? -1 : 0;
+  const nextIndex = clamp(currentIndex + direction, 0, recommendedTasks.value.length - 1);
+  selectTask(recommendedTasks.value[nextIndex].id, true);
+}
+
+function jumpToSelectedTask() {
+  if (!selectedTask.value) {
+    return;
+  }
+  focusTaskOnBoard(selectedTask.value.id);
+}
+
+function focusTaskOnBoard(id: string) {
+  const task = state.tasks.find((item) => item.id === id);
+  if (!task || !boardRef.value) {
+    return;
+  }
+  const taskIndex = visibleTasks.value.findIndex((item) => item.id === id);
+  const position = taskPosition(task, taskIndex);
+  scrollHours.value = (Date.parse(task.dueAt) - Date.now()) / hourMs() + boardSize.height * 0.42 / pixelsPerHour.value;
+  clampScroll();
+  boardRef.value.scrollTo({
+    left: Math.max(0, position.x - 32),
+    behavior: "smooth",
+  });
+}
+
+function updateViewportMode() {
+  isMobileViewport.value = window.matchMedia(`(max-width: ${mobileBreakpoint}px)`).matches;
 }
 
 function selectTaskFromCanvas(id: string, event: { cancelBubble?: boolean }) {
@@ -1285,6 +1343,16 @@ function clamp(value: number, min: number, max: number) {
 
   .scheduler-board-card {
     margin-inline: -4px;
+    border-radius: 14px;
+    order: -1;
+  }
+
+  .scheduler-sidebar {
+    order: 1;
+  }
+
+  .scheduler-inspector {
+    order: 2;
   }
 
   .board-toolbar {
@@ -1302,6 +1370,20 @@ function clamp(value: number, min: number, max: number) {
     overflow-x: auto;
   }
 
+  .mobile-action-bar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(255, 255, 255, 0.9);
+  }
+
+  .mobile-action-bar :deep(.n-button) {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
   .board-controls :deep(.n-space) {
     flex-wrap: nowrap !important;
     min-width: max-content;
@@ -1312,8 +1394,21 @@ function clamp(value: number, min: number, max: number) {
   }
 
   .scheduler-board {
-    height: 560px;
+    height: min(62vh, 560px);
+    min-height: 440px;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-x pan-y;
+  }
+
+  .scheduler-sidebar :deep(.n-card),
+  .scheduler-inspector :deep(.n-card) {
+    border-radius: 14px;
+  }
+
+  .scheduler-sidebar :deep(.n-card-header),
+  .scheduler-inspector :deep(.n-card-header) {
+    padding-bottom: 8px;
   }
 
   .recommend-row {
@@ -1329,8 +1424,14 @@ function clamp(value: number, min: number, max: number) {
 }
 
 @media (max-width: 480px) {
+  .mobile-action-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .scheduler-board {
-    height: 520px;
+    height: 58vh;
+    min-height: 420px;
   }
 }
+
 </style>

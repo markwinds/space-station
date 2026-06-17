@@ -1,0 +1,18 @@
+{
+  "name": "Space Station",
+  "short_name": "Space Station",
+  "description": "轻量工具舱，支持离线访问常用工具。",
+  "start_url": "/web/",
+  "scope": "/web/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/web/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

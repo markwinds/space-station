@@ -3,5 +3,6 @@ import VueKonva from "vue-konva";
 import App from "./App.vue";
 import router from "./router";
 import "./styles.css";
+import "./registerServiceWorker";
 
 createApp(App).use(router).use(VueKonva).mount("#app");
