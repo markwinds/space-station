@@ -45,6 +45,9 @@ class ConfigStore
     nlohmann::json BuildDefaultJson() const;
     nlohmann::json BuildDefaultSchedulerStateJson() const;
     nlohmann::json BuildDefaultFileSharesJson() const;
+    std::filesystem::path DatabasePathForConfigJson(const nlohmann::json& json) const;
+    nlohmann::json LoadBusinessJsonUnlocked(const std::string& key, const nlohmann::json& fallback);
+    void SaveBusinessJsonUnlocked(const std::string& key, const nlohmann::json& json);
 
     std::filesystem::path config_path_;
     mutable std::mutex mutex_;

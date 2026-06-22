@@ -1,6 +1,6 @@
-import { CodeSlashOutline, CubeOutline, FolderOpenOutline, KeyOutline, TimerOutline, WifiOutline } from "@vicons/ionicons5";
+import { CodeSlashOutline, CubeOutline, FolderOpenOutline, KeyOutline, TimerOutline } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "network" | "scheduler" | "fileShare" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "scheduler" | "fileShare" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -28,15 +28,6 @@ export const tools: ToolDefinition[] = [
     category: "Security",
     icon: KeyOutline,
     path: "/tools/certificate",
-  },
-  {
-    id: "network",
-    title: "网络工具",
-    description: "预留入口",
-    category: "Reserved",
-    icon: WifiOutline,
-    path: "/tools/network",
-    disabled: true,
   },
   {
     id: "scheduler",

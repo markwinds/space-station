@@ -10,6 +10,9 @@
               <p>轻量工具舱</p>
             </div>
           </router-link>
+          <nav class="topbar-actions" aria-label="全局操作">
+            <router-link class="topbar-action" to="/settings/runtime">运行配置</router-link>
+          </nav>
         </header>
 
         <main class="workspace">

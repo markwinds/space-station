@@ -9,7 +9,7 @@
 
     <div class="tool-grid">
       <router-link
-        v-for="tool in tools"
+        v-for="tool in dashboardTools"
         :key="tool.id"
         :class="['tool-card', { disabled: tool.disabled }]"
         :to="tool.disabled ? '/' : tool.path"
@@ -30,6 +30,8 @@
 import { NIcon } from "naive-ui";
 import { RouterLink } from "vue-router";
 import { tools } from "@/tools";
+
+const dashboardTools = tools.filter((tool) => tool.id !== "runtime");
 
 function handleDisabledClick(event: MouseEvent, disabled?: boolean) {
   if (disabled) {

@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Drogon CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 set(SPACESTATION_FRONTEND_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../frontend/dist")
 set(SPACESTATION_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -50,6 +51,7 @@ target_link_libraries(space-station
         PRIVATE
         Drogon::Drogon
         nlohmann_json::nlohmann_json
+        unofficial::sqlite3::sqlite3
         OpenSSL::Crypto)
 
 if (WIN32)

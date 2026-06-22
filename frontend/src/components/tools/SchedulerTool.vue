@@ -34,7 +34,7 @@
           />
           <n-input v-model:value="draftNotes" type="textarea" placeholder="备注" />
           <n-button type="primary" block :disabled="!draftTitle.trim()" @click="addTask">
-            加入时间井
+            加入时间
           </n-button>
         </n-space>
       </n-card>
@@ -102,7 +102,13 @@
       </div>
 
       <div ref="boardRef" class="scheduler-board" @wheel.prevent="handleBoardWheel">
-        <v-stage :config="{ width: stageWidth, height: boardSize.height }">
+        <v-stage
+          :config="{ width: stageWidth, height: boardSize.height }"
+          @touchstart="handleStageTouchStart"
+          @touchmove="handleStageTouchMove"
+          @touchend="handleStageTouchEnd"
+          @touchcancel="handleStageTouchEnd"
+        >
           <v-layer>
             <v-rect
               :config="boardBackgroundConfig"
@@ -243,6 +249,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import type { KonvaEventObject } from "konva/lib/Node";
 import {
   NButton,
   NCard,
@@ -268,6 +275,8 @@ import {
   type SchedulerTask,
   type SchedulerTaskPriority,
 } from "@/api";
+
+type KonvaTouchEvent = KonvaEventObject<TouchEvent>;
 
 const tagPalette = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be123c"];
 const priorityWeight: Record<SchedulerTaskPriority, number> = {
@@ -314,6 +323,8 @@ const draftTagIds = ref<string[]>([]);
 const draftDependencyIds = ref<string[]>([]);
 const draftNotes = ref("");
 const dragPositions = reactive<Record<string, { x: number; y: number }>>({});
+const touchPan = reactive({ active: false, lastX: 0, lastY: 0 });
+const pinchZoom = reactive({ active: false, distance: 0, zoom: 1, centerY: 0, centerTime: 0 });
 let resizeObserver: ResizeObserver | null = null;
 let saveTimer: number | null = null;
 
@@ -764,6 +775,122 @@ function handleLaneDragEnd(id: string, event: { target: { x: (value?: number) =>
   event.target.x(laneX(toIndex + 1));
   event.target.y(6);
   scheduleSave();
+}
+
+function handleStageTouchStart(event: KonvaTouchEvent) {
+  if (!isMobileViewport.value) {
+    touchPan.active = false;
+    pinchZoom.active = false;
+    return;
+  }
+  if (event.evt.touches.length >= 2) {
+    startPinchZoom(event);
+    return;
+  }
+  if (isEventOnDraggableNode(event)) {
+    touchPan.active = false;
+    pinchZoom.active = false;
+    return;
+  }
+  const touch = event.evt?.touches?.[0];
+  if (!touch) {
+    touchPan.active = false;
+    return;
+  }
+  touchPan.active = true;
+  touchPan.lastX = touch.clientX;
+  touchPan.lastY = touch.clientY;
+}
+
+function handleStageTouchMove(event: KonvaTouchEvent) {
+  if (event.evt.touches.length >= 2) {
+    updatePinchZoom(event);
+    return;
+  }
+  pinchZoom.active = false;
+  if (!touchPan.active) {
+    return;
+  }
+  const touch = event.evt?.touches?.[0];
+  if (!touch) {
+    handleStageTouchEnd();
+    return;
+  }
+  event.evt?.preventDefault?.();
+  const deltaX = touch.clientX - touchPan.lastX;
+  const deltaY = touch.clientY - touchPan.lastY;
+  if (boardRef.value) {
+    boardRef.value.scrollLeft -= deltaX;
+  }
+  scrollHours.value += deltaY / pixelsPerHour.value;
+  clampScroll();
+  touchPan.lastX = touch.clientX;
+  touchPan.lastY = touch.clientY;
+}
+
+function handleStageTouchEnd() {
+  touchPan.active = false;
+  pinchZoom.active = false;
+}
+
+function startPinchZoom(event: KonvaTouchEvent) {
+  const metrics = touchPairMetrics(event.evt.touches);
+  if (!metrics) {
+    pinchZoom.active = false;
+    return;
+  }
+  event.evt.preventDefault();
+  touchPan.active = false;
+  pinchZoom.active = true;
+  pinchZoom.distance = metrics.distance;
+  pinchZoom.zoom = zoom.value;
+  pinchZoom.centerY = metrics.centerY;
+  pinchZoom.centerTime = viewportStart.value - metrics.centerY / pixelsPerHour.value * hourMs();
+}
+
+function updatePinchZoom(event: KonvaTouchEvent) {
+  if (!pinchZoom.active) {
+    startPinchZoom(event);
+    return;
+  }
+  const metrics = touchPairMetrics(event.evt.touches);
+  if (!metrics || pinchZoom.distance <= 0) {
+    handleStageTouchEnd();
+    return;
+  }
+  event.evt.preventDefault();
+  const nextZoom = clamp(pinchZoom.zoom * (metrics.distance / pinchZoom.distance), 0.45, 3);
+  zoom.value = nextZoom;
+  scrollHours.value = (pinchZoom.centerTime - Date.now()) / hourMs() + metrics.centerY / pixelsPerHour.value;
+  pinchZoom.centerY = metrics.centerY;
+  clampScroll();
+}
+
+function touchPairMetrics(touches: TouchList) {
+  const first = touches[0];
+  const second = touches[1];
+  if (!first || !second) {
+    return null;
+  }
+  const deltaX = second.clientX - first.clientX;
+  const deltaY = second.clientY - first.clientY;
+  const boardRect = boardRef.value?.getBoundingClientRect();
+  const centerY = (first.clientY + second.clientY) / 2 - (boardRect?.top ?? 0);
+  return {
+    distance: Math.hypot(deltaX, deltaY),
+    centerY: clamp(centerY, 0, boardSize.height),
+  };
+}
+
+function isEventOnDraggableNode(event: KonvaTouchEvent) {
+  let node: { draggable?: () => boolean; getParent?: () => unknown } | null = event.target;
+  while (node) {
+    if (node.draggable?.()) {
+      return true;
+    }
+    node = (node.getParent?.() ?? null) as typeof node;
+  }
+  return false;
 }
 
 function taskGroupConfig(task: SchedulerTask) {
@@ -1226,8 +1353,8 @@ function clamp(value: number, min: number, max: number) {
 <style scoped>
 .scheduler-layout {
   display: grid;
-  grid-template-columns: 280px minmax(520px, 1fr) 320px;
-  gap: 16px;
+  grid-template-columns: clamp(240px, 18vw, 280px) minmax(640px, 1fr) clamp(280px, 20vw, 320px);
+  gap: 14px;
   height: calc(100vh - 150px);
   min-height: 720px;
 }
@@ -1284,6 +1411,11 @@ function clamp(value: number, min: number, max: number) {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  touch-action: none;
+}
+
+.scheduler-board :deep(.konvajs-content),
+.scheduler-board :deep(canvas) {
   touch-action: none;
 }
 
@@ -1398,7 +1530,7 @@ function clamp(value: number, min: number, max: number) {
     min-height: 440px;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    touch-action: pan-x pan-y;
+    touch-action: none;
   }
 
   .scheduler-sidebar :deep(.n-card),

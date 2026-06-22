@@ -1,7 +1,11 @@
 #include "config/config_store.hpp"
 
+#include <sqlite3.h>
+
 #include <array>
 #include <fstream>
+#include <memory>
+#include <stdexcept>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #elif defined(_WIN32)
@@ -15,6 +19,122 @@ namespace spacestation
 namespace
 {
 std::filesystem::path ExecutableDirectory();
+
+struct SqliteDeleter
+{
+    void operator()(sqlite3* db) const
+    {
+        if (db)
+        {
+            sqlite3_close(db);
+        }
+    }
+};
+
+using SqliteDb = std::unique_ptr<sqlite3, SqliteDeleter>;
+
+struct StatementDeleter
+{
+    void operator()(sqlite3_stmt* statement) const
+    {
+        if (statement)
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+};
+
+using SqliteStatement = std::unique_ptr<sqlite3_stmt, StatementDeleter>;
+
+SqliteDb OpenDatabase(const std::filesystem::path& path)
+{
+    std::filesystem::create_directories(path.parent_path());
+    sqlite3* db = nullptr;
+    if (sqlite3_open(path.string().c_str(), &db) != SQLITE_OK)
+    {
+        std::string message = db ? sqlite3_errmsg(db) : "unknown sqlite error";
+        sqlite3_close(db);
+        throw std::runtime_error("SQLite 数据库打开失败: " + message);
+    }
+    return SqliteDb(db);
+}
+
+void ExecuteSql(sqlite3* db, const char* sql)
+{
+    char* error = nullptr;
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &error) != SQLITE_OK)
+    {
+        std::string message = error ? error : "unknown sqlite error";
+        sqlite3_free(error);
+        throw std::runtime_error("SQLite 执行失败: " + message);
+    }
+}
+
+void EnsureSchema(sqlite3* db)
+{
+    ExecuteSql(db,
+               "CREATE TABLE IF NOT EXISTS app_state ("
+               "key TEXT PRIMARY KEY,"
+               "value TEXT NOT NULL,"
+               "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+               ")");
+}
+
+SqliteStatement PrepareStatement(sqlite3* db, const char* sql)
+{
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        throw std::runtime_error(std::string("SQLite 语句准备失败: ") + sqlite3_errmsg(db));
+    }
+    return SqliteStatement(statement);
+}
+
+nlohmann::json LoadJsonFromDatabase(const std::filesystem::path& path,
+                                    const std::string& key,
+                                    const nlohmann::json& fallback)
+{
+    const auto db = OpenDatabase(path);
+    EnsureSchema(db.get());
+
+    const auto statement = PrepareStatement(db.get(), "SELECT value FROM app_state WHERE key = ?");
+    sqlite3_bind_text(statement.get(), 1, key.c_str(), -1, SQLITE_TRANSIENT);
+    const auto rc = sqlite3_step(statement.get());
+    if (rc == SQLITE_DONE)
+    {
+        return fallback;
+    }
+    if (rc != SQLITE_ROW)
+    {
+        throw std::runtime_error(std::string("SQLite 读取失败: ") + sqlite3_errmsg(db.get()));
+    }
+
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 0));
+    if (!text)
+    {
+        return fallback;
+    }
+    const auto parsed = nlohmann::json::parse(text, nullptr, false);
+    return parsed.is_discarded() ? fallback : parsed;
+}
+
+void SaveJsonToDatabase(const std::filesystem::path& path, const std::string& key, const nlohmann::json& json)
+{
+    const auto db = OpenDatabase(path);
+    EnsureSchema(db.get());
+
+    const auto statement = PrepareStatement(
+        db.get(),
+        "INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP");
+    const auto value = json.dump();
+    sqlite3_bind_text(statement.get(), 1, key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement.get(), 2, value.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE)
+    {
+        throw std::runtime_error(std::string("SQLite 写入失败: ") + sqlite3_errmsg(db.get()));
+    }
+}
 
 int ClampPort(int port)
 {
@@ -227,8 +347,7 @@ nlohmann::json ConfigStore::ToJson(const AppConfig& config) const
 nlohmann::json ConfigStore::LoadSchedulerState()
 {
     std::lock_guard lock(mutex_);
-    auto json = LoadJsonUnlocked();
-    auto state = json.value("schedulerState", BuildDefaultSchedulerStateJson());
+    auto state = LoadBusinessJsonUnlocked("schedulerState", BuildDefaultSchedulerStateJson());
     if (!state.is_object())
     {
         state = BuildDefaultSchedulerStateJson();
@@ -255,7 +374,6 @@ nlohmann::json ConfigStore::LoadSchedulerState()
 void ConfigStore::SaveSchedulerState(const nlohmann::json& json)
 {
     std::lock_guard lock(mutex_);
-    auto current = LoadJsonUnlocked();
     auto state = BuildDefaultSchedulerStateJson();
     if (json.is_object())
     {
@@ -277,15 +395,13 @@ void ConfigStore::SaveSchedulerState(const nlohmann::json& json)
     {
         state["scenes"] = nlohmann::json::array();
     }
-    current["schedulerState"] = state;
-    SaveJsonUnlocked(current);
+    SaveBusinessJsonUnlocked("schedulerState", state);
 }
 
 nlohmann::json ConfigStore::LoadFileShares()
 {
     std::lock_guard lock(mutex_);
-    auto json = LoadJsonUnlocked();
-    auto shares = json.value("fileShares", BuildDefaultFileSharesJson());
+    auto shares = LoadBusinessJsonUnlocked("fileShares", BuildDefaultFileSharesJson());
     if (!shares.is_array())
     {
         shares = BuildDefaultFileSharesJson();
@@ -296,7 +412,6 @@ nlohmann::json ConfigStore::LoadFileShares()
 void ConfigStore::SaveFileShares(const nlohmann::json& json)
 {
     std::lock_guard lock(mutex_);
-    auto current = LoadJsonUnlocked();
     auto shares = nlohmann::json::array();
     if (json.is_array())
     {
@@ -320,8 +435,7 @@ void ConfigStore::SaveFileShares(const nlohmann::json& json)
             });
         }
     }
-    current["fileShares"] = shares;
-    SaveJsonUnlocked(current);
+    SaveBusinessJsonUnlocked("fileShares", shares);
 }
 
 std::filesystem::path ConfigStore::DefaultDataPath()
@@ -382,8 +496,6 @@ nlohmann::json ConfigStore::BuildDefaultJson() const
         {"certificatePath", RelativeDefaultCertificatePath().generic_string()},
         {"privateKeyPath", RelativeDefaultPrivateKeyPath().generic_string()},
         {"trustedRootCertificatePath", ""},
-        {"schedulerState", BuildDefaultSchedulerStateJson()},
-        {"fileShares", BuildDefaultFileSharesJson()},
     };
 }
 
@@ -412,5 +524,23 @@ nlohmann::json ConfigStore::BuildDefaultFileSharesJson() const
             {"path", (RelativeDefaultDataPath() / "shared").generic_string()},
         },
     });
+}
+
+std::filesystem::path ConfigStore::DatabasePathForConfigJson(const nlohmann::json& json) const
+{
+    const auto data_path = ResolveExecutableRelativePath(json.value("dataPath", RelativeDefaultDataPath().string()));
+    return data_path / "space-station.db";
+}
+
+nlohmann::json ConfigStore::LoadBusinessJsonUnlocked(const std::string& key, const nlohmann::json& fallback)
+{
+    const auto config_json = LoadJsonUnlocked();
+    return LoadJsonFromDatabase(DatabasePathForConfigJson(config_json), key, fallback);
+}
+
+void ConfigStore::SaveBusinessJsonUnlocked(const std::string& key, const nlohmann::json& json)
+{
+    const auto config_json = LoadJsonUnlocked();
+    SaveJsonToDatabase(DatabasePathForConfigJson(config_json), key, json);
 }
 } // namespace spacestation

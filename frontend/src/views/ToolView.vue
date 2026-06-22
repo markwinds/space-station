@@ -1,5 +1,5 @@
 <template>
-  <section class="tool-view">
+  <section class="tool-view" :class="{ 'tool-view--scheduler': tool?.id === 'scheduler' }">
     <header class="tool-header">
       <div>
         <p class="eyebrow">{{ tool?.category }}</p>
