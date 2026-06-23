@@ -1,4 +1,4 @@
-const CACHE_NAME = "space-station-pwa-v1";
+const CACHE_NAME = "space-station-pwa-v2";
 const APP_BASE = "/web/";
 const PRECACHE_URLS = [APP_BASE, `${APP_BASE}manifest.webmanifest`, `${APP_BASE}pwa-icon.svg`];
 
@@ -40,6 +40,21 @@ self.addEventListener("fetch", (event) => {
           return response;
         })
         .catch(() => caches.match(APP_BASE)),
+    );
+    return;
+  }
+
+  if (request.destination === "script" || request.destination === "style" || request.destination === "document") {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const responseClone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request)),
     );
     return;
   }
