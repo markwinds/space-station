@@ -100,6 +100,7 @@ input {
 .topbar-action {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   min-height: 34px;
   padding: 0 13px;
   border: 1px solid rgba(21, 50, 67, 0.16);
@@ -109,6 +110,10 @@ input {
   font-size: 14px;
   font-weight: 700;
   text-decoration: none;
+}
+
+.topbar-action-icon {
+  flex: 0 0 auto;
 }
 
 .topbar-action.router-link-active {
@@ -535,22 +540,29 @@ input {
 
 @media (max-width: 560px) {
   .app-topbar {
-    display: grid;
+    min-height: 56px;
+    gap: 10px;
   }
 
   .topbar-actions {
-    justify-content: stretch;
+    flex: 0 0 auto;
   }
 
   .topbar-action {
     justify-content: center;
-    min-height: 32px;
-    padding: 0 10px;
-    font-size: 13px;
+    width: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
   }
 
   .brand-block h1 {
-    font-size: 17px;
+    font-size: 16px;
+  }
+
+  .brand-block p,
+  .topbar-action-label {
+    display: none;
   }
 
   .home-header h2,

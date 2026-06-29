@@ -41,4 +41,4 @@ cmake --build --preset linux-debug-vcpkg
 ./out/build/linux-debug-vcpkg/space-station
 ```
 
-The backend listens on `0.0.0.0:34827` by default.
+The backend listens on `0.0.0.0:443` and `[::]:443` by default.

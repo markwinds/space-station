@@ -37,6 +37,43 @@ std::string StripPrefix(std::string path, std::string_view prefix)
     return path;
 }
 
+bool IsStaticAssetRequest(const std::string& path)
+{
+    return path.starts_with("/assets/");
+}
+
+bool ShouldRevalidateStaticAsset(const std::string& path)
+{
+    return path == "/index.html" || path == "/sw.js" || path == "/manifest.webmanifest";
+}
+
+const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
+{
+    const std::array<std::string_view, 4> hashed_asset_prefixes{
+        "/assets/index-",
+        "/assets/SchedulerTool-",
+        "/assets/FileShareTool-",
+        "/assets/_plugin-vue_export-helper-",
+    };
+
+    for (const auto prefix : hashed_asset_prefixes)
+    {
+        if (!path.starts_with(prefix))
+        {
+            continue;
+        }
+        const auto extension = std::filesystem::path(path).extension().string();
+        for (const auto& [asset_path, asset] : kEmbeddedAssets)
+        {
+            if (asset_path.starts_with(prefix) && std::filesystem::path(asset_path).extension() == extension)
+            {
+                return &asset;
+            }
+        }
+    }
+    return nullptr;
+}
+
 drogon::HttpResponsePtr JsonResponse(const nlohmann::json& payload,
                                      drogon::HttpStatusCode status = drogon::k200OK)
 {
@@ -184,6 +221,13 @@ std::vector<std::pair<std::string, std::string>> BuildMutualTlsConfig(const std:
         {"RequestCAFile", trusted_root_certificate_path},
         {"VerifyMode", "Request,Require"},
     };
+}
+
+template <typename AddListener>
+void AddAllAddressListeners(AddListener&& add_listener)
+{
+    add_listener("0.0.0.0");
+    add_listener("::");
 }
 
 std::string SanitizeFileName(std::string file_name)
@@ -361,7 +405,9 @@ void HttpServer::Start()
     EnsureTlsCertificate(certificate_path_, private_key_path_);
     if (http_enabled_)
     {
-        drogon::app().addListener("0.0.0.0", http_port_, false);
+        AddAllAddressListeners([this](const std::string& ip) {
+            drogon::app().addListener(ip, http_port_, false);
+        });
     }
     const auto mutual_tls_config = BuildMutualTlsConfig(trusted_root_certificate_path_);
     if (!mutual_tls_config.empty())
@@ -369,11 +415,15 @@ void HttpServer::Start()
         logI("HTTPS mutual TLS enabled");
         drogon::app().setSSLFiles(certificate_path_, private_key_path_);
         drogon::app().setSSLConfigCommands(mutual_tls_config);
-        drogon::app().addListener("0.0.0.0", port_, true);
+        AddAllAddressListeners([this](const std::string& ip) {
+            drogon::app().addListener(ip, port_, true);
+        });
         server_thread_ = std::thread([] { drogon::app().run(); });
         return;
     }
-    drogon::app().addListener("0.0.0.0", port_, true, certificate_path_, private_key_path_);
+    AddAllAddressListeners([this](const std::string& ip) {
+        drogon::app().addListener(ip, port_, true, certificate_path_, private_key_path_);
+    });
     server_thread_ = std::thread([] { drogon::app().run(); });
 }
 
@@ -812,7 +862,26 @@ void HttpServer::HandleStaticAsset(const std::string& request_path,
         auto response = drogon::HttpResponse::newHttpResponse();
         response->setBody(std::string(reinterpret_cast<const char*>(it->second.data), it->second.size));
         response->setContentTypeString(std::string(it->second.content_type));
+        if (ShouldRevalidateStaticAsset(path))
+        {
+            response->addHeader("Cache-Control", "no-cache");
+        }
         callback(response);
+        return;
+    }
+
+    if (IsStaticAssetRequest(path))
+    {
+        if (const auto* asset = FindCurrentHashedAsset(path))
+        {
+            auto response = drogon::HttpResponse::newHttpResponse();
+            response->setBody(std::string(reinterpret_cast<const char*>(asset->data), asset->size));
+            response->setContentTypeString(std::string(asset->content_type));
+            response->addHeader("Cache-Control", "no-cache");
+            callback(response);
+            return;
+        }
+        callback(drogon::HttpResponse::newNotFoundResponse());
         return;
     }
 
@@ -821,6 +890,7 @@ void HttpServer::HandleStaticAsset(const std::string& request_path,
         auto response = drogon::HttpResponse::newHttpResponse();
         response->setBody(std::string(reinterpret_cast<const char*>(index_it->second.data), index_it->second.size));
         response->setContentTypeString(std::string(index_it->second.content_type));
+        response->addHeader("Cache-Control", "no-cache");
         callback(response);
         return;
     }

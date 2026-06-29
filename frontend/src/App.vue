@@ -11,7 +11,12 @@
             </div>
           </router-link>
           <nav class="topbar-actions" aria-label="全局操作">
-            <router-link class="topbar-action" to="/settings/runtime">运行配置</router-link>
+            <router-link class="topbar-action" to="/settings/runtime" aria-label="运行配置" title="运行配置">
+              <n-icon class="topbar-action-icon" size="18" aria-hidden="true">
+                <SettingsOutline />
+              </n-icon>
+              <span class="topbar-action-label">运行配置</span>
+            </router-link>
           </nav>
         </header>
 
@@ -24,6 +29,7 @@
 </template>
 
 <script setup lang="ts">
+import { SettingsOutline } from "@vicons/ionicons5";
+import { NConfigProvider, NIcon, NMessageProvider } from "naive-ui";
 import { RouterLink, RouterView } from "vue-router";
-import { NConfigProvider, NMessageProvider } from "naive-ui";
 </script>

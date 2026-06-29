@@ -70,4 +70,22 @@ const router = createRouter({
   ],
 });
 
+router.onError((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(message)) {
+    return;
+  }
+
+  const reloadKey = "space-station:chunk-reload";
+  if (sessionStorage.getItem(reloadKey) === "1") {
+    return;
+  }
+  sessionStorage.setItem(reloadKey, "1");
+  window.location.reload();
+});
+
+router.afterEach(() => {
+  sessionStorage.removeItem("space-station:chunk-reload");
+});
+
 export default router;
