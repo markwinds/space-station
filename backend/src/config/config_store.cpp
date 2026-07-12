@@ -344,60 +344,6 @@ nlohmann::json ConfigStore::ToJson(const AppConfig& config) const
     };
 }
 
-nlohmann::json ConfigStore::LoadSchedulerState()
-{
-    std::lock_guard lock(mutex_);
-    auto state = LoadBusinessJsonUnlocked("schedulerState", BuildDefaultSchedulerStateJson());
-    if (!state.is_object())
-    {
-        state = BuildDefaultSchedulerStateJson();
-    }
-    if (!state.contains("tasks") || !state["tasks"].is_array())
-    {
-        state["tasks"] = nlohmann::json::array();
-    }
-    if (!state.contains("tags") || !state["tags"].is_array())
-    {
-        state["tags"] = nlohmann::json::array();
-    }
-    if (!state.contains("settings") || !state["settings"].is_object())
-    {
-        state["settings"] = BuildDefaultSchedulerStateJson()["settings"];
-    }
-    if (!state.contains("scenes") || !state["scenes"].is_array())
-    {
-        state["scenes"] = nlohmann::json::array();
-    }
-    return state;
-}
-
-void ConfigStore::SaveSchedulerState(const nlohmann::json& json)
-{
-    std::lock_guard lock(mutex_);
-    auto state = BuildDefaultSchedulerStateJson();
-    if (json.is_object())
-    {
-        state.merge_patch(json);
-    }
-    if (!state["tasks"].is_array())
-    {
-        state["tasks"] = nlohmann::json::array();
-    }
-    if (!state["tags"].is_array())
-    {
-        state["tags"] = nlohmann::json::array();
-    }
-    if (!state["settings"].is_object())
-    {
-        state["settings"] = BuildDefaultSchedulerStateJson()["settings"];
-    }
-    if (!state["scenes"].is_array())
-    {
-        state["scenes"] = nlohmann::json::array();
-    }
-    SaveBusinessJsonUnlocked("schedulerState", state);
-}
-
 nlohmann::json ConfigStore::LoadTimeManagerState()
 {
     std::lock_guard lock(mutex_);
@@ -550,22 +496,6 @@ nlohmann::json ConfigStore::BuildDefaultJson() const
         {"certificatePath", RelativeDefaultCertificatePath().generic_string()},
         {"privateKeyPath", RelativeDefaultPrivateKeyPath().generic_string()},
         {"trustedRootCertificatePath", ""},
-    };
-}
-
-nlohmann::json ConfigStore::BuildDefaultSchedulerStateJson() const
-{
-    return {
-        {"tasks", nlohmann::json::array()},
-        {"tags", nlohmann::json::array()},
-        {"scenes", nlohmann::json::array()},
-        {"settings",
-         {
-             {"horizonDays", 14},
-             {"overdueDays", 3},
-             {"dayStartHour", 8},
-             {"dayEndHour", 22},
-         }},
     };
 }
 

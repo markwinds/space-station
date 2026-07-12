@@ -150,10 +150,6 @@ input {
   gap: 20px;
 }
 
-.tool-view--scheduler {
-  width: 100%;
-}
-
 .tool-view--fullscreen {
   width: 100%;
   height: 100dvh;

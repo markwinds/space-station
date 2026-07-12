@@ -158,54 +158,6 @@ export interface ParsedP12Response {
   certificates: ParsedP12Certificate[];
 }
 
-export type SchedulerTaskStatus = "todo" | "done";
-export type SchedulerTaskPriority = "low" | "normal" | "high" | "urgent";
-
-export interface SchedulerTask {
-  id: string;
-  title: string;
-  dueAt: string;
-  estimatedMinutes: number;
-  priority: SchedulerTaskPriority;
-  tagIds: string[];
-  dependencyIds: string[];
-  status: SchedulerTaskStatus;
-  notes: string;
-  createdAt: string;
-  completedAt?: string;
-}
-
-export interface SchedulerTag {
-  id: string;
-  name: string;
-  color: string;
-}
-
-export interface SchedulerSettings {
-  horizonDays: number;
-  overdueDays: number;
-  dayStartHour: number;
-  dayEndHour: number;
-}
-
-export interface SchedulerScene {
-  id: string;
-  name: string;
-  activeTagIds: string[];
-  tagOrder: string[];
-  zoom: number;
-  scrollHours: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface SchedulerState {
-  tasks: SchedulerTask[];
-  tags: SchedulerTag[];
-  settings: SchedulerSettings;
-  scenes: SchedulerScene[];
-}
-
 export interface TimeManagerTask {
   id: string;
   title: string;
@@ -341,15 +293,6 @@ export async function parseP12(payload: ParseP12Request): Promise<ParsedP12Respo
 export async function parseCertificate(payload: ParseCertificateRequest): Promise<ParsedCertificateResponse> {
   const { data } = await api.post<ParsedCertificateResponse>("/certificates/parse", payload);
   return data;
-}
-
-export async function fetchSchedulerState(): Promise<SchedulerState> {
-  const { data } = await api.get<SchedulerState>("/tools/scheduler/state");
-  return data;
-}
-
-export async function saveSchedulerState(payload: SchedulerState): Promise<void> {
-  await api.put("/tools/scheduler/state", payload);
 }
 
 export async function fetchTimeManagerState(): Promise<TimeManagerState> {

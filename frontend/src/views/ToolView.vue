@@ -25,7 +25,6 @@ const props = defineProps<{
   hideHeader?: boolean;
 }>();
 const viewClass = {
-  "tool-view--scheduler": props.tool?.id === "scheduler",
   "tool-view--fullscreen": props.hideHeader,
 };
 </script>

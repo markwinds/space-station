@@ -508,11 +508,6 @@ https-proxy-agent@^5.0.1:
     agent-base "6"
     debug "4"
 
-konva@^10.3.0, konva@>7:
-  version "10.3.0"
-  resolved "https://registry.npmjs.org/konva/-/konva-10.3.0.tgz"
-  integrity sha512-gt19K2gzY4lHbnkvsku7eSmB+A9PTS2jG4F9coBMsdjM1UKfJNxJbDbXVpeCW1wjEGRwBD3nBamcHnqJhAeKlg==
-
 lodash-es@^4.17.21:
   version "4.18.1"
   resolved "https://registry.npmmirror.com/lodash-es/-/lodash-es-4.18.1.tgz"
@@ -727,11 +722,6 @@ vscode-uri@^3.0.8:
   resolved "https://registry.npmmirror.com/vscode-uri/-/vscode-uri-3.1.0.tgz"
   integrity sha512-/BpdSx+yCQGnCvecbyXdxHDkuk55/G3xwnC0GqY4gmQ3j+A+g8kzzgB4Nk/SINjqn6+waqw3EgbVF2QKExkRxQ==
 
-vue-konva@^3.4.0:
-  version "3.4.0"
-  resolved "https://registry.npmjs.org/vue-konva/-/vue-konva-3.4.0.tgz"
-  integrity sha512-l7yqAPmc6gPbdXzxoukTiXzA6EdqTtPhzQp1pTdppwWLiimPCgFHcqp8nApXQN5dqF11p2OejwjKv150cf9ncA==
-
 vue-router@^4.6.4:
   version "4.6.4"
   resolved "https://registry.npmmirror.com/vue-router/-/vue-router-4.6.4.tgz"
@@ -747,7 +737,7 @@ vue-tsc@^2.2.10:
     "@volar/typescript" "2.4.15"
     "@vue/language-core" "2.2.12"
 
-vue@^3, vue@^3.0.0, vue@^3.0.11, vue@^3.2.25, vue@^3.5.0, vue@^3.5.13, vue@3.5.35:
+vue@^3.0.0, vue@^3.0.11, vue@^3.2.25, vue@^3.5.0, vue@^3.5.13, vue@3.5.35:
   version "3.5.35"
   resolved "https://registry.npmmirror.com/vue/-/vue-3.5.35.tgz"
   integrity sha512-cx89fnr+0kVGHiNFG6y6s0bdjypJRFNZn6x3WPstNdQR1bi1mbB7h4v5IBGTsPJU3nK1+0Iqj3Zf+hZWMieR4Q==

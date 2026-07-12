@@ -29,8 +29,6 @@ class ConfigStore
     AppConfig Load();
     void SavePartial(const nlohmann::json& patch);
     nlohmann::json ToJson(const AppConfig& config) const;
-    nlohmann::json LoadSchedulerState();
-    void SaveSchedulerState(const nlohmann::json& json);
     nlohmann::json LoadTimeManagerState();
     void SaveTimeManagerState(const nlohmann::json& json);
     nlohmann::json LoadFileShares();
@@ -45,7 +43,6 @@ class ConfigStore
     nlohmann::json LoadJsonUnlocked();
     void SaveJsonUnlocked(const nlohmann::json& json);
     nlohmann::json BuildDefaultJson() const;
-    nlohmann::json BuildDefaultSchedulerStateJson() const;
     nlohmann::json BuildDefaultTimeManagerStateJson() const;
     nlohmann::json BuildDefaultFileSharesJson() const;
     std::filesystem::path DatabasePathForConfigJson(const nlohmann::json& json) const;
