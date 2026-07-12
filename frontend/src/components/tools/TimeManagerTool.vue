@@ -1,6 +1,11 @@
 <template>
   <div class="time-manager">
-    <section v-show="viewMode === 'map'" class="tm-canvas-shell">
+    <section
+      v-show="viewMode === 'map'"
+      class="tm-canvas-shell"
+      @pointerdown.capture="recordCanvasPointer"
+      @pointerup.capture="clearSelectionOnBlankTap"
+    >
       <div ref="mindContainerRef" class="tm-mind-elixir"></div>
     </section>
 
@@ -82,10 +87,6 @@
         <template #icon><n-icon><CreateOutline /></n-icon></template>
         详情
       </n-button>
-      <n-button size="small" tertiary @click="clearFilters">
-        <template #icon><n-icon><CloseOutline /></n-icon></template>
-        清除过滤
-      </n-button>
     </div>
 
     <aside class="tm-drawer" :class="{ open: activePanel === 'filters' }">
@@ -151,6 +152,7 @@
           </div>
         </div>
         <div class="tm-row-actions">
+          <n-button tertiary @click="clearFilters">清除过滤</n-button>
           <n-button tertiary @click="addCondition">添加条件</n-button>
           <n-button type="primary" :disabled="!draftFilterName.trim()" @click="saveFilter">保存</n-button>
         </div>
@@ -277,7 +279,7 @@ type TaskNodeMeta = {
   notes?: string;
 };
 
-const rootId = "time-manager-root";
+const rootId = "space-station";
 const mindContainerRef = ref<HTMLElement | null>(null);
 const mind = shallowRef<MindElixirInstance | null>(null);
 const state = reactive<TimeManagerState>({
@@ -302,6 +304,8 @@ const draftFilter = reactive<Pick<TimeManagerSavedFilter, "logic" | "nodeId" | "
   conditions: [],
 });
 const suppressMindSync = ref(false);
+const skipNextMindRefresh = ref(false);
+const canvasPointerStart = ref<{ x: number; y: number } | null>(null);
 let saveTimer = 0;
 let originalViewportContent = "";
 
@@ -399,6 +403,10 @@ watch(
     if (!mind.value || viewMode.value !== "map") {
       return;
     }
+    if (skipNextMindRefresh.value) {
+      skipNextMindRefresh.value = false;
+      return;
+    }
     await nextTick();
     refreshMind();
   },
@@ -461,7 +469,7 @@ function initMind() {
   mind.value.bus.addListener("operation", handleMindOperation);
   mind.value.bus.addListener("selectNodes", (nodes) => {
     const selected = nodes.at(-1);
-    selectedTaskId.value = selected?.id === rootId || selected?.id === "time-manager-empty" ? null : selected?.id ?? null;
+    selectedTaskId.value = selected?.id === rootId ? null : selected?.id ?? null;
   });
   mind.value.init(mindData.value);
   mind.value.clearHistory?.();
@@ -495,6 +503,7 @@ function handleMindOperation(operation: unknown) {
     const ids = (op.objs ?? []).flatMap((node) => [node.id, ...collectNodeIds(node as NodeObj<TaskNodeMeta>)]);
     removeTaskIds(ids.filter((id) => id !== rootId));
   }
+  skipNextMindRefresh.value = true;
   syncTasksFromMind(mind.value.getData());
 }
 
@@ -533,19 +542,9 @@ function buildMindData(tasks: TimeManagerTask[]): MindElixirData {
   return {
     nodeData: {
       id: rootId,
-      topic: "未分类",
+      topic: "space-station",
       expanded: true,
-      children: children.length
-        ? children
-        : [
-            {
-              id: "time-manager-empty",
-              topic: "点击 + 新增任务",
-              expanded: true,
-              style: { color: "#657482", background: "#f8fbfd" },
-              metadata: { taskId: "" },
-            },
-          ],
+      children,
     },
     direction: RIGHT,
     compact: false,
@@ -612,7 +611,7 @@ function extractTasksFromNode(root: NodeObj<TaskNodeMeta>) {
   const tasks: TimeManagerTask[] = [];
   const now = new Date().toISOString();
   const visit = (node: NodeObj<TaskNodeMeta>, parentId: string | null) => {
-    if (node.id !== rootId && node.id !== "time-manager-empty") {
+    if (node.id !== rootId) {
       const existing = state.tasks.find((task) => task.id === node.id);
       tasks.push({
         id: node.id,
@@ -800,9 +799,12 @@ function operatorOptions(field: TimeManagerFilterCondition["field"]) {
 
 function matchesCondition(task: TimeManagerTask, condition: TimeManagerFilterCondition) {
   if (condition.field === "tag") {
+    const value = String(condition.value);
+    const selectedTag = state.tags.find((tag) => tag.id === value);
     return condition.operator === "equals"
-      ? task.tagIds.includes(String(condition.value))
-      : task.tagIds.some((tagId) => tagName(tagId).includes(String(condition.value)));
+      ? task.tagIds.includes(value)
+      : task.tagIds.includes(value) ||
+          task.tagIds.some((tagId) => tagName(tagId).toLowerCase().includes((selectedTag?.name ?? value).toLowerCase()));
   }
   if (condition.field === "completed") {
     return task.completed === (condition.value === true || condition.value === "true");
@@ -890,9 +892,35 @@ function centerMind() {
   mind.value?.scaleFit();
 }
 
+function recordCanvasPointer(event: PointerEvent) {
+  canvasPointerStart.value = { x: event.clientX, y: event.clientY };
+}
+
+function clearSelectionOnBlankTap(event: PointerEvent) {
+  const start = canvasPointerStart.value;
+  canvasPointerStart.value = null;
+  if (!start) {
+    return;
+  }
+  const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+  if (moved > 8) {
+    return;
+  }
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest("me-tpc, .tm-toolbar, .tm-floating-bottom, .tm-drawer, .context-menu")) {
+    return;
+  }
+  mind.value?.clearSelection();
+  selectedTaskId.value = null;
+  if (activePanel.value === "editor") {
+    activePanel.value = null;
+  }
+}
+
 function undo() {
   mind.value?.undo?.();
   if (mind.value) {
+    skipNextMindRefresh.value = true;
     syncTasksFromMind(mind.value.getData());
   }
 }
@@ -900,6 +928,7 @@ function undo() {
 function redo() {
   mind.value?.redo?.();
   if (mind.value) {
+    skipNextMindRefresh.value = true;
     syncTasksFromMind(mind.value.getData());
   }
 }
@@ -1066,6 +1095,33 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
 
 .tm-mind-elixir :deep(me-tpc.selected) {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), 0 12px 26px rgba(42, 61, 78, 0.16);
+}
+
+.tm-mind-elixir :deep(me-parent me-tpc .insert-preview) {
+  left: -22px;
+  width: calc(100% + 72px);
+}
+
+.tm-mind-elixir :deep(me-parent me-tpc .insert-preview.show) {
+  background: #0ea5e9;
+  opacity: 0.88;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 8px 18px rgba(14, 116, 144, 0.28);
+}
+
+.tm-mind-elixir :deep(me-parent me-tpc .insert-preview.before) {
+  height: 18px;
+  top: -18px;
+}
+
+.tm-mind-elixir :deep(me-parent me-tpc .insert-preview.after) {
+  height: 18px;
+  bottom: -18px;
+}
+
+.tm-mind-elixir :deep(me-parent me-tpc .insert-preview.in.show) {
+  background: rgba(14, 165, 233, 0.2);
+  outline: 3px solid #0ea5e9;
+  outline-offset: 3px;
 }
 
 .tm-floating-top {
@@ -1351,6 +1407,21 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
     flex: 0 0 132px;
   }
 
+  .tm-mind-elixir :deep(me-parent me-tpc .insert-preview) {
+    left: -34px;
+    width: calc(100% + 128px);
+  }
+
+  .tm-mind-elixir :deep(me-parent me-tpc .insert-preview.before) {
+    height: 24px;
+    top: -24px;
+  }
+
+  .tm-mind-elixir :deep(me-parent me-tpc .insert-preview.after) {
+    height: 24px;
+    bottom: -24px;
+  }
+
   .tm-floating-bottom {
     right: 0;
     bottom: 0;
@@ -1403,12 +1474,57 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
   }
 
   .tm-calendar-grid {
-    grid-template-columns: 1fr;
-    grid-auto-rows: minmax(118px, auto);
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-auto-rows: minmax(64px, 1fr);
+    gap: 3px;
+    padding: 3px;
     border-right: 0;
     border-bottom: 0;
     border-left: 0;
     border-radius: 0;
+    overflow: hidden;
+  }
+
+  .tm-calendar-grid.mode-week {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-auto-rows: minmax(0, 1fr);
+  }
+
+  .tm-calendar-grid.mode-day {
+    grid-template-columns: 1fr;
+  }
+
+  .tm-day-cell {
+    gap: 3px;
+    padding: 4px;
+    border-radius: 5px;
+  }
+
+  .tm-day-cell header {
+    align-items: center;
+    min-height: 18px;
+    font-size: 11px;
+  }
+
+  .tm-day-cell small {
+    font-size: 10px;
+  }
+
+  .tm-calendar-task {
+    grid-template-columns: 1fr;
+    gap: 0;
+    min-height: 18px;
+    padding: 2px 3px;
+    border-radius: 4px;
+    font-size: 10px;
+  }
+
+  .tm-calendar-task time {
+    display: none;
+  }
+
+  .tm-calendar-task:nth-of-type(n + 4) {
+    display: none;
   }
 }
 </style>
