@@ -135,6 +135,13 @@ input {
   overflow: auto;
 }
 
+.workspace--fullscreen {
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+
 .home-view,
 .tool-view {
   width: min(1180px, 100%);
@@ -145,6 +152,12 @@ input {
 
 .tool-view--scheduler {
   width: 100%;
+}
+
+.tool-view--fullscreen {
+  width: 100%;
+  height: 100dvh;
+  gap: 0;
 }
 
 .home-header,

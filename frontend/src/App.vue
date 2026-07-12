@@ -2,7 +2,7 @@
   <n-config-provider>
     <n-message-provider>
       <div class="app-shell">
-        <header class="app-topbar">
+        <header v-if="!hideChrome" class="app-topbar">
           <router-link class="brand-block" to="/">
             <div class="brand-mark">SS</div>
             <div>
@@ -20,7 +20,7 @@
           </nav>
         </header>
 
-        <main class="workspace">
+        <main class="workspace" :class="{ 'workspace--fullscreen': hideChrome }">
           <router-view />
         </main>
       </div>
@@ -31,5 +31,10 @@
 <script setup lang="ts">
 import { SettingsOutline } from "@vicons/ionicons5";
 import { NConfigProvider, NIcon, NMessageProvider } from "naive-ui";
+import { computed } from "vue";
+import { useRoute } from "vue-router";
 import { RouterLink, RouterView } from "vue-router";
+
+const route = useRoute();
+const hideChrome = computed(() => route.meta.hideChrome === true);
 </script>

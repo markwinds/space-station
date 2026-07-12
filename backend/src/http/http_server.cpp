@@ -49,9 +49,11 @@ bool ShouldRevalidateStaticAsset(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 4> hashed_asset_prefixes{
+    const std::array<std::string_view, 6> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/SchedulerTool-",
+        "/assets/TimeManagerTool-",
+        "/assets/DatePicker-",
         "/assets/FileShareTool-",
         "/assets/_plugin-vue_export-helper-",
     };
@@ -588,6 +590,28 @@ void HttpServer::RegisterRoutes()
                 return;
             }
             config_store_.SaveSchedulerState(body);
+            callback(JsonResponse({{"ok", true}}));
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/time-manager/state",
+        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            callback(JsonResponse(config_store_.LoadTimeManagerState()));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/time-manager/state",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            const auto body = nlohmann::json::parse(req->body(), nullptr, false);
+            if (body.is_discarded() || !body.is_object())
+            {
+                callback(JsonResponse({{"code", "invalid_json"}, {"message", "时间管理器状态不是合法 JSON。"}},
+                                      drogon::k400BadRequest));
+                return;
+            }
+            config_store_.SaveTimeManagerState(body);
             callback(JsonResponse({{"ok", true}}));
         },
         {drogon::Put});

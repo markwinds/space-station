@@ -1,6 +1,6 @@
 <template>
-  <section class="tool-view" :class="{ 'tool-view--scheduler': tool?.id === 'scheduler' }">
-    <header class="tool-header">
+  <section class="tool-view" :class="viewClass">
+    <header v-if="!hideHeader" class="tool-header">
       <div>
         <p class="eyebrow">{{ tool?.category }}</p>
         <h2>{{ tool?.title }}</h2>
@@ -18,10 +18,14 @@ import { useRouter } from "vue-router";
 import { NButton } from "naive-ui";
 import type { ToolDefinition } from "@/tools";
 
-defineProps<{
+const router = useRouter();
+const props = defineProps<{
   tool?: ToolDefinition;
   component: Component;
+  hideHeader?: boolean;
 }>();
-
-const router = useRouter();
+const viewClass = {
+  "tool-view--scheduler": props.tool?.id === "scheduler",
+  "tool-view--fullscreen": props.hideHeader,
+};
 </script>

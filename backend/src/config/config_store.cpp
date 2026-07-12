@@ -398,6 +398,60 @@ void ConfigStore::SaveSchedulerState(const nlohmann::json& json)
     SaveBusinessJsonUnlocked("schedulerState", state);
 }
 
+nlohmann::json ConfigStore::LoadTimeManagerState()
+{
+    std::lock_guard lock(mutex_);
+    auto state = LoadBusinessJsonUnlocked("timeManagerState", BuildDefaultTimeManagerStateJson());
+    if (!state.is_object())
+    {
+        state = BuildDefaultTimeManagerStateJson();
+    }
+    if (!state.contains("tasks") || !state["tasks"].is_array())
+    {
+        state["tasks"] = nlohmann::json::array();
+    }
+    if (!state.contains("tags") || !state["tags"].is_array())
+    {
+        state["tags"] = nlohmann::json::array();
+    }
+    if (!state.contains("filters") || !state["filters"].is_array())
+    {
+        state["filters"] = nlohmann::json::array();
+    }
+    if (!state.contains("settings") || !state["settings"].is_object())
+    {
+        state["settings"] = BuildDefaultTimeManagerStateJson()["settings"];
+    }
+    return state;
+}
+
+void ConfigStore::SaveTimeManagerState(const nlohmann::json& json)
+{
+    std::lock_guard lock(mutex_);
+    auto state = BuildDefaultTimeManagerStateJson();
+    if (json.is_object())
+    {
+        state.merge_patch(json);
+    }
+    if (!state["tasks"].is_array())
+    {
+        state["tasks"] = nlohmann::json::array();
+    }
+    if (!state["tags"].is_array())
+    {
+        state["tags"] = nlohmann::json::array();
+    }
+    if (!state["filters"].is_array())
+    {
+        state["filters"] = nlohmann::json::array();
+    }
+    if (!state["settings"].is_object())
+    {
+        state["settings"] = BuildDefaultTimeManagerStateJson()["settings"];
+    }
+    SaveBusinessJsonUnlocked("timeManagerState", state);
+}
+
 nlohmann::json ConfigStore::LoadFileShares()
 {
     std::lock_guard lock(mutex_);
@@ -511,6 +565,24 @@ nlohmann::json ConfigStore::BuildDefaultSchedulerStateJson() const
              {"overdueDays", 3},
              {"dayStartHour", 8},
              {"dayEndHour", 22},
+         }},
+    };
+}
+
+nlohmann::json ConfigStore::BuildDefaultTimeManagerStateJson() const
+{
+    return {
+        {"tasks", nlohmann::json::array()},
+        {"tags",
+         nlohmann::json::array({
+             {{"id", "focus"}, {"name", "专注"}, {"color", "#2563eb"}},
+             {{"id", "life"}, {"name", "生活"}, {"color", "#16a34a"}},
+         })},
+        {"filters", nlohmann::json::array()},
+        {"settings",
+         {
+             {"calendarStartHour", 7},
+             {"calendarEndHour", 22},
          }},
     };
 }

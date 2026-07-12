@@ -8,6 +8,7 @@ import ToolView from "@/views/ToolView.vue";
 import { findTool } from "@/tools";
 
 const SchedulerTool = defineAsyncComponent(() => import("@/components/tools/SchedulerTool.vue"));
+const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/TimeManagerTool.vue"));
 const FileShareTool = defineAsyncComponent(() => import("@/components/tools/FileShareTool.vue"));
 
 const router = createRouter({
@@ -43,6 +44,17 @@ const router = createRouter({
       props: {
         tool: findTool("scheduler"),
         component: SchedulerTool,
+      },
+    },
+    {
+      path: "/tools/time-manager",
+      name: "time-manager",
+      component: ToolView,
+      meta: { hideChrome: true },
+      props: {
+        tool: findTool("timeManager"),
+        component: TimeManagerTool,
+        hideHeader: true,
       },
     },
     {

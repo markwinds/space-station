@@ -206,6 +206,57 @@ export interface SchedulerState {
   scenes: SchedulerScene[];
 }
 
+export interface TimeManagerTask {
+  id: string;
+  title: string;
+  parentId: string | null;
+  tagIds: string[];
+  scheduledAt: string;
+  completed: boolean;
+  notes: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TimeManagerTag {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export type TimeManagerFilterField = "tag" | "completed" | "scheduledAt" | "keyword";
+export type TimeManagerFilterOperator = "contains" | "equals" | "before" | "after" | "empty" | "notEmpty";
+
+export interface TimeManagerFilterCondition {
+  id: string;
+  field: TimeManagerFilterField;
+  operator: TimeManagerFilterOperator;
+  value: string | boolean;
+}
+
+export interface TimeManagerSavedFilter {
+  id: string;
+  name: string;
+  logic: "all" | "any";
+  nodeId: string | null;
+  conditions: TimeManagerFilterCondition[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TimeManagerSettings {
+  calendarStartHour: number;
+  calendarEndHour: number;
+}
+
+export interface TimeManagerState {
+  tasks: TimeManagerTask[];
+  tags: TimeManagerTag[];
+  filters: TimeManagerSavedFilter[];
+  settings: TimeManagerSettings;
+}
+
 export interface FileShare {
   id: string;
   name: string;
@@ -299,6 +350,15 @@ export async function fetchSchedulerState(): Promise<SchedulerState> {
 
 export async function saveSchedulerState(payload: SchedulerState): Promise<void> {
   await api.put("/tools/scheduler/state", payload);
+}
+
+export async function fetchTimeManagerState(): Promise<TimeManagerState> {
+  const { data } = await api.get<TimeManagerState>("/tools/time-manager/state");
+  return data;
+}
+
+export async function saveTimeManagerState(payload: TimeManagerState): Promise<void> {
+  await api.put("/tools/time-manager/state", payload);
 }
 
 export async function fetchFileShareState(): Promise<{ shares: FileShare[] }> {

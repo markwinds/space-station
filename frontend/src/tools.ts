@@ -1,6 +1,6 @@
-import { CodeSlashOutline, CubeOutline, FolderOpenOutline, KeyOutline, TimerOutline } from "@vicons/ionicons5";
+import { CalendarOutline, CodeSlashOutline, CubeOutline, FolderOpenOutline, KeyOutline, TimerOutline } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "scheduler" | "fileShare" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "scheduler" | "timeManager" | "fileShare" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -36,6 +36,14 @@ export const tools: ToolDefinition[] = [
     category: "Planning",
     icon: TimerOutline,
     path: "/tools/scheduler",
+  },
+  {
+    id: "timeManager",
+    title: "时间管理器",
+    description: "树状任务、过滤器和日历视图",
+    category: "Planning",
+    icon: CalendarOutline,
+    path: "/tools/time-manager",
   },
   {
     id: "fileShare",

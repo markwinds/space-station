@@ -31,6 +31,8 @@ class ConfigStore
     nlohmann::json ToJson(const AppConfig& config) const;
     nlohmann::json LoadSchedulerState();
     void SaveSchedulerState(const nlohmann::json& json);
+    nlohmann::json LoadTimeManagerState();
+    void SaveTimeManagerState(const nlohmann::json& json);
     nlohmann::json LoadFileShares();
     void SaveFileShares(const nlohmann::json& json);
 
@@ -44,6 +46,7 @@ class ConfigStore
     void SaveJsonUnlocked(const nlohmann::json& json);
     nlohmann::json BuildDefaultJson() const;
     nlohmann::json BuildDefaultSchedulerStateJson() const;
+    nlohmann::json BuildDefaultTimeManagerStateJson() const;
     nlohmann::json BuildDefaultFileSharesJson() const;
     std::filesystem::path DatabasePathForConfigJson(const nlohmann::json& json) const;
     nlohmann::json LoadBusinessJsonUnlocked(const std::string& key, const nlohmann::json& fallback);
