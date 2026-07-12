@@ -368,6 +368,17 @@ nlohmann::json ConfigStore::LoadTimeManagerState()
     {
         state["settings"] = BuildDefaultTimeManagerStateJson()["settings"];
     }
+    else
+    {
+        const auto defaults = BuildDefaultTimeManagerStateJson()["settings"];
+        for (const auto& [key, value] : defaults.items())
+        {
+            if (!state["settings"].contains(key))
+            {
+                state["settings"][key] = value;
+            }
+        }
+    }
     return state;
 }
 
@@ -394,6 +405,17 @@ void ConfigStore::SaveTimeManagerState(const nlohmann::json& json)
     if (!state["settings"].is_object())
     {
         state["settings"] = BuildDefaultTimeManagerStateJson()["settings"];
+    }
+    else
+    {
+        const auto defaults = BuildDefaultTimeManagerStateJson()["settings"];
+        for (const auto& [key, value] : defaults.items())
+        {
+            if (!state["settings"].contains(key))
+            {
+                state["settings"][key] = value;
+            }
+        }
     }
     SaveBusinessJsonUnlocked("timeManagerState", state);
 }

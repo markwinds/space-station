@@ -11,9 +11,6 @@
 
     <section v-if="viewMode === 'calendar'" class="tm-calendar-surface">
       <div class="tm-calendar-toolbar">
-        <n-button quaternary circle title="返回脑图" @click="viewMode = 'map'">
-          <template #icon><n-icon><GitNetworkOutline /></n-icon></template>
-        </n-button>
         <n-radio-group v-model:value="calendarMode" size="small">
           <n-radio-button value="month">月</n-radio-button>
           <n-radio-button value="week">周</n-radio-button>
@@ -61,20 +58,25 @@
         <n-button tertiary circle title="重做" @click="redo">
           <template #icon><n-icon><ArrowRedoOutline /></n-icon></template>
         </n-button>
+        <n-button tertiary circle title="居中" @click="centerMind">
+          <template #icon><n-icon><LocateOutline /></n-icon></template>
+        </n-button>
         <n-button tertiary circle title="过滤器" @click="togglePanel('filters')">
           <template #icon><n-icon><FunnelOutline /></n-icon></template>
         </n-button>
-        <n-button tertiary circle title="日历" @click="viewMode = 'calendar'">
+        <n-button
+          tertiary
+          circle
+          :type="viewMode === 'calendar' ? 'primary' : 'default'"
+          :title="viewMode === 'calendar' ? '返回脑图' : '日历'"
+          @click="toggleCalendarView"
+        >
           <template #icon><n-icon><CalendarOutline /></n-icon></template>
         </n-button>
       </div>
     </header>
 
-    <div class="tm-floating-bottom">
-      <n-button size="small" tertiary @click="centerMind">
-        <template #icon><n-icon><LocateOutline /></n-icon></template>
-        居中
-      </n-button>
+    <div v-if="viewMode === 'map'" class="tm-floating-bottom" @pointerdown.stop @pointerup.stop @click.stop>
       <n-button v-if="!selectedTaskId" size="small" tertiary @click="addTask(null)">
         <template #icon><n-icon><AddOutline /></n-icon></template>
         新任务
@@ -83,9 +85,27 @@
         <template #icon><n-icon><AddOutline /></n-icon></template>
         子任务
       </n-button>
+      <n-button
+        v-if="selectedTask"
+        size="small"
+        tertiary
+        :title="selectedTask.completed ? '标记未完成' : '标记完成'"
+        @click="toggleSelectedTaskCompleted"
+      >
+        <template #icon>
+          <n-icon>
+            <CheckmarkCircleOutline v-if="selectedTask.completed" />
+            <EllipseOutline v-else />
+          </n-icon>
+        </template>
+      </n-button>
       <n-button v-if="selectedTaskId" size="small" tertiary @click="activePanel = 'editor'">
         <template #icon><n-icon><CreateOutline /></n-icon></template>
         详情
+      </n-button>
+      <n-button v-if="selectedTaskId" size="small" tertiary type="error" @click="deleteTask(selectedTaskId)">
+        <template #icon><n-icon><TrashOutline /></n-icon></template>
+        删除
       </n-button>
     </div>
 
@@ -216,10 +236,6 @@
           placeholder="备注"
           @update:value="updateTask(selectedTask.id, { notes: $event })"
         />
-        <div class="tm-row-actions">
-          <n-button tertiary @click="addTask(selectedTask.id)">添加子任务</n-button>
-          <n-button type="error" tertiary @click="deleteTask(selectedTask.id)">删除任务</n-button>
-        </div>
       </div>
       <div v-else class="tm-empty-state">
         选择一个节点后编辑任务。
@@ -234,12 +250,13 @@ import {
   ArrowRedoOutline,
   ArrowUndoOutline,
   CalendarOutline,
+  CheckmarkCircleOutline,
   ChevronBackOutline,
   ChevronForwardOutline,
   CloseOutline,
   CreateOutline,
+  EllipseOutline,
   FunnelOutline,
-  GitNetworkOutline,
   LocateOutline,
   SearchOutline,
   TrashOutline,
@@ -307,6 +324,7 @@ const suppressMindSync = ref(false);
 const skipNextMindRefresh = ref(false);
 const canvasPointerStart = ref<{ x: number; y: number } | null>(null);
 let saveTimer = 0;
+let searchFocusTimer = 0;
 let originalViewportContent = "";
 
 const selectedTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value));
@@ -394,6 +412,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   mind.value?.destroy();
   window.clearTimeout(saveTimer);
+  window.clearTimeout(searchFocusTimer);
   unlockPageViewport();
 });
 
@@ -427,6 +446,16 @@ watch(activeFilterId, (filterId) => {
   }
 });
 
+watch(keyword, () => {
+  window.clearTimeout(searchFocusTimer);
+  if (!keyword.value.trim()) {
+    return;
+  }
+  searchFocusTimer = window.setTimeout(() => {
+    focusFirstSearchMatch();
+  }, 180);
+});
+
 function initMind() {
   if (!mindContainerRef.value) {
     return;
@@ -442,7 +471,6 @@ function initMind() {
     draggable: true,
     compact: false,
     overflowHidden: false,
-    mobileMultiSelect: true,
     newTopicName: "新任务",
     theme: {
       name: "space-station-task",
@@ -480,14 +508,18 @@ function refreshMind() {
   if (!mind.value) {
     return;
   }
+  const retainedSelectedId = selectedTaskId.value && state.tasks.some((task) => task.id === selectedTaskId.value) ? selectedTaskId.value : null;
+  selectedTaskId.value = retainedSelectedId;
   suppressMindSync.value = true;
   mind.value.refresh(mindData.value);
   mind.value.clearHistory?.();
-  if (selectedTaskId.value) {
-    const el = findTopic(selectedTaskId.value);
-    if (el) {
-      mind.value.selectNode(el);
+  if (retainedSelectedId) {
+    const selectedTopic = findTopic(retainedSelectedId);
+    if (selectedTopic) {
+      mind.value.selectNode(selectedTopic);
     }
+  } else {
+    selectedTaskId.value = null;
   }
   requestAnimationFrame(() => {
     suppressMindSync.value = false;
@@ -558,22 +590,28 @@ function buildNodeChildren(tasks: TimeManagerTask[], parentId: string | null): N
     .filter((task) => (task.parentId && availableIds.has(task.parentId) ? task.parentId : null) === parentId)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))
     .map((task) => ({
-      id: task.id,
-      topic: task.title,
-      expanded: true,
-      style: nodeStyle(task),
-      tags: nodeTags(task),
-      icons: task.completed ? ["✓"] : task.scheduledAt ? ["⏱"] : [],
-      note: task.notes,
-      metadata: {
-        taskId: task.id,
-        completed: task.completed,
-        scheduledAt: task.scheduledAt,
-        tagIds: task.tagIds,
-        notes: task.notes,
-      },
+      ...taskToNode(task),
       children: buildNodeChildren(tasks, task.id),
     }));
+}
+
+function taskToNode(task: TimeManagerTask): NodeObj<TaskNodeMeta> {
+  return {
+    id: task.id,
+    topic: task.title,
+    expanded: true,
+    style: nodeStyle(task),
+    tags: nodeTags(task),
+    icons: task.completed ? ["✓"] : task.scheduledAt ? ["⏱"] : [],
+    note: task.notes,
+    metadata: {
+      taskId: task.id,
+      completed: task.completed,
+      scheduledAt: task.scheduledAt,
+      tagIds: task.tagIds,
+      notes: task.notes,
+    },
+  };
 }
 
 function nodeStyle(task: TimeManagerTask) {
@@ -632,7 +670,7 @@ function extractTasksFromNode(root: NodeObj<TaskNodeMeta>) {
   return tasks;
 }
 
-function addTask(parentId: string | null) {
+async function addTask(parentId: string | null) {
   const resolvedParentId = parentId && state.tasks.some((task) => task.id === parentId) ? parentId : null;
   const now = new Date().toISOString();
   const task: TimeManagerTask = {
@@ -647,6 +685,20 @@ function addTask(parentId: string | null) {
     createdAt: now,
     updatedAt: now,
   };
+  const node = taskToNode(task);
+  const parentEl = findTopic(resolvedParentId ?? rootId);
+  if (mind.value && parentEl) {
+    await mind.value.addChild(parentEl, node);
+    selectedTaskId.value = task.id;
+    viewMode.value = "map";
+    activePanel.value = "editor";
+    await nextTick();
+    const el = findTopic(task.id);
+    if (el) {
+      mind.value.selectNode(el, true);
+    }
+    return;
+  }
   state.tasks.push(task);
   selectedTaskId.value = task.id;
   viewMode.value = "map";
@@ -656,7 +708,6 @@ function addTask(parentId: string | null) {
     const el = findTopic(task.id);
     if (el) {
       mind.value?.selectNode(el, true);
-      mind.value?.beginEdit(el);
     }
   });
 }
@@ -673,15 +724,40 @@ function toggleTask(id: string, checked: boolean) {
   updateTask(id, { completed: checked });
 }
 
+function toggleSelectedTaskCompleted() {
+  if (!selectedTask.value) {
+    return;
+  }
+  updateTask(selectedTask.value.id, { completed: !selectedTask.value.completed });
+}
+
 function deleteTask(id: string) {
+  if (!state.tasks.some((task) => task.id === id)) {
+    return;
+  }
+  const topic = findTopic(id);
+  if (mind.value && topic) {
+    try {
+      mind.value.removeNodes([topic]);
+      selectedTaskId.value = null;
+      activePanel.value = null;
+      return;
+    } catch (error) {
+      console.warn("Mind map removeNode failed, falling back to task removal.", error);
+    }
+  }
   removeTaskIds([id, ...descendantIds(id)]);
-  selectedTaskId.value = null;
-  activePanel.value = null;
 }
 
 function removeTaskIds(ids: string[]) {
   const removeSet = new Set(ids);
   state.tasks = state.tasks.filter((task) => !removeSet.has(task.id));
+  if (selectedTaskId.value && removeSet.has(selectedTaskId.value)) {
+    selectedTaskId.value = null;
+  }
+  if (!selectedTaskId.value && activePanel.value === "editor") {
+    activePanel.value = null;
+  }
 }
 
 function addTag() {
@@ -888,8 +964,30 @@ function togglePanel(panel: Exclude<PanelName, null>) {
   activePanel.value = activePanel.value === panel ? null : panel;
 }
 
+function toggleCalendarView() {
+  viewMode.value = viewMode.value === "calendar" ? "map" : "calendar";
+}
+
 function centerMind() {
   mind.value?.scaleFit();
+}
+
+async function focusFirstSearchMatch() {
+  const firstMatch = filteredTasks.value[0];
+  if (!firstMatch) {
+    return;
+  }
+  viewMode.value = "map";
+  selectedTaskId.value = firstMatch.id;
+  await nextTick();
+  requestAnimationFrame(() => {
+    const el = findTopic(firstMatch.id);
+    if (!el) {
+      return;
+    }
+    mind.value?.selectNode(el);
+    mind.value?.scrollIntoView(el, true);
+  });
 }
 
 function recordCanvasPointer(event: PointerEvent) {
@@ -1001,7 +1099,10 @@ function normalizeState(input: TimeManagerState): TimeManagerState {
       : [],
     tags: Array.isArray(input.tags) ? input.tags : [],
     filters: Array.isArray(input.filters) ? input.filters : [],
-    settings: input.settings || { calendarStartHour: 7, calendarEndHour: 22 },
+    settings: {
+      calendarStartHour: input.settings?.calendarStartHour ?? 7,
+      calendarEndHour: input.settings?.calendarEndHour ?? 22,
+    },
   };
 }
 
@@ -1073,6 +1174,18 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
   background: #eef3f7;
   color: #172632;
   overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.time-manager :deep(input),
+.time-manager :deep(textarea),
+.time-manager :deep([contenteditable="true"]),
+.time-manager :deep([contenteditable="plaintext-only"]) {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 .tm-canvas-shell,
