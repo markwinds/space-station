@@ -1,6 +1,7 @@
 backend/out/
 frontend/dist/
 frontend/node_modules/
+frontend/bundle-stats.html
 *.log
 .DS_Store
 Thumbs.db

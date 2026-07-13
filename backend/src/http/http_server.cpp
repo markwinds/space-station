@@ -47,6 +47,40 @@ bool ShouldRevalidateStaticAsset(const std::string& path)
     return path == "/index.html" || path == "/sw.js" || path == "/manifest.webmanifest";
 }
 
+drogon::ContentType StaticAssetContentType(const std::string& path)
+{
+    const auto extension = std::filesystem::path(path).extension().string();
+    if (extension == ".html")
+    {
+        return drogon::CT_TEXT_HTML;
+    }
+    if (extension == ".js")
+    {
+        return drogon::CT_TEXT_JAVASCRIPT;
+    }
+    if (extension == ".css")
+    {
+        return drogon::CT_TEXT_CSS;
+    }
+    if (extension == ".json" || extension == ".webmanifest")
+    {
+        return drogon::CT_APPLICATION_JSON;
+    }
+    if (extension == ".svg")
+    {
+        return drogon::CT_IMAGE_SVG_XML;
+    }
+    if (extension == ".png")
+    {
+        return drogon::CT_IMAGE_PNG;
+    }
+    if (extension == ".ico")
+    {
+        return drogon::CT_IMAGE_XICON;
+    }
+    return drogon::CT_APPLICATION_OCTET_STREAM;
+}
+
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
     const std::array<std::string_view, 5> hashed_asset_prefixes{
@@ -402,6 +436,8 @@ void HttpServer::Start()
     }
 
     drogon::app().setThreadNum(std::max(2u, std::thread::hardware_concurrency()));
+    drogon::app().enableGzip(true);
+    drogon::app().enableBrotli(true);
     drogon::app().disableSigtermHandling();
     EnsureTlsCertificate(certificate_path_, private_key_path_);
     if (http_enabled_)
@@ -862,7 +898,7 @@ void HttpServer::HandleStaticAsset(const std::string& request_path,
     {
         auto response = drogon::HttpResponse::newHttpResponse();
         response->setBody(std::string(reinterpret_cast<const char*>(it->second.data), it->second.size));
-        response->setContentTypeString(std::string(it->second.content_type));
+        response->setContentTypeCode(StaticAssetContentType(path));
         if (ShouldRevalidateStaticAsset(path))
         {
             response->addHeader("Cache-Control", "no-cache");
@@ -877,7 +913,7 @@ void HttpServer::HandleStaticAsset(const std::string& request_path,
         {
             auto response = drogon::HttpResponse::newHttpResponse();
             response->setBody(std::string(reinterpret_cast<const char*>(asset->data), asset->size));
-            response->setContentTypeString(std::string(asset->content_type));
+            response->setContentTypeCode(StaticAssetContentType(path));
             response->addHeader("Cache-Control", "no-cache");
             callback(response);
             return;
@@ -890,7 +926,7 @@ void HttpServer::HandleStaticAsset(const std::string& request_path,
     {
         auto response = drogon::HttpResponse::newHttpResponse();
         response->setBody(std::string(reinterpret_cast<const char*>(index_it->second.data), index_it->second.size));
-        response->setContentTypeString(std::string(index_it->second.content_type));
+        response->setContentTypeCode(drogon::CT_TEXT_HTML);
         response->addHeader("Cache-Control", "no-cache");
         callback(response);
         return;
