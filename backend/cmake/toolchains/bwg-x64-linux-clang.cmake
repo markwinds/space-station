@@ -1,0 +1,38 @@
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+
+set(BWG_SYSROOT "$ENV{BWG_SYSROOT}" CACHE PATH "Sysroot copied from the bwg host")
+if (NOT BWG_SYSROOT)
+    set(BWG_SYSROOT "/Volumes/samsung/bwg/sysroot" CACHE PATH "Sysroot copied from the bwg host" FORCE)
+endif ()
+if (NOT EXISTS "${BWG_SYSROOT}/usr/include" OR NOT EXISTS "${BWG_SYSROOT}/usr/lib64/Scrt1.o")
+    message(FATAL_ERROR "BWG_SYSROOT must point to a Rocky Linux x86_64 sysroot copied from bwg. Expected usr/include and usr/lib64/Scrt1.o under: ${BWG_SYSROOT}")
+endif ()
+
+set(BWG_LLVM_ROOT "$ENV{LLVM_ROOT}" CACHE PATH "LLVM prefix used for bwg cross-compilation")
+if (NOT BWG_LLVM_ROOT)
+    set(BWG_LLVM_ROOT "/Volumes/samsung/Applications/LLVM-22.1.0-macOS-ARM64" CACHE PATH "LLVM prefix used for bwg cross-compilation" FORCE)
+endif ()
+
+find_program(BWG_CLANG clang PATHS "${BWG_LLVM_ROOT}/bin" "/opt/homebrew/opt/llvm/bin" NO_DEFAULT_PATH)
+find_program(BWG_CLANGXX clang++ PATHS "${BWG_LLVM_ROOT}/bin" "/opt/homebrew/opt/llvm/bin" NO_DEFAULT_PATH)
+find_program(BWG_LLD ld.lld PATHS "${BWG_LLVM_ROOT}/bin" "/opt/homebrew/opt/llvm/bin" NO_DEFAULT_PATH)
+if (NOT BWG_CLANG OR NOT BWG_CLANGXX OR NOT BWG_LLD)
+    message(FATAL_ERROR "Cross-compiling for bwg requires LLVM clang/clang++/ld.lld. Install llvm, set LLVM_ROOT, or set BWG_LLVM_ROOT.")
+endif ()
+
+set(CMAKE_C_COMPILER "${BWG_CLANG}" CACHE FILEPATH "")
+set(CMAKE_CXX_COMPILER "${BWG_CLANGXX}" CACHE FILEPATH "")
+set(CMAKE_C_COMPILER_TARGET x86_64-linux-gnu)
+set(CMAKE_CXX_COMPILER_TARGET x86_64-linux-gnu)
+set(CMAKE_SYSROOT "${BWG_SYSROOT}")
+
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-fuse-ld=lld")
+set(CMAKE_MODULE_LINKER_FLAGS_INIT "-fuse-ld=lld")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "-fuse-ld=lld")
+
+list(PREPEND CMAKE_FIND_ROOT_PATH "${BWG_SYSROOT}")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
