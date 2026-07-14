@@ -41,4 +41,11 @@ cmake --build --preset linux-debug-vcpkg
 ./out/build/linux-debug-vcpkg/space-station
 ```
 
+首次使用时，可以仅为本次运行临时开启 HTTP，不会修改配置文件：
+
+```bash
+./out/build/linux-debug-vcpkg/space-station --http
+./out/build/linux-debug-vcpkg/space-station --http-port 8080
+```
+
 The backend listens on `0.0.0.0:443` and `[::]:443` by default.

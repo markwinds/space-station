@@ -61,7 +61,13 @@
         <n-button tertiary circle title="居中" @click="centerMind">
           <template #icon><n-icon><LocateOutline /></n-icon></template>
         </n-button>
-        <n-button tertiary circle title="过滤器" @click="togglePanel('filters')">
+        <n-button
+          tertiary
+          circle
+          :type="isFiltered ? 'primary' : 'default'"
+          title="过滤器"
+          @click="togglePanel('filters')"
+        >
           <template #icon><n-icon><FunnelOutline /></n-icon></template>
         </n-button>
         <n-button
@@ -1566,6 +1572,22 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
 
   .tm-drawer.open {
     transform: translateY(0);
+  }
+
+  .tm-drawer--right {
+    top: 54px;
+    bottom: auto;
+    height: min(72dvh, 620px);
+    max-height: calc(100dvh - 54px);
+    padding-bottom: 0;
+    border-top: 0;
+    border-radius: 0 0 8px 8px;
+    transform: translateY(calc(-100% - 18px));
+  }
+
+  .tm-drawer--right .tm-drawer-body {
+    overscroll-behavior: contain;
+    scroll-padding-bottom: 16px;
   }
 
   .tm-condition-row {
