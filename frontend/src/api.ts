@@ -231,6 +231,57 @@ export interface FileShareListResponse {
   items: FileShareItem[];
 }
 
+export interface TransferServerConfig {
+  configVersion: number;
+  listenAddress: string;
+  tlsEnabled: boolean;
+  tlsPort: number;
+  plainEnabled: boolean;
+  plainPort: number;
+  certificatePath: string;
+  privateKeyPath: string;
+  clientCaPath: string;
+  destinationRoot: string;
+  basisRoots: string[];
+  sameNameMatchThreshold: number;
+  overwrite: boolean;
+}
+
+export interface TransferFileProgress {
+  fileId: string;
+  path: string;
+  stage: "hashing" | "scanning" | "uploading" | "verifying" | "completed" | "failed";
+  fileSize: number;
+  matchedBytes: number;
+  uploadedBytes: number;
+  error: string;
+}
+
+export interface TransferJob {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  error: string;
+  files: TransferFileProgress[];
+}
+
+export interface TransferState {
+  server: TransferServerConfig;
+  serverRunning: boolean;
+  jobs: TransferJob[];
+}
+
+export interface TransferClientRequest {
+  host: string;
+  port: number;
+  tlsEnabled: boolean;
+  certificatePath: string;
+  privateKeyPath: string;
+  serverCaPath: string;
+  serverName: string;
+  chunkSize: number;
+  files: string[];
+}
+
 const api = axios.create({
   baseURL: "/api",
   timeout: 10000,
@@ -344,4 +395,27 @@ export async function deleteFileShareItem(payload: { shareId: string; path: stri
 export function fileShareDownloadUrl(shareId: string, path: string) {
   const params = new URLSearchParams({ shareId, path });
   return `/api/tools/file-share/download?${params.toString()}`;
+}
+
+export async function fetchTransferState(): Promise<TransferState> {
+  const { data } = await api.get<TransferState>("/tools/transfer/state");
+  return data;
+}
+
+export async function saveTransferServerConfig(config: TransferServerConfig): Promise<TransferServerConfig> {
+  const { data } = await api.put<TransferServerConfig>("/tools/transfer/server/config", config);
+  return data;
+}
+
+export async function startTransferServer(): Promise<void> {
+  await api.post("/tools/transfer/server/start");
+}
+
+export async function stopTransferServer(): Promise<void> {
+  await api.post("/tools/transfer/server/stop");
+}
+
+export async function startTransferClientJob(config: TransferClientRequest): Promise<{ jobId: string }> {
+  const { data } = await api.post<{ jobId: string }>("/tools/transfer/client/jobs", config);
+  return data;
 }

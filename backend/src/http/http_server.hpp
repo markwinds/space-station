@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config/config_store.hpp"
+#include "transfer/transfer_manager.hpp"
 
 #include <drogon/drogon.h>
 #include <atomic>
@@ -33,6 +34,7 @@ class HttpServer
     std::string private_key_path_;
     std::string trusted_root_certificate_path_;
     ConfigStore& config_store_;
+    transfer::TransferManager transfer_manager_;
     std::thread server_thread_;
     std::atomic<bool> started_{false};
 };

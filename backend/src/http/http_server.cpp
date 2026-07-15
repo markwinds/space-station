@@ -83,11 +83,12 @@ drogon::ContentType StaticAssetContentType(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 5> hashed_asset_prefixes{
+    const std::array<std::string_view, 6> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/TimeManagerTool-",
         "/assets/DatePicker-",
         "/assets/FileShareTool-",
+        "/assets/TransferTool-",
         "/assets/_plugin-vue_export-helper-",
     };
 
@@ -418,7 +419,8 @@ HttpServer::HttpServer(ConfigStore& config_store, AppConfig config)
       certificate_path_(std::move(config.certificate_path)),
       private_key_path_(std::move(config.private_key_path)),
       trusted_root_certificate_path_(std::move(config.trusted_root_certificate_path)),
-      config_store_(config_store)
+      config_store_(config_store),
+      transfer_manager_(config_store)
 {
     RegisterRoutes();
 }
@@ -628,6 +630,72 @@ void HttpServer::RegisterRoutes()
             callback(JsonResponse({{"ok", true}}));
         },
         {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/transfer/state",
+        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            callback(JsonResponse(transfer_manager_.State()));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/transfer/server/config",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            try
+            {
+                callback(JsonResponse(transfer_manager_.UpdateServerConfig(body)));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/transfer/server/start",
+        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            try
+            {
+                callback(JsonResponse(transfer_manager_.StartServer()));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/transfer/server/stop",
+        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            callback(JsonResponse(transfer_manager_.StopServer()));
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/transfer/client/jobs",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            try
+            {
+                callback(JsonResponse(transfer_manager_.StartClientJob(body), drogon::k202Accepted));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
 
     drogon::app().registerHandler(
         "/api/tools/file-share/state",

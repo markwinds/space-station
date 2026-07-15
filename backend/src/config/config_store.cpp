@@ -420,6 +420,22 @@ void ConfigStore::SaveTimeManagerState(const nlohmann::json& json)
     SaveBusinessJsonUnlocked("timeManagerState", state);
 }
 
+nlohmann::json ConfigStore::LoadTransferConfig()
+{
+    std::lock_guard lock(mutex_);
+    const auto json = LoadJsonUnlocked();
+    const auto found = json.find("transferServer");
+    return found != json.end() && found->is_object() ? *found : nlohmann::json::object();
+}
+
+void ConfigStore::SaveTransferConfig(const nlohmann::json& transfer_config)
+{
+    std::lock_guard lock(mutex_);
+    auto json = LoadJsonUnlocked();
+    json["transferServer"] = transfer_config.is_object() ? transfer_config : nlohmann::json::object();
+    SaveJsonUnlocked(json);
+}
+
 nlohmann::json ConfigStore::LoadFileShares()
 {
     std::lock_guard lock(mutex_);

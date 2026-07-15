@@ -1,6 +1,13 @@
-import { CalendarOutline, CodeSlashOutline, CubeOutline, FolderOpenOutline, KeyOutline } from "@vicons/ionicons5";
+import {
+  CalendarOutline,
+  CodeSlashOutline,
+  CubeOutline,
+  FolderOpenOutline,
+  KeyOutline,
+  SwapHorizontalOutline,
+} from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "timeManager" | "fileShare" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "timeManager" | "fileShare" | "transfer" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -44,6 +51,14 @@ export const tools: ToolDefinition[] = [
     category: "Storage",
     icon: FolderOpenOutline,
     path: "/tools/file-share",
+  },
+  {
+    id: "transfer",
+    title: "差分传输",
+    description: "使用块匹配和 SHA-256 传输多个文件",
+    category: "Transfer",
+    icon: SwapHorizontalOutline,
+    path: "/tools/transfer",
   },
   {
     id: "runtime",

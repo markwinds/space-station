@@ -9,6 +9,7 @@ find_package(Drogon CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 set(SPACESTATION_FRONTEND_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../frontend/dist")
 set(SPACESTATION_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -34,12 +35,30 @@ add_custom_command(
         VERBATIM
 )
 
+add_library(space-transfer-core STATIC
+        src/transfer/transfer.cpp)
+
+target_include_directories(space-transfer-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(space-transfer-core
+        PUBLIC
+        nlohmann_json::nlohmann_json
+        OpenSSL::Crypto
+        OpenSSL::SSL
+        Threads::Threads)
+
+add_executable(space-transfer-server src/transfer/server_main.cpp)
+target_link_libraries(space-transfer-server PRIVATE space-transfer-core)
+
+add_executable(space-transfer-client src/transfer/client_main.cpp)
+target_link_libraries(space-transfer-client PRIVATE space-transfer-core)
+
 add_executable(space-station
         src/main.cpp
         src/cert/certificate_service.cpp
         src/config/config_store.cpp
         src/http/http_server.cpp
         src/logging/logger.cpp
+        src/transfer/transfer_manager.cpp
         "${SPACESTATION_EMBED_CPP}")
 
 target_include_directories(space-station
@@ -52,12 +71,18 @@ target_link_libraries(space-station
         Drogon::Drogon
         nlohmann_json::nlohmann_json
         unofficial::sqlite3::sqlite3
-        OpenSSL::Crypto)
+        OpenSSL::Crypto
+        space-transfer-core)
 
 if (WIN32)
+    target_compile_definitions(space-transfer-core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(space-transfer-core PUBLIC ws2_32)
     target_compile_definitions(space-station PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 endif ()
 
 if (MSVC)
+    target_compile_options(space-transfer-core PRIVATE /EHsc)
+    target_compile_options(space-transfer-server PRIVATE /EHsc)
+    target_compile_options(space-transfer-client PRIVATE /EHsc)
     target_compile_options(space-station PRIVATE /EHsc)
 endif ()

@@ -9,6 +9,7 @@ import { findTool } from "@/tools";
 
 const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/TimeManagerTool.vue"));
 const FileShareTool = defineAsyncComponent(() => import("@/components/tools/FileShareTool.vue"));
+const TransferTool = defineAsyncComponent(() => import("@/components/tools/TransferTool.vue"));
 
 const router = createRouter({
   history: createWebHistory("/web/"),
@@ -54,6 +55,15 @@ const router = createRouter({
       props: {
         tool: findTool("fileShare"),
         component: FileShareTool,
+      },
+    },
+    {
+      path: "/tools/transfer",
+      name: "transfer",
+      component: ToolView,
+      props: {
+        tool: findTool("transfer"),
+        component: TransferTool,
       },
     },
     {

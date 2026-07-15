@@ -33,6 +33,8 @@ class ConfigStore
     void SaveTimeManagerState(const nlohmann::json& json);
     nlohmann::json LoadFileShares();
     void SaveFileShares(const nlohmann::json& json);
+    nlohmann::json LoadTransferConfig();
+    void SaveTransferConfig(const nlohmann::json& json);
 
     static std::filesystem::path DefaultDataPath();
     static std::filesystem::path DefaultConfigPath();

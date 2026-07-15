@@ -1,0 +1,17 @@
+{
+  "configVersion": 1,
+  "listenAddress": "0.0.0.0",
+  "tlsEnabled": true,
+  "tlsPort": 9443,
+  "plainEnabled": false,
+  "plainPort": 9080,
+  "certificatePath": "data/tls/server.crt",
+  "privateKeyPath": "data/tls/server.key",
+  "clientCaPath": "data/tls/root.crt",
+  "destinationRoot": "data/transfer/incoming",
+  "basisRoots": [
+    "data/shared"
+  ],
+  "sameNameMatchThreshold": 0.5,
+  "overwrite": true
+}

@@ -1,0 +1,14 @@
+{
+  "configVersion": 1,
+  "host": "127.0.0.1",
+  "port": 9443,
+  "tlsEnabled": true,
+  "certificatePath": "data/tls/client.crt",
+  "privateKeyPath": "data/tls/client.key",
+  "serverCaPath": "data/tls/root.crt",
+  "serverName": "127.0.0.1",
+  "chunkSize": 1048576,
+  "files": [
+    "data/outgoing/example.bin"
+  ]
+}
