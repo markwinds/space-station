@@ -209,6 +209,44 @@ export interface TimeManagerState {
   settings: TimeManagerSettings;
 }
 
+export type HabitKind = "build" | "reduce";
+
+export interface Habit {
+  id: string;
+  title: string;
+  kind: HabitKind;
+  color: string;
+  schedule: "daily" | "weekly";
+  targetCount: number;
+  weekdays: number[];
+  reminderTime: string;
+  replacementAction: string;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type HabitRecordStatus = "completed" | "partial" | "skipped" | "occurred" | "replaced";
+
+export interface HabitRecord {
+  id: string;
+  habitId: string;
+  date: string;
+  status: HabitRecordStatus;
+  count: number;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HabitState {
+  habits: Habit[];
+  records: HabitRecord[];
+  settings: {
+    weekStartsOn: number;
+  };
+}
+
 export interface FileShare {
   id: string;
   name: string;
@@ -353,6 +391,15 @@ export async function fetchTimeManagerState(): Promise<TimeManagerState> {
 
 export async function saveTimeManagerState(payload: TimeManagerState): Promise<void> {
   await api.put("/tools/time-manager/state", payload);
+}
+
+export async function fetchHabitState(): Promise<HabitState> {
+  const { data } = await api.get<HabitState>("/tools/habits/state");
+  return data;
+}
+
+export async function saveHabitState(payload: HabitState): Promise<void> {
+  await api.put("/tools/habits/state", payload);
 }
 
 export async function fetchFileShareState(): Promise<{ shares: FileShare[] }> {

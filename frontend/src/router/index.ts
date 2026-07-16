@@ -8,6 +8,7 @@ import ToolView from "@/views/ToolView.vue";
 import { findTool } from "@/tools";
 
 const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/TimeManagerTool.vue"));
+const HabitTool = defineAsyncComponent(() => import("@/components/tools/HabitTool.vue"));
 const FileShareTool = defineAsyncComponent(() => import("@/components/tools/FileShareTool.vue"));
 const TransferTool = defineAsyncComponent(() => import("@/components/tools/TransferTool.vue"));
 
@@ -46,6 +47,15 @@ const router = createRouter({
         tool: findTool("timeManager"),
         component: TimeManagerTool,
         hideHeader: true,
+      },
+    },
+    {
+      path: "/tools/habits",
+      name: "habits",
+      component: ToolView,
+      props: {
+        tool: findTool("habits"),
+        component: HabitTool,
       },
     },
     {

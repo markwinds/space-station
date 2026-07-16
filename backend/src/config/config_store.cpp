@@ -420,6 +420,52 @@ void ConfigStore::SaveTimeManagerState(const nlohmann::json& json)
     SaveBusinessJsonUnlocked("timeManagerState", state);
 }
 
+nlohmann::json ConfigStore::LoadHabitState()
+{
+    std::lock_guard lock(mutex_);
+    auto state = LoadBusinessJsonUnlocked("habitState", BuildDefaultHabitStateJson());
+    if (!state.is_object())
+    {
+        state = BuildDefaultHabitStateJson();
+    }
+    if (!state.contains("habits") || !state["habits"].is_array())
+    {
+        state["habits"] = nlohmann::json::array();
+    }
+    if (!state.contains("records") || !state["records"].is_array())
+    {
+        state["records"] = nlohmann::json::array();
+    }
+    if (!state.contains("settings") || !state["settings"].is_object())
+    {
+        state["settings"] = BuildDefaultHabitStateJson()["settings"];
+    }
+    return state;
+}
+
+void ConfigStore::SaveHabitState(const nlohmann::json& json)
+{
+    std::lock_guard lock(mutex_);
+    auto state = BuildDefaultHabitStateJson();
+    if (json.is_object())
+    {
+        state.merge_patch(json);
+    }
+    if (!state["habits"].is_array())
+    {
+        state["habits"] = nlohmann::json::array();
+    }
+    if (!state["records"].is_array())
+    {
+        state["records"] = nlohmann::json::array();
+    }
+    if (!state["settings"].is_object())
+    {
+        state["settings"] = BuildDefaultHabitStateJson()["settings"];
+    }
+    SaveBusinessJsonUnlocked("habitState", state);
+}
+
 nlohmann::json ConfigStore::LoadTransferConfig()
 {
     std::lock_guard lock(mutex_);
@@ -552,6 +598,15 @@ nlohmann::json ConfigStore::BuildDefaultTimeManagerStateJson() const
              {"calendarStartHour", 7},
              {"calendarEndHour", 22},
          }},
+    };
+}
+
+nlohmann::json ConfigStore::BuildDefaultHabitStateJson() const
+{
+    return {
+        {"habits", nlohmann::json::array()},
+        {"records", nlohmann::json::array()},
+        {"settings", {{"weekStartsOn", 1}}},
     };
 }
 

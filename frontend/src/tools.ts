@@ -1,5 +1,6 @@
 import {
   CalendarOutline,
+  CheckmarkCircleOutline,
   CodeSlashOutline,
   CubeOutline,
   FolderOpenOutline,
@@ -7,7 +8,7 @@ import {
   SwapHorizontalOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "timeManager" | "fileShare" | "transfer" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "timeManager" | "habits" | "fileShare" | "transfer" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -43,6 +44,14 @@ export const tools: ToolDefinition[] = [
     category: "Planning",
     icon: CalendarOutline,
     path: "/tools/time-manager",
+  },
+  {
+    id: "habits",
+    title: "习惯养成",
+    description: "培养行动、减少干扰并回顾长期变化",
+    category: "Wellbeing",
+    icon: CheckmarkCircleOutline,
+    path: "/tools/habits",
   },
   {
     id: "fileShare",

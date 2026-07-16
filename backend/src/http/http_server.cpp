@@ -83,9 +83,10 @@ drogon::ContentType StaticAssetContentType(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 6> hashed_asset_prefixes{
+    const std::array<std::string_view, 7> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/TimeManagerTool-",
+        "/assets/HabitTool-",
         "/assets/DatePicker-",
         "/assets/FileShareTool-",
         "/assets/TransferTool-",
@@ -627,6 +628,26 @@ void HttpServer::RegisterRoutes()
                 return;
             }
             config_store_.SaveTimeManagerState(body);
+            callback(JsonResponse({{"ok", true}}));
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/habits/state",
+        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            callback(JsonResponse(config_store_.LoadHabitState()));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/habits/state",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            config_store_.SaveHabitState(body);
             callback(JsonResponse({{"ok", true}}));
         },
         {drogon::Put});
