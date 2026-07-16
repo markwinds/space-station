@@ -1024,6 +1024,16 @@ class Server::Impl
             }
         }
         std::unique_lock destination_lock(*destination_mutex);
+        auto destination_permissions = std::filesystem::perms::unknown;
+        std::error_code permissions_error;
+        if (std::filesystem::exists(destination, permissions_error))
+        {
+            destination_permissions = std::filesystem::status(destination, permissions_error).permissions();
+            if (permissions_error)
+            {
+                throw std::runtime_error("无法读取目标文件权限");
+            }
+        }
         if (!config_.overwrite && std::filesystem::exists(destination))
         {
             connection.SendJson({{"type", "error"}, {"sessionId", session_id}, {"message", "目标文件已存在"}});
@@ -1130,6 +1140,15 @@ class Server::Impl
                                  {"ok", false},
                                  {"message", "最终文件 SHA-256 校验失败"}});
             return;
+        }
+        if (destination_permissions != std::filesystem::perms::unknown)
+        {
+            std::filesystem::permissions(
+                temporary, destination_permissions, std::filesystem::perm_options::replace, permissions_error);
+            if (permissions_error)
+            {
+                throw std::runtime_error("无法继承目标文件权限");
+            }
         }
 #ifdef _WIN32
         if (config_.overwrite)
