@@ -42,6 +42,7 @@ struct ClientConfig
     std::string server_ca_path;
     std::string server_name;
     std::size_t chunk_size = kDefaultChunkSize;
+    std::string compression_mode = "chunk";
     std::vector<std::filesystem::path> files;
 };
 
@@ -53,6 +54,9 @@ struct FileProgress
     std::uint64_t file_size = 0;
     std::uint64_t matched_bytes = 0;
     std::uint64_t uploaded_bytes = 0;
+    std::uint64_t wire_bytes = 0;
+    std::uint64_t compressed_chunks = 0;
+    std::string compression_mode = "none";
     std::string error;
 };
 

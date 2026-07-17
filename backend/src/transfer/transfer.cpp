@@ -4,6 +4,7 @@
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <array>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
@@ -46,8 +48,11 @@ namespace
 {
 constexpr std::uint32_t kMaxJsonFrame = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaxChunkBody = 64ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kMaxStreamFrameBody = 1024ULL * 1024ULL;
+constexpr std::size_t kStreamBufferSize = 64ULL * 1024ULL;
 constexpr std::uint64_t kMaxFileSize = 4ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t kMaxChunkCount = 1'000'000;
+constexpr auto kZlibCompression = "zlib";
 
 void CloseSocket(SocketHandle socket)
 {
@@ -157,6 +162,151 @@ std::string Sha256File(const std::filesystem::path& path)
     EVP_MD_CTX_free(context);
     return Hex(digest.data(), digest_size);
 }
+
+std::vector<unsigned char> TryCompressZlib(const unsigned char* data, std::size_t size)
+{
+    if (size == 0 || size > static_cast<std::size_t>(std::numeric_limits<uLong>::max()))
+    {
+        return {};
+    }
+    uLongf compressed_size = compressBound(static_cast<uLong>(size));
+    std::vector<unsigned char> compressed(static_cast<std::size_t>(compressed_size));
+    const auto result = compress2(compressed.data(),
+                                  &compressed_size,
+                                  data,
+                                  static_cast<uLong>(size),
+                                  Z_BEST_SPEED);
+    if (result != Z_OK || compressed_size >= size)
+    {
+        return {};
+    }
+    compressed.resize(static_cast<std::size_t>(compressed_size));
+    return compressed;
+}
+
+std::vector<unsigned char> DecompressZlib(const unsigned char* data,
+                                          std::size_t size,
+                                          std::size_t expected_size)
+{
+    if (expected_size == 0 || expected_size > static_cast<std::size_t>(std::numeric_limits<uLongf>::max()))
+    {
+        throw std::runtime_error("压缩块的原始长度无效");
+    }
+    std::vector<unsigned char> output(expected_size);
+    uLongf output_size = static_cast<uLongf>(expected_size);
+    const auto result = uncompress(output.data(),
+                                   &output_size,
+                                   data,
+                                   static_cast<uLong>(size));
+    if (result != Z_OK || output_size != expected_size)
+    {
+        throw std::runtime_error("zlib 块解压失败或长度不匹配");
+    }
+    return output;
+}
+
+class DeflateStream
+{
+  public:
+    DeflateStream()
+    {
+        if (deflateInit(&stream_, Z_BEST_SPEED) != Z_OK)
+        {
+            throw std::runtime_error("无法初始化 zlib 连续压缩流");
+        }
+        initialized_ = true;
+    }
+
+    ~DeflateStream()
+    {
+        if (initialized_)
+        {
+            deflateEnd(&stream_);
+        }
+    }
+
+    z_stream& Get()
+    {
+        return stream_;
+    }
+
+  private:
+    z_stream stream_{};
+    bool initialized_ = false;
+};
+
+class InflateStream
+{
+  public:
+    InflateStream()
+    {
+        if (inflateInit(&stream_) != Z_OK)
+        {
+            throw std::runtime_error("无法初始化 zlib 连续解压流");
+        }
+        initialized_ = true;
+    }
+
+    ~InflateStream()
+    {
+        if (initialized_)
+        {
+            inflateEnd(&stream_);
+        }
+    }
+
+    z_stream& Get()
+    {
+        return stream_;
+    }
+
+  private:
+    z_stream stream_{};
+    bool initialized_ = false;
+};
+
+class Sha256Accumulator
+{
+  public:
+    Sha256Accumulator() : context_(EVP_MD_CTX_new(), EVP_MD_CTX_free)
+    {
+        if (!context_)
+        {
+            throw std::runtime_error("SHA-256 初始化失败");
+        }
+        Reset();
+    }
+
+    void Reset()
+    {
+        if (EVP_DigestInit_ex(context_.get(), EVP_sha256(), nullptr) != 1)
+        {
+            throw std::runtime_error("SHA-256 初始化失败");
+        }
+    }
+
+    void Update(const unsigned char* data, std::size_t size)
+    {
+        if (EVP_DigestUpdate(context_.get(), data, size) != 1)
+        {
+            throw std::runtime_error("SHA-256 计算失败");
+        }
+    }
+
+    std::string Finish()
+    {
+        std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+        unsigned int size = 0;
+        if (EVP_DigestFinal_ex(context_.get(), digest.data(), &size) != 1)
+        {
+            throw std::runtime_error("SHA-256 计算失败");
+        }
+        return Hex(digest.data(), size);
+    }
+
+  private:
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context_;
+};
 
 std::uint32_t WeakChecksum(const unsigned char* data, std::size_t size)
 {
@@ -653,6 +803,10 @@ void ValidateClientConfig(const ClientConfig& config)
     {
         throw std::runtime_error("块大小必须在 64 KiB 到 16 MiB 之间");
     }
+    if (config.compression_mode != "chunk" && config.compression_mode != "stream")
+    {
+        throw std::runtime_error("压缩方式必须是 chunk 或 stream");
+    }
     if (config.tls_enabled &&
         (config.certificate_path.empty() || config.private_key_path.empty() || config.server_ca_path.empty()))
     {
@@ -703,6 +857,7 @@ nlohmann::json ToJson(const ClientConfig& config)
             {"serverCaPath", config.server_ca_path},
             {"serverName", config.server_name},
             {"chunkSize", config.chunk_size},
+            {"compressionMode", config.compression_mode},
             {"files", files}};
 }
 
@@ -752,6 +907,7 @@ ClientConfig ClientConfigFromJson(const nlohmann::json& json, const std::filesys
     result.server_ca_path = ResolvePath(json.value("serverCaPath", ""), base).string();
     result.server_name = json.value("serverName", "");
     result.chunk_size = json.value("chunkSize", result.chunk_size);
+    result.compression_mode = json.value("compressionMode", result.compression_mode);
     if (const auto files = json.find("files"); files != json.end() && files->is_array())
     {
         for (const auto& file : *files)
@@ -1073,23 +1229,25 @@ class Server::Impl
         }
         output.flush();
         auto missing = nlohmann::json::array();
+        std::vector<std::size_t> missing_indices;
         for (std::size_t index = 0; index < matched.size(); ++index)
         {
             if (!matched[index])
             {
                 missing.push_back(index);
+                missing_indices.push_back(index);
             }
         }
         connection.SendJson({{"type", "plan"},
                              {"sessionId", session_id},
                              {"fileId", file_id},
                              {"matchedBytes", matched_bytes},
+                             {"compressionAlgorithms", nlohmann::json::array({kZlibCompression})},
+                             {"streamCompressionAlgorithms", nlohmann::json::array({kZlibCompression})},
                              {"missing", missing}});
 
-        std::size_t remaining = missing.size();
-        while (remaining > 0)
-        {
-            const auto chunk = connection.ReceiveJson();
+        std::size_t remaining = missing_indices.size();
+        auto receive_chunk = [&](const nlohmann::json& chunk) {
             if (chunk.value("type", "") != "chunk" || chunk.value("sessionId", "") != session_id ||
                 chunk.value("fileId", "") != file_id)
             {
@@ -1097,15 +1255,26 @@ class Server::Impl
             }
             const auto index = chunk.value("chunkIndex", signatures.size());
             const auto body_length = chunk.value("bodyLength", std::uint64_t{0});
+            const auto uncompressed_length = chunk.value("uncompressedLength", body_length);
+            const auto compression_algorithm = chunk.value("compressionAlgorithm", std::string("none"));
             const auto target_offset = chunk.value("targetOffset", std::uint64_t{0});
-            if (index >= signatures.size() || matched[index] || body_length != signatures[index].length ||
-                target_offset != index * chunk_size || body_length > kMaxChunkBody ||
+            const auto compression_valid = compression_algorithm == "none" || compression_algorithm == kZlibCompression;
+            const auto lengths_valid = compression_algorithm == "none"
+                                           ? body_length == uncompressed_length
+                                           : body_length < uncompressed_length;
+            if (index >= signatures.size() || matched[index] || !compression_valid || !lengths_valid ||
+                uncompressed_length != signatures[index].length || target_offset != index * chunk_size ||
+                body_length == 0 || body_length > kMaxChunkBody || uncompressed_length > kMaxChunkBody ||
                 chunk.value("strongHash", "") != signatures[index].strong)
             {
                 throw std::runtime_error("块描述无效或重复");
             }
-            std::vector<unsigned char> body(static_cast<std::size_t>(body_length));
-            connection.ReadAll(body.data(), body.size());
+            std::vector<unsigned char> encoded_body(static_cast<std::size_t>(body_length));
+            connection.ReadAll(encoded_body.data(), encoded_body.size());
+            auto body = compression_algorithm == kZlibCompression
+                            ? DecompressZlib(encoded_body.data(), encoded_body.size(),
+                                             static_cast<std::size_t>(uncompressed_length))
+                            : std::move(encoded_body);
             if (Sha256(body.data(), body.size()) != signatures[index].strong)
             {
                 throw std::runtime_error("块 SHA-256 校验失败");
@@ -1121,7 +1290,163 @@ class Server::Impl
             connection.SendJson({{"type", "chunkAck"},
                                  {"sessionId", session_id},
                                  {"fileId", file_id},
-                                 {"chunkIndex", index}});
+                                 {"chunkIndex", index},
+                                 {"compressionAlgorithm", compression_algorithm}});
+        };
+
+        if (remaining > 0)
+        {
+            const auto first = connection.ReceiveJson();
+            if (first.value("type", "") == "streamStart")
+            {
+                std::uint64_t expected_uncompressed = 0;
+                for (const auto index : missing_indices)
+                {
+                    if (expected_uncompressed > kMaxFileSize - signatures[index].length)
+                    {
+                        throw std::runtime_error("连续流原始长度溢出");
+                    }
+                    expected_uncompressed += signatures[index].length;
+                }
+                if (first.value("sessionId", "") != session_id || first.value("fileId", "") != file_id ||
+                    first.value("compressionAlgorithm", "") != kZlibCompression ||
+                    first.value("uncompressedLength", std::uint64_t{0}) != expected_uncompressed)
+                {
+                    throw std::runtime_error("连续流描述与当前会话不匹配");
+                }
+                connection.SendJson({{"type", "streamReady"}, {"sessionId", session_id}, {"fileId", file_id}});
+
+                InflateStream inflater;
+                auto& stream = inflater.Get();
+                std::vector<unsigned char> encoded(kStreamBufferSize);
+                std::vector<unsigned char> decoded(kStreamBufferSize);
+                std::size_t missing_position = 0;
+                std::size_t block_written = 0;
+                std::uint64_t total_written = 0;
+                std::uint64_t total_wire = 0;
+                std::uint64_t expected_sequence = 0;
+                bool stream_finished = false;
+                Sha256Accumulator block_hash;
+                const auto max_stream_wire = expected_uncompressed + expected_uncompressed / 16 + kStreamBufferSize;
+
+                auto write_decoded = [&](const unsigned char* data, std::size_t size) {
+                    while (size > 0)
+                    {
+                        if (missing_position >= missing_indices.size())
+                        {
+                            throw std::runtime_error("连续流解压数据超过预期长度");
+                        }
+                        const auto index = missing_indices[missing_position];
+                        const auto block_remaining = signatures[index].length - block_written;
+                        const auto count = std::min(size, block_remaining);
+                        output.seekp(static_cast<std::streamoff>(index * chunk_size + block_written));
+                        output.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(count));
+                        if (!output)
+                        {
+                            throw std::runtime_error("写入连续流解压数据失败");
+                        }
+                        block_hash.Update(data, count);
+                        data += count;
+                        size -= count;
+                        block_written += count;
+                        total_written += count;
+                        if (block_written == signatures[index].length)
+                        {
+                            if (block_hash.Finish() != signatures[index].strong)
+                            {
+                                throw std::runtime_error("连续流块 SHA-256 校验失败");
+                            }
+                            matched[index] = true;
+                            --remaining;
+                            ++missing_position;
+                            block_written = 0;
+                            if (missing_position < missing_indices.size())
+                            {
+                                block_hash.Reset();
+                            }
+                        }
+                    }
+                };
+
+                while (true)
+                {
+                    const auto frame = connection.ReceiveJson();
+                    const auto type = frame.value("type", "");
+                    if (frame.value("sessionId", "") != session_id || frame.value("fileId", "") != file_id)
+                    {
+                        throw std::runtime_error("连续流帧与当前会话不匹配");
+                    }
+                    if (type == "streamEnd")
+                    {
+                        if (!stream_finished || frame.value("sequence", std::uint64_t{0}) != expected_sequence ||
+                            missing_position != missing_indices.size() || block_written != 0 ||
+                            total_written != expected_uncompressed || remaining != 0 ||
+                            frame.value("wireBytes", std::numeric_limits<std::uint64_t>::max()) != total_wire)
+                        {
+                            throw std::runtime_error("连续流未完整结束");
+                        }
+                        connection.SendJson({{"type", "streamAck"},
+                                             {"sessionId", session_id},
+                                             {"fileId", file_id},
+                                             {"wireBytes", frame.value("wireBytes", std::uint64_t{0})}});
+                        break;
+                    }
+                    const auto body_length = frame.value("bodyLength", std::uint64_t{0});
+                    if (type != "streamData" || stream_finished ||
+                        frame.value("sequence", std::numeric_limits<std::uint64_t>::max()) != expected_sequence ||
+                        body_length == 0 || body_length > kMaxStreamFrameBody ||
+                        body_length > max_stream_wire - total_wire)
+                    {
+                        throw std::runtime_error("连续流数据帧无效");
+                    }
+                    encoded.resize(static_cast<std::size_t>(body_length));
+                    connection.ReadAll(encoded.data(), encoded.size());
+                    total_wire += body_length;
+                    stream.next_in = encoded.data();
+                    stream.avail_in = static_cast<uInt>(encoded.size());
+                    while (true)
+                    {
+                        stream.next_out = decoded.data();
+                        stream.avail_out = static_cast<uInt>(decoded.size());
+                        const auto result = inflate(&stream, Z_NO_FLUSH);
+                        const auto produced = decoded.size() - stream.avail_out;
+                        if (produced > 0)
+                        {
+                            write_decoded(decoded.data(), produced);
+                        }
+                        if (result == Z_STREAM_END)
+                        {
+                            stream_finished = true;
+                            if (stream.avail_in != 0)
+                            {
+                                throw std::runtime_error("连续流尾部包含多余压缩数据");
+                            }
+                            break;
+                        }
+                        if (result != Z_OK && !(result == Z_BUF_ERROR && stream.avail_in == 0 && produced == 0))
+                        {
+                            throw std::runtime_error("zlib 连续流解压失败");
+                        }
+                        if (stream.avail_in == 0 && produced < decoded.size())
+                        {
+                            break;
+                        }
+                    }
+                    connection.SendJson({{"type", "streamDataAck"},
+                                         {"sessionId", session_id},
+                                         {"fileId", file_id},
+                                         {"sequence", expected_sequence}});
+                    ++expected_sequence;
+                }
+            }
+            else
+            {
+                receive_chunk(first);
+                while (remaining > 0)
+                {
+                    receive_chunk(connection.ReceiveJson());
+                }
+            }
         }
         const auto commit = connection.ReceiveJson();
         if (commit.value("type", "") != "commit" || commit.value("sessionId", "") != session_id ||
@@ -1282,13 +1607,19 @@ std::vector<FileProgress> Client::Send(const ProgressCallback& callback)
                 throw std::runtime_error("服务端返回的差分计划无效");
             }
             progress.matched_bytes = plan.value("matchedBytes", std::uint64_t{0});
-            progress.stage = "uploading";
-            if (callback)
-            {
-                callback(progress);
-            }
-            std::ifstream input(path, std::ios::binary);
-            std::vector<unsigned char> buffer(config_.chunk_size);
+            const auto compression_algorithms = plan.value("compressionAlgorithms", nlohmann::json::array());
+            const auto supports_zlib = compression_algorithms.is_array() &&
+                                       std::find(compression_algorithms.begin(),
+                                                 compression_algorithms.end(),
+                                                 kZlibCompression) != compression_algorithms.end();
+            const auto stream_compression_algorithms =
+                plan.value("streamCompressionAlgorithms", nlohmann::json::array());
+            const auto supports_zlib_stream = stream_compression_algorithms.is_array() &&
+                                              std::find(stream_compression_algorithms.begin(),
+                                                        stream_compression_algorithms.end(),
+                                                        kZlibCompression) != stream_compression_algorithms.end();
+            std::vector<std::size_t> missing_indices;
+            std::uint64_t missing_bytes = 0;
             for (const auto& item : plan.value("missing", nlohmann::json::array()))
             {
                 const auto index = item.get<std::size_t>();
@@ -1296,34 +1627,182 @@ std::vector<FileProgress> Client::Send(const ProgressCallback& callback)
                 {
                     throw std::runtime_error("服务端返回了无效的缺失块编号");
                 }
-                input.seekg(static_cast<std::streamoff>(index * config_.chunk_size));
-                input.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(signatures[index].length));
-                if (static_cast<std::size_t>(input.gcount()) != signatures[index].length)
+                if (!missing_indices.empty() && index <= missing_indices.back())
                 {
-                    throw std::runtime_error("读取待上传块失败");
+                    throw std::runtime_error("服务端返回的缺失块顺序无效");
                 }
-                connection->SendJson({{"type", "chunk"},
+                if (missing_bytes > kMaxFileSize - signatures[index].length)
+                {
+                    throw std::runtime_error("缺失块总长度溢出");
+                }
+                missing_indices.push_back(index);
+                missing_bytes += signatures[index].length;
+            }
+            progress.stage = "uploading";
+            if (callback)
+            {
+                callback(progress);
+            }
+            std::ifstream input(path, std::ios::binary);
+            if (config_.compression_mode == "stream" && supports_zlib_stream && !missing_indices.empty())
+            {
+                progress.compression_mode = "stream";
+                connection->SendJson({{"type", "streamStart"},
                                       {"sessionId", session_id},
                                       {"fileId", progress.file_id},
-                                      {"chunkIndex", index},
-                                      {"targetOffset", index * config_.chunk_size},
-                                      {"bodyLength", signatures[index].length},
-                                      {"strongHash", signatures[index].strong}});
-                connection->WriteAll(buffer.data(), signatures[index].length);
+                                      {"compressionAlgorithm", kZlibCompression},
+                                      {"uncompressedLength", missing_bytes}});
+                const auto ready = connection->ReceiveJson();
+                if (ready.value("type", "") != "streamReady" || ready.value("sessionId", "") != session_id ||
+                    ready.value("fileId", "") != progress.file_id)
+                {
+                    throw std::runtime_error("服务端未确认连续压缩流");
+                }
+
+                DeflateStream deflater;
+                auto& stream = deflater.Get();
+                std::vector<unsigned char> stream_input(kStreamBufferSize);
+                std::vector<unsigned char> encoded(kStreamBufferSize);
+                std::uint64_t sequence = 0;
+                auto send_encoded = [&](std::size_t size) {
+                    connection->SendJson({{"type", "streamData"},
+                                          {"sessionId", session_id},
+                                          {"fileId", progress.file_id},
+                                          {"sequence", sequence},
+                                          {"bodyLength", size}});
+                    connection->WriteAll(encoded.data(), size);
+                    const auto acknowledgement = connection->ReceiveJson();
+                    if (acknowledgement.value("type", "") != "streamDataAck" ||
+                        acknowledgement.value("sessionId", "") != session_id ||
+                        acknowledgement.value("fileId", "") != progress.file_id ||
+                        acknowledgement.value("sequence", std::numeric_limits<std::uint64_t>::max()) != sequence)
+                    {
+                        throw std::runtime_error("服务端连续流数据确认无效");
+                    }
+                    progress.wire_bytes += size;
+                    ++sequence;
+                };
+
+                for (const auto index : missing_indices)
+                {
+                    input.seekg(static_cast<std::streamoff>(index * config_.chunk_size));
+                    std::size_t block_remaining = signatures[index].length;
+                    while (block_remaining > 0)
+                    {
+                        const auto input_size = std::min(block_remaining, stream_input.size());
+                        input.read(reinterpret_cast<char*>(stream_input.data()),
+                                   static_cast<std::streamsize>(input_size));
+                        if (static_cast<std::size_t>(input.gcount()) != input_size)
+                        {
+                            throw std::runtime_error("读取待上传连续流失败");
+                        }
+                        block_remaining -= input_size;
+                        stream.next_in = stream_input.data();
+                        stream.avail_in = static_cast<uInt>(input_size);
+                        while (stream.avail_in > 0)
+                        {
+                            stream.next_out = encoded.data();
+                            stream.avail_out = static_cast<uInt>(encoded.size());
+                            if (deflate(&stream, Z_NO_FLUSH) != Z_OK)
+                            {
+                                throw std::runtime_error("zlib 连续流压缩失败");
+                            }
+                            const auto produced = encoded.size() - stream.avail_out;
+                            if (produced > 0)
+                            {
+                                send_encoded(produced);
+                            }
+                        }
+                    }
+                    progress.uploaded_bytes += signatures[index].length;
+                    ++progress.compressed_chunks;
+                    if (callback)
+                    {
+                        callback(progress);
+                    }
+                }
+                while (true)
+                {
+                    stream.next_out = encoded.data();
+                    stream.avail_out = static_cast<uInt>(encoded.size());
+                    const auto result = deflate(&stream, Z_FINISH);
+                    if (result != Z_OK && result != Z_STREAM_END)
+                    {
+                        throw std::runtime_error("zlib 连续流结束失败");
+                    }
+                    const auto produced = encoded.size() - stream.avail_out;
+                    if (produced > 0)
+                    {
+                        send_encoded(produced);
+                    }
+                    if (result == Z_STREAM_END)
+                    {
+                        break;
+                    }
+                }
+                connection->SendJson({{"type", "streamEnd"},
+                                      {"sessionId", session_id},
+                                      {"fileId", progress.file_id},
+                                      {"sequence", sequence},
+                                      {"wireBytes", progress.wire_bytes}});
                 const auto acknowledgement = connection->ReceiveJson();
-                if (acknowledgement.value("type", "") == "error")
+                if (acknowledgement.value("type", "") != "streamAck" ||
+                    acknowledgement.value("sessionId", "") != session_id ||
+                    acknowledgement.value("fileId", "") != progress.file_id)
                 {
-                    throw std::runtime_error(acknowledgement.value("message", "服务端拒绝文件块"));
+                    throw std::runtime_error("服务端连续流结束确认无效");
                 }
-                if (acknowledgement.value("type", "") != "chunkAck" ||
-                    acknowledgement.value("chunkIndex", signatures.size()) != index)
+            }
+            else
+            {
+                std::vector<unsigned char> buffer(config_.chunk_size);
+                for (const auto index : missing_indices)
                 {
-                    throw std::runtime_error("服务端块确认无效");
-                }
-                progress.uploaded_bytes += signatures[index].length;
-                if (callback)
-                {
-                    callback(progress);
+                    input.seekg(static_cast<std::streamoff>(index * config_.chunk_size));
+                    input.read(reinterpret_cast<char*>(buffer.data()),
+                               static_cast<std::streamsize>(signatures[index].length));
+                    if (static_cast<std::size_t>(input.gcount()) != signatures[index].length)
+                    {
+                        throw std::runtime_error("读取待上传块失败");
+                    }
+                    auto compressed = supports_zlib
+                                          ? TryCompressZlib(buffer.data(), signatures[index].length)
+                                          : std::vector<unsigned char>{};
+                    const auto use_compression = !compressed.empty();
+                    const auto* body = use_compression ? compressed.data() : buffer.data();
+                    const auto body_length = use_compression ? compressed.size() : signatures[index].length;
+                    const auto compression_algorithm = use_compression ? kZlibCompression : std::string_view("none");
+                    connection->SendJson({{"type", "chunk"},
+                                          {"sessionId", session_id},
+                                          {"fileId", progress.file_id},
+                                          {"chunkIndex", index},
+                                          {"targetOffset", index * config_.chunk_size},
+                                          {"bodyLength", body_length},
+                                          {"uncompressedLength", signatures[index].length},
+                                          {"compressionAlgorithm", compression_algorithm},
+                                          {"strongHash", signatures[index].strong}});
+                    connection->WriteAll(body, body_length);
+                    const auto acknowledgement = connection->ReceiveJson();
+                    if (acknowledgement.value("type", "") == "error")
+                    {
+                        throw std::runtime_error(acknowledgement.value("message", "服务端拒绝文件块"));
+                    }
+                    if (acknowledgement.value("type", "") != "chunkAck" ||
+                        acknowledgement.value("chunkIndex", signatures.size()) != index)
+                    {
+                        throw std::runtime_error("服务端块确认无效");
+                    }
+                    progress.uploaded_bytes += signatures[index].length;
+                    progress.wire_bytes += body_length;
+                    progress.compressed_chunks += use_compression ? 1 : 0;
+                    if (use_compression)
+                    {
+                        progress.compression_mode = "chunk";
+                    }
+                    if (callback)
+                    {
+                        callback(progress);
+                    }
                 }
             }
             progress.stage = "verifying";

@@ -5,6 +5,7 @@
   "dependencies": [
     "drogon",
     "nlohmann-json",
-    "sqlite3"
+    "sqlite3",
+    "zlib"
   ]
 }

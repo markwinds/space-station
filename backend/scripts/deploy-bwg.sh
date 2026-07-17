@@ -19,6 +19,7 @@ readonly REMOTE_PID="${BWG_REMOTE_PID:-${REMOTE_PATH}.pid}"
 readonly SSH_CONNECT_TIMEOUT="${BWG_SSH_CONNECT_TIMEOUT:-10}"
 
 readonly CHUNK_SIZE="${BWG_TRANSFER_CHUNK_SIZE:-65536}"
+readonly COMPRESSION_MODE="${BWG_TRANSFER_COMPRESSION_MODE:-stream}"
 readonly REMOTE_MANAGEMENT_PORT="${BWG_MANAGEMENT_PORT:-8443}"
 readonly REMOTE_TRANSFER_PORT="${BWG_TRANSFER_PORT:-9443}"
 readonly LOCAL_MANAGEMENT_PORT="${BWG_LOCAL_MANAGEMENT_PORT:-18443}"
@@ -99,6 +100,10 @@ if [[ "${CHUNK_SIZE}" -lt 65536 || "${CHUNK_SIZE}" -gt 16777216 ]]; then
     echo "BWG_TRANSFER_CHUNK_SIZE must be between 65536 and 16777216 bytes" >&2
     exit 1
 fi
+if [[ "${COMPRESSION_MODE}" != "chunk" && "${COMPRESSION_MODE}" != "stream" ]]; then
+    echo "BWG_TRANSFER_COMPRESSION_MODE must be chunk or stream" >&2
+    exit 1
+fi
 
 readonly TOTAL_STARTED_MS="$(now_ms)"
 
@@ -124,6 +129,12 @@ if [[ ! -x "${LOCAL_BINARY}" ]]; then
 fi
 if [[ ! -x "${LOCAL_CLIENT}" ]]; then
     echo "Built local transfer client was not found: ${LOCAL_CLIENT}" >&2
+    exit 1
+fi
+
+target_file_description="$(file "${LOCAL_BINARY}")"
+if [[ "${target_file_description}" == *"not stripped"* ]]; then
+    echo "Release target executable still contains removable symbols: ${target_file_description}" >&2
     exit 1
 fi
 
@@ -178,7 +189,7 @@ api_request /api/tools/transfer/server/start -X POST >/dev/null
 transfer_started=1
 service_elapsed_ms=$(( $(now_ms) - service_started_ms ))
 
-echo "==> Differential upload: chunk size ${CHUNK_SIZE} bytes"
+echo "==> Differential upload: chunk size ${CHUNK_SIZE} bytes, compression ${COMPRESSION_MODE}"
 transfer_started_ms="$(now_ms)"
 (
     cd -- "${SOURCE_DIR}"
@@ -186,6 +197,7 @@ transfer_started_ms="$(now_ms)"
         --host 127.0.0.1 \
         --port "${LOCAL_TRANSFER_PORT}" \
         --chunk-size "${CHUNK_SIZE}" \
+        --compression "${COMPRESSION_MODE}" \
         --cert "${CLIENT_CERT}" \
         --key "${CLIENT_KEY}" \
         --server-ca "${SERVER_CA}" \
@@ -207,13 +219,16 @@ for line in sys.stdin:
         percent = min(100, done * 100 / size) if size else 0
         reused = item.get("matchedBytes", 0)
         uploaded = item.get("uploadedBytes", 0)
-        print(f"    [{stage}] {percent:.1f}%  reused={reused}  uploaded={uploaded}", flush=True)
+        wire = item.get("wireBytes", uploaded)
+        compressed = item.get("compressedChunks", 0)
+        mode = item.get("compressionMode", "none")
+        print(f"    [{stage}] {percent:.1f}%  reused={reused}  missing={uploaded}  wire={wire}  compression={mode}:{compressed}", flush=True)
         last_stage = stage
         last_bucket = bucket
 '
 transfer_elapsed_ms=$(( $(now_ms) - transfer_started_ms ))
 
-IFS=$'\t' read -r file_size matched_bytes uploaded_bytes < <(
+IFS=$'\t' read -r file_size matched_bytes uploaded_bytes wire_bytes compressed_chunks compression_mode < <(
     python3 - "${TRANSFER_LOG}" <<'PY'
 import json
 import sys
@@ -226,7 +241,10 @@ with open(sys.argv[1], encoding="utf-8") as stream:
             completed = item
 if completed is None:
     raise SystemExit("transfer did not produce a completed result")
-print(completed["fileSize"], completed["matchedBytes"], completed["uploadedBytes"], sep="\t")
+uploaded = completed["uploadedBytes"]
+print(completed["fileSize"], completed["matchedBytes"], uploaded,
+      completed.get("wireBytes", uploaded), completed.get("compressedChunks", 0),
+      completed.get("compressionMode", "none"), sep="\t")
 PY
 )
 
@@ -313,6 +331,14 @@ total_elapsed_ms=$(( $(now_ms) - TOTAL_STARTED_MS ))
 
 reuse_percent="$(awk -v matched="${matched_bytes}" -v size="${file_size}" 'BEGIN { printf "%.2f", size ? matched * 100 / size : 100 }')"
 upload_percent="$(awk -v uploaded="${uploaded_bytes}" -v size="${file_size}" 'BEGIN { printf "%.2f", size ? uploaded * 100 / size : 0 }')"
+wire_percent="$(awk -v wire="${wire_bytes}" -v size="${file_size}" 'BEGIN { printf "%.2f", size ? wire * 100 / size : 0 }')"
+compression_saved=$(( uploaded_bytes - wire_bytes ))
+if (( compression_saved >= 0 )); then
+    compression_effect="saved $(format_bytes "${compression_saved}") (${compression_saved} bytes)"
+else
+    compression_added=$(( -compression_saved ))
+    compression_effect="added $(format_bytes "${compression_added}") (${compression_added} bytes)"
+fi
 
 echo
 echo "==> Differential deployment completed"
@@ -320,7 +346,9 @@ echo "    Health: ${health_response}"
 echo "    SHA-256: ${local_sha}"
 echo "    File size: $(format_bytes "${file_size}") (${file_size} bytes)"
 echo "    Reused payload: $(format_bytes "${matched_bytes}") (${matched_bytes} bytes, ${reuse_percent}%)"
-echo "    Uploaded payload: $(format_bytes "${uploaded_bytes}") (${uploaded_bytes} bytes, ${upload_percent}%)"
+echo "    Missing payload: $(format_bytes "${uploaded_bytes}") (${uploaded_bytes} bytes, ${upload_percent}%)"
+echo "    Wire payload: $(format_bytes "${wire_bytes}") (${wire_bytes} bytes, ${wire_percent}%)"
+echo "    Compression: ${compression_mode}, ${compressed_chunks} logical chunks, ${compression_effect}"
 echo "    Chunk size: $(format_bytes "${CHUNK_SIZE}")"
 echo "    Build: $(format_duration "${build_elapsed_ms}")"
 echo "    Transfer service setup: $(format_duration "${service_elapsed_ms}")"

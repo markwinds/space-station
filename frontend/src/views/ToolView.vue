@@ -1,11 +1,12 @@
 <template>
   <section class="tool-view" :class="viewClass">
     <header v-if="!hideHeader" class="tool-header">
-      <div>
-        <p class="eyebrow">{{ tool?.category }}</p>
-        <h2>{{ tool?.title }}</h2>
+      <div class="tool-header-leading">
+        <div>
+          <p class="eyebrow">{{ tool?.category }}</p>
+          <h2>{{ tool?.title }}</h2>
+        </div>
       </div>
-      <n-button tertiary @click="router.push('/')">返回主页</n-button>
     </header>
 
     <component :is="component" />
@@ -14,11 +15,8 @@
 
 <script setup lang="ts">
 import type { Component } from "vue";
-import { useRouter } from "vue-router";
-import { NButton } from "naive-ui";
 import type { ToolDefinition } from "@/tools";
 
-const router = useRouter();
 const props = defineProps<{
   tool?: ToolDefinition;
   component: Component;
@@ -26,5 +24,6 @@ const props = defineProps<{
 }>();
 const viewClass = {
   "tool-view--fullscreen": props.hideHeader,
+  "tool-view--habits": props.tool?.id === "habits",
 };
 </script>

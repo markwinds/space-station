@@ -10,6 +10,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
 
 set(SPACESTATION_FRONTEND_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../frontend/dist")
 set(SPACESTATION_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -44,7 +45,8 @@ target_link_libraries(space-transfer-core
         nlohmann_json::nlohmann_json
         OpenSSL::Crypto
         OpenSSL::SSL
-        Threads::Threads)
+        Threads::Threads
+        ZLIB::ZLIB)
 
 add_executable(space-transfer-server src/transfer/server_main.cpp)
 target_link_libraries(space-transfer-server PRIVATE space-transfer-core)
@@ -73,6 +75,25 @@ target_link_libraries(space-station
         unofficial::sqlite3::sqlite3
         OpenSSL::Crypto
         space-transfer-core)
+
+function(strip_release_executable target)
+    add_custom_command(
+            TARGET "${target}"
+            POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DBUILD_CONFIG=$<CONFIG>"
+                    "-DSTRIP_TOOL=${CMAKE_STRIP}"
+                    "-DTARGET_FILE=$<TARGET_FILE:${target}>"
+                    "-DTARGET_NAME=${target}"
+                    "-DTARGET_PLATFORM=${CMAKE_SYSTEM_NAME}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_release.cmake"
+            COMMENT "Post-processing executable ${target}"
+            VERBATIM)
+endfunction()
+
+strip_release_executable(space-station)
+strip_release_executable(space-transfer-client)
+strip_release_executable(space-transfer-server)
 
 if (WIN32)
     target_compile_definitions(space-transfer-core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)

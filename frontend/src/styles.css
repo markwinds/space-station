@@ -135,6 +135,10 @@ input {
   overflow: auto;
 }
 
+.workspace--without-topbar {
+  min-height: 100vh;
+}
+
 .workspace--fullscreen {
   height: 100dvh;
   min-height: 100dvh;
@@ -156,12 +160,21 @@ input {
   gap: 0;
 }
 
+.tool-view--habits {
+  width: min(1060px, 100%);
+}
+
 .home-header,
 .tool-header {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
+}
+
+.tool-header-leading {
+  min-width: 0;
+  display: grid;
 }
 
 .eyebrow {

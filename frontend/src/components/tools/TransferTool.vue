@@ -17,6 +17,9 @@
               <n-form-item label="块大小（KiB）">
                 <n-input-number v-model:value="chunkSizeKiB" :min="64" :max="16384" :step="64" />
               </n-form-item>
+              <n-form-item label="压缩方式">
+                <n-select v-model:value="client.compressionMode" :options="compressionOptions" />
+              </n-form-item>
               <n-form-item label="启用 TLS 1.3">
                 <n-switch v-model:value="client.tlsEnabled" />
               </n-form-item>
@@ -76,7 +79,12 @@
               <div class="transfer-stats">
                 <span>大小 {{ formatBytes(file.fileSize) }}</span>
                 <span>复用 {{ formatBytes(file.matchedBytes) }}</span>
-                <span>上传 {{ formatBytes(file.uploadedBytes) }}</span>
+                <span>缺失 {{ formatBytes(file.uploadedBytes) }}</span>
+                <span>实际发送 {{ formatBytes(file.wireBytes) }}</span>
+                <span v-if="file.compressionMode !== 'none'">
+                  {{ compressionModeText(file.compressionMode) }}，{{ compressionEffect(file) }}
+                  <template v-if="file.compressionMode === 'chunk'">（{{ file.compressedChunks }} 块）</template>
+                </span>
               </div>
               <n-alert v-if="file.error" type="error" :show-icon="false">{{ file.error }}</n-alert>
             </div>
@@ -183,6 +191,7 @@ import {
   NInput,
   NInputNumber,
   NProgress,
+  NSelect,
   NSpace,
   NSwitch,
   NTabPane,
@@ -211,6 +220,10 @@ const clientFilesText = ref("");
 const basisRootsText = ref("");
 const chunkSizeKiB = ref(1024);
 const sameNameThresholdPercent = ref(50);
+const compressionOptions = [
+  { label: "连续流压缩（压缩率更高）", value: "stream" },
+  { label: "逐块压缩（独立压缩块）", value: "chunk" },
+];
 let pollTimer: number | undefined;
 
 const state = reactive<TransferState>({
@@ -227,6 +240,7 @@ const client = reactive<Omit<TransferClientRequest, "files" | "chunkSize">>({
   privateKeyPath: "",
   serverCaPath: "",
   serverName: "",
+  compressionMode: "stream",
 });
 
 const clientFiles = computed(() => splitLines(clientFilesText.value));
@@ -354,6 +368,15 @@ function formatBytes(value: number) {
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`;
   if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
   return `${(value / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+function compressionModeText(mode: TransferFileProgress["compressionMode"]) {
+  return mode === "stream" ? "连续流压缩" : mode === "chunk" ? "逐块压缩" : "未压缩";
+}
+
+function compressionEffect(file: TransferFileProgress) {
+  const difference = file.uploadedBytes - file.wireBytes;
+  return difference >= 0 ? `节省 ${formatBytes(difference)}` : `增加 ${formatBytes(-difference)}`;
 }
 
 function stageText(stage: TransferFileProgress["stage"]) {

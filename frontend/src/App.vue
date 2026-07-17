@@ -2,7 +2,7 @@
   <n-config-provider>
     <n-message-provider>
       <div class="app-shell">
-        <header v-if="!hideChrome" class="app-topbar">
+        <header v-if="isHome" class="app-topbar">
           <router-link class="brand-block" to="/">
             <div class="brand-mark">SS</div>
             <div>
@@ -20,7 +20,13 @@
           </nav>
         </header>
 
-        <main class="workspace" :class="{ 'workspace--fullscreen': hideChrome }">
+        <main
+          class="workspace"
+          :class="{
+            'workspace--without-topbar': !isHome,
+            'workspace--fullscreen': isFullscreen,
+          }"
+        >
           <router-view />
         </main>
       </div>
@@ -36,5 +42,6 @@ import { useRoute } from "vue-router";
 import { RouterLink, RouterView } from "vue-router";
 
 const route = useRoute();
-const hideChrome = computed(() => route.meta.hideChrome === true);
+const isHome = computed(() => route.name === "home");
+const isFullscreen = computed(() => route.meta.hideChrome === true);
 </script>

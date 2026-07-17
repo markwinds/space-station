@@ -20,6 +20,7 @@ void Usage(const char* program)
 {
     std::cout << "用法: " << program << " [--config client.json] [选项] <文件...>\n"
               << "  --host <地址> --port <端口> --tls / --plain --chunk-size <字节>\n"
+              << "  --compression <chunk|stream>\n"
               << "  --cert <文件> --key <文件> --server-ca <文件> --server-name <名称>\n";
 }
 } // namespace
@@ -58,6 +59,8 @@ int main(int argc, char* argv[])
                 config.tls_enabled = true;
             else if (option == "--chunk-size")
                 config.chunk_size = std::stoull(value());
+            else if (option == "--compression")
+                config.compression_mode = value();
             else if (option == "--cert")
                 config.certificate_path = value();
             else if (option == "--key")
@@ -86,6 +89,9 @@ int main(int argc, char* argv[])
                                        {"fileSize", progress.file_size},
                                        {"matchedBytes", progress.matched_bytes},
                                        {"uploadedBytes", progress.uploaded_bytes},
+                                       {"wireBytes", progress.wire_bytes},
+                                       {"compressedChunks", progress.compressed_chunks},
+                                       {"compressionMode", progress.compression_mode},
                                        {"error", progress.error}}
                              .dump()
                       << '\n';

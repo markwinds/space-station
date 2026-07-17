@@ -1,246 +1,331 @@
 <template>
-  <div class="habit-tool">
-    <section class="habit-hero">
+  <div class="habit-app">
+    <header class="habit-intro">
       <div>
-        <p class="habit-kicker">{{ todayLabel }}</p>
-        <h3>{{ greeting }}</h3>
-        <p>不追求完美的一天，只让想做的事更容易发生。</p>
+        <p>{{ todayLabel }}</p>
+        <h2>把今天过得更有意识一点</h2>
+        <span>完成想坚持的事，也诚实记录想减少的事。</span>
       </div>
-      <div class="hero-actions">
-        <span v-if="saveLabel" class="save-state">{{ saveLabel }}</span>
-        <n-button type="primary" @click="openCreate">新建习惯</n-button>
+      <div class="intro-actions">
+        <small :class="{ error: saveState === '保存失败' }">{{ saveState }}</small>
+        <n-button type="primary" @click="openCreate">
+          <template #icon><n-icon><AddOutline /></n-icon></template>
+          新建习惯
+        </n-button>
       </div>
-    </section>
+    </header>
 
     <n-spin :show="loading">
-      <n-alert v-if="loadError" type="error" title="暂时无法读取习惯数据" class="load-alert">
+      <n-alert v-if="loadError" type="error" title="习惯数据加载失败">
         {{ loadError }}
-        <n-button size="small" class="retry-button" @click="loadState">重试</n-button>
+        <n-button size="small" @click="loadState">重试</n-button>
       </n-alert>
 
+      <section v-else-if="!activeHabits.length" class="empty-state">
+        <div class="empty-mark">✓</div>
+        <h3>先从一个很小的行动开始</h3>
+        <p>例如“晚饭后散步 10 分钟”，明确、轻松，也更容易持续。</p>
+        <n-button type="primary" @click="openCreate">创建第一个习惯</n-button>
+      </section>
+
       <template v-else>
-        <section v-if="!activeHabits.length" class="habit-empty">
-          <div class="empty-symbol">○</div>
-          <h3>从一个足够小的行动开始</h3>
-          <p>例如“睡前读 5 分钟”，比“每天读一本书”更容易留下来。</p>
-          <n-button type="primary" @click="openCreate">创建第一个习惯</n-button>
+        <section class="summary-row" aria-label="本周概览">
+          <article>
+            <span>今天</span>
+            <strong>{{ todayCompleted }}/{{ todayBuildHabits.length }}</strong>
+            <small>培养行动已完成</small>
+          </article>
+          <article>
+            <span>本周</span>
+            <strong>{{ weeklyCompleted }}/{{ weeklyPlanned }}</strong>
+            <small>计划完成进度</small>
+          </article>
+          <article>
+            <span>减少行为</span>
+            <strong>{{ weeklyOccurrences }}</strong>
+            <small>本周发生 · {{ weeklyReplacements }} 次替代</small>
+          </article>
         </section>
 
-        <template v-else>
-          <section class="overview-grid">
-            <article class="overview-card overview-card--accent">
-              <span>今日进度</span>
-              <strong>{{ todayCompleted }}/{{ buildHabitsDueToday.length }}</strong>
-              <small>{{ todayProgressText }}</small>
-            </article>
-            <article class="overview-card">
-              <span>近 7 天</span>
-              <strong>{{ sevenDayCompletion }}%</strong>
-              <small>培养习惯完成率</small>
-            </article>
-            <article class="overview-card">
-              <span>本周记录</span>
-              <strong>{{ weeklyOccurrenceCount }}</strong>
-              <small>减少习惯发生次数</small>
-            </article>
-            <article class="overview-card">
-              <span>正在进行</span>
-              <strong>{{ activeHabits.length }}</strong>
-              <small>{{ buildHabits.length }} 个培养 · {{ reduceHabits.length }} 个减少</small>
-            </article>
+        <div class="habit-dashboard">
+          <section class="surface today-surface">
+            <div class="surface-heading">
+              <div>
+                <p>Today</p>
+                <h3>今天</h3>
+              </div>
+              <span>{{ todayHabits.length }} 项</span>
+            </div>
+
+            <div v-if="todayHabits.length" class="today-list">
+              <article v-for="habit in todayHabits" :key="habit.id" class="today-item">
+                <i class="color-bar" :style="{ background: habit.color }"></i>
+                <div class="today-copy">
+                  <div class="item-title">
+                    <div>
+                      <span class="kind-tag" :class="`kind-tag--${habit.kind}`">
+                        {{ habit.kind === "build" ? "培养" : "减少" }}
+                      </span>
+                      <h4>{{ habit.title }}</h4>
+                    </div>
+                    <n-dropdown :options="habitMenuOptions" @select="(key) => handleHabitMenu(key, habit)">
+                      <n-button quaternary circle aria-label="习惯操作">···</n-button>
+                    </n-dropdown>
+                  </div>
+
+                  <template v-if="habit.kind === 'build'">
+                    <p class="item-meta">
+                      {{ scheduleLabel(habit) }}
+                      <span v-if="habit.reminderTime">· {{ habit.reminderTime }} 提醒</span>
+                    </p>
+                    <div class="build-actions">
+                      <button
+                        class="done-button"
+                        :class="{ active: logFor(habit.id, today)?.completed }"
+                        type="button"
+                        @click="toggleCompleted(habit.id)"
+                      >
+                        <n-icon><CheckmarkOutline /></n-icon>
+                        {{ logFor(habit.id, today)?.completed ? "今天已完成" : "标记完成" }}
+                      </button>
+                      <button
+                        v-if="!logFor(habit.id, today)?.completed"
+                        class="text-action"
+                        type="button"
+                        @click="toggleSkipped(habit.id)"
+                      >
+                        {{ logFor(habit.id, today)?.skipped ? "取消跳过" : "今天跳过" }}
+                      </button>
+                    </div>
+                  </template>
+
+                  <template v-else>
+                    <p class="item-meta">
+                      {{ habit.alternative ? `替代方案：${habit.alternative}` : "需要时记录，不做评价。" }}
+                    </p>
+                    <div class="counter-actions">
+                      <button type="button" @click="changeCounter(habit.id, 'occurrences', 1)">
+                        <span>发生</span>
+                        <strong>{{ logFor(habit.id, today)?.occurrences || 0 }}</strong>
+                        <em>+1</em>
+                      </button>
+                      <button type="button" @click="changeCounter(habit.id, 'replacements', 1)">
+                        <span>做了替代</span>
+                        <strong>{{ logFor(habit.id, today)?.replacements || 0 }}</strong>
+                        <em>+1</em>
+                      </button>
+                      <button
+                        v-if="hasReduceLog(habit.id)"
+                        class="undo-action"
+                        type="button"
+                        @click="clearToday(habit.id)"
+                      >
+                        清除今日
+                      </button>
+                    </div>
+                  </template>
+                </div>
+              </article>
+            </div>
+            <div v-else class="section-empty">今天没有安排，留一点空白也很好。</div>
           </section>
 
-          <div class="habit-layout">
-            <main class="habit-main">
-              <section class="habit-section">
-                <div class="section-heading">
+          <aside class="dashboard-side">
+            <section class="surface rhythm-surface">
+              <div class="surface-heading">
+                <div>
+                  <p>This week</p>
+                  <h3>本周节奏</h3>
+                </div>
+              </div>
+              <div v-if="buildHabits.length" class="rhythm-list">
+                <button
+                  v-for="habit in buildHabits"
+                  :key="habit.id"
+                  type="button"
+                  class="rhythm-item"
+                  @click="selectedHabitId = habit.id"
+                >
                   <div>
-                    <p>Today</p>
-                    <h3>今天的小行动</h3>
+                    <i :style="{ background: habit.color }"></i>
+                    <span>{{ habit.title }}</span>
+                    <em>{{ weeklyCount(habit.id) }}/{{ weeklyTarget(habit) }}</em>
                   </div>
-                  <span>{{ dueToday.length }} 项安排</span>
-                </div>
-
-                <div v-if="dueToday.length" class="today-list">
-                  <article
-                    v-for="habit in dueToday"
-                    :key="habit.id"
-                    class="today-card"
-                    :class="{ 'today-card--done': isBuildDone(habit.id) }"
-                  >
-                    <div class="habit-color" :style="{ background: habit.color }"></div>
-                    <div class="today-card-body">
-                      <div class="today-card-title">
-                        <div>
-                          <span class="kind-label" :class="`kind-label--${habit.kind}`">
-                            {{ habit.kind === 'build' ? '培养' : '减少' }}
-                          </span>
-                          <h4>{{ habit.title }}</h4>
-                        </div>
-                        <n-dropdown :options="habitMenuOptions" @select="(key) => handleHabitMenu(key, habit)">
-                          <n-button quaternary circle aria-label="更多操作">···</n-button>
-                        </n-dropdown>
-                      </div>
-
-                      <p v-if="habit.kind === 'build'" class="habit-meta">
-                        <span>{{ frequencyLabel(habit) }}</span>
-                        <span v-if="habit.reminderTime">页面提醒 {{ habit.reminderTime }}</span>
-                      </p>
-                      <p v-else-if="habit.replacementAction" class="replacement-copy">
-                        想做时，可以先试试：{{ habit.replacementAction }}
-                      </p>
-                      <p v-else class="habit-meta">需要时再记录，这里不会主动提醒你。</p>
-
-                      <div v-if="habit.kind === 'build'" class="card-actions">
-                        <n-button
-                          :type="isBuildDone(habit.id) ? 'success' : 'primary'"
-                          @click="toggleBuildDone(habit)"
-                        >
-                          {{ isBuildDone(habit.id) ? '已完成 ✓' : '完成打卡' }}
-                        </n-button>
-                        <n-button v-if="!isBuildDone(habit.id)" tertiary @click="markSkipped(habit)">今天跳过</n-button>
-                        <span v-if="todayRecord(habit.id)?.status === 'skipped'" class="quiet-state">已主动跳过</span>
-                      </div>
-                      <div v-else class="card-actions">
-                        <n-button tertiary @click="recordOccurrence(habit)">
-                          发生了一次<span v-if="occurrenceCount(habit.id)"> · {{ occurrenceCount(habit.id) }}</span>
-                        </n-button>
-                        <n-button v-if="habit.replacementAction" @click="recordReplacement(habit)">我做了替代动作</n-button>
-                        <n-button v-if="todayRecord(habit.id)" text type="tertiary" @click="clearTodayRecord(habit.id)">撤销今日记录</n-button>
-                      </div>
-                    </div>
-                  </article>
-                </div>
-                <div v-else class="quiet-empty">今天没有固定安排。休息也是计划的一部分。</div>
-              </section>
-
-              <section class="habit-section calendar-section">
-                <div class="section-heading calendar-heading">
-                  <div>
-                    <p>Calendar</p>
-                    <h3>{{ calendarTitle }}</h3>
+                  <div class="progress-track">
+                    <i :style="{ width: `${weeklyPercent(habit)}%`, background: habit.color }"></i>
                   </div>
-                  <div class="calendar-controls">
-                    <n-select v-model:value="selectedHabitId" :options="habitSelectOptions" size="small" />
-                    <n-button-group>
-                      <n-button size="small" @click="moveMonth(-1)">‹</n-button>
-                      <n-button size="small" @click="resetMonth">今天</n-button>
-                      <n-button size="small" @click="moveMonth(1)">›</n-button>
-                    </n-button-group>
-                  </div>
-                </div>
+                </button>
+              </div>
+              <p v-else class="section-empty compact">还没有培养类型的习惯。</p>
+            </section>
 
-                <div class="calendar-grid calendar-weekdays">
-                  <span v-for="day in weekdayLabels" :key="day">{{ day }}</span>
+            <section class="surface habits-surface">
+              <div class="surface-heading">
+                <div>
+                  <p>Habits</p>
+                  <h3>全部习惯</h3>
                 </div>
-                <div class="calendar-grid calendar-days">
-                  <div
-                    v-for="cell in calendarCells"
-                    :key="cell.date"
-                    class="calendar-day"
-                    :class="{
-                      'calendar-day--outside': !cell.inMonth,
-                      'calendar-day--today': cell.date === today,
-                    }"
-                  >
-                    <span>{{ cell.day }}</span>
-                    <i
-                      v-if="recordFor(selectedHabitId, cell.date)"
-                      :class="`record-dot record-dot--${recordFor(selectedHabitId, cell.date)?.status}`"
-                      :title="recordStatusLabel(recordFor(selectedHabitId, cell.date))"
-                    ></i>
-                  </div>
-                </div>
-                <div class="calendar-legend">
-                  <span><i class="record-dot record-dot--completed"></i>完成</span>
-                  <span><i class="record-dot record-dot--skipped"></i>跳过</span>
-                  <span><i class="record-dot record-dot--occurred"></i>发生</span>
-                  <span><i class="record-dot record-dot--replaced"></i>替代动作</span>
-                  <span><i class="record-dot record-dot--empty"></i>无记录</span>
-                </div>
-              </section>
-            </main>
-
-            <aside class="habit-sidebar">
-              <section class="habit-section insight-card">
-                <div class="section-heading">
-                  <div><p>Weekly review</p><h3>本周回顾</h3></div>
-                </div>
-                <p class="insight-copy">{{ weeklyInsight }}</p>
-                <div class="insight-bar"><i :style="{ width: `${sevenDayCompletion}%` }"></i></div>
-                <small>回顾用于调整目标，不用于评价自己。</small>
-              </section>
-
-              <section class="habit-section all-habits">
-                <div class="section-heading">
-                  <div><p>Habits</p><h3>全部习惯</h3></div>
-                </div>
+                <span>{{ activeHabits.length }}</span>
+              </div>
+              <div class="habit-list">
                 <button
                   v-for="habit in activeHabits"
                   :key="habit.id"
-                  class="habit-list-item"
                   type="button"
-                  title="编辑习惯"
-                  @click="openEdit(habit)"
+                  :class="{ active: selectedHabitId === habit.id }"
+                  @click="selectedHabitId = habit.id"
+                  @dblclick="openEdit(habit)"
                 >
                   <i :style="{ background: habit.color }"></i>
-                  <span><strong>{{ habit.title }}</strong><small>{{ frequencyLabel(habit) }}</small></span>
-                  <em>{{ habit.kind === 'build' ? '培养' : '减少' }}</em>
+                  <span>
+                    <strong>{{ habit.title }}</strong>
+                    <small>{{ habit.kind === "build" ? scheduleLabel(habit) : "减少行为" }}</small>
+                  </span>
+                  <em>{{ habit.kind === "build" ? "培养" : "减少" }}</em>
                 </button>
-              </section>
-            </aside>
-          </div>
-        </template>
+              </div>
+            </section>
+          </aside>
+
+          <section class="surface history-surface">
+            <div class="surface-heading history-heading">
+              <div>
+                <p>Last 14 days</p>
+                <h3>最近轨迹</h3>
+              </div>
+              <n-select v-model:value="selectedHabitId" :options="habitOptions" size="small" />
+            </div>
+            <div v-if="selectedHabit" class="history-grid">
+              <div
+                v-for="day in historyDays"
+                :key="day.date"
+                class="history-day"
+                :class="historyClass(selectedHabit, day.date)"
+                :title="historyTitle(selectedHabit, day.date)"
+              >
+                <span>{{ day.weekday }}</span>
+                <strong>{{ day.day }}</strong>
+                <i></i>
+                <small>{{ historyValue(selectedHabit, day.date) }}</small>
+              </div>
+            </div>
+          </section>
+        </div>
       </template>
     </n-spin>
 
-    <n-modal v-model:show="showEditor" preset="card" :title="editingId ? '编辑习惯' : '创建习惯'" class="habit-modal">
+    <n-modal
+      v-model:show="showEditor"
+      preset="card"
+      :title="editingId ? '编辑习惯' : '新建习惯'"
+      :mask-closable="false"
+      class="habit-editor"
+    >
       <n-form label-placement="top" @submit.prevent="saveHabit">
-        <n-form-item label="我想要">
-          <n-radio-group v-model:value="draft.kind" class="kind-choice">
-            <n-radio-button value="build">培养一个行动</n-radio-button>
-            <n-radio-button value="reduce">减少一个行动</n-radio-button>
-          </n-radio-group>
+        <n-form-item label="类型">
+          <div class="kind-picker">
+            <button
+              type="button"
+              :class="{ active: draft.kind === 'build' }"
+              @click="draft.kind = 'build'"
+            >
+              <strong>培养</strong>
+              <span>完成想坚持的行动</span>
+            </button>
+            <button
+              type="button"
+              :class="{ active: draft.kind === 'reduce' }"
+              @click="draft.kind = 'reduce'"
+            >
+              <strong>减少</strong>
+              <span>记录触发和替代选择</span>
+            </button>
+          </div>
         </n-form-item>
-        <n-form-item label="习惯名称" :feedback="titleError" :validation-status="titleError ? 'error' : undefined">
-          <n-input v-model:value="draft.title" maxlength="40" placeholder="例如：睡前阅读 5 分钟" @keydown.enter.prevent="saveHabit" />
+
+        <n-form-item label="名称" :feedback="titleError" :validation-status="titleError ? 'error' : undefined">
+          <n-input
+            v-model:value="draft.title"
+            maxlength="40"
+            show-count
+            placeholder="例如：晚饭后散步 10 分钟"
+            @update:value="titleError = ''"
+          />
         </n-form-item>
-        <div class="editor-grid">
-          <n-form-item label="频率">
-            <n-select v-model:value="draft.schedule" :options="scheduleOptions" />
-          </n-form-item>
-          <n-form-item v-if="draft.schedule === 'weekly'" label="每周目标">
-            <n-input-number v-model:value="draft.targetCount" :min="1" :max="7" />
-          </n-form-item>
-          <n-form-item label="标记颜色">
-            <div class="color-options">
+
+        <template v-if="draft.kind === 'build'">
+          <n-form-item label="计划方式">
+            <div class="schedule-picker">
               <button
-                v-for="color in colors"
-                :key="color"
                 type="button"
-                :style="{ background: color }"
-                :class="{ active: draft.color === color }"
-                @click="draft.color = color"
-              ></button>
+                :class="{ active: draft.scheduleMode === 'weekdays' }"
+                @click="draft.scheduleMode = 'weekdays'"
+              >
+                指定星期
+              </button>
+              <button
+                type="button"
+                :class="{ active: draft.scheduleMode === 'weeklyTarget' }"
+                @click="draft.scheduleMode = 'weeklyTarget'"
+              >
+                每周次数
+              </button>
             </div>
           </n-form-item>
-        </div>
-        <n-form-item v-if="draft.schedule === 'daily'" label="安排在">
-          <n-checkbox-group v-model:value="draft.weekdays" class="weekday-choice">
-            <n-checkbox v-for="day in weekdayOptions" :key="day.value" :value="day.value" :label="day.label" />
-          </n-checkbox-group>
+          <n-form-item v-if="draft.scheduleMode === 'weekdays'" label="安排在">
+            <div class="weekday-picker">
+              <button
+                v-for="day in weekdayOptions"
+                :key="day.value"
+                type="button"
+                :class="{ active: draft.weekdays.includes(day.value) }"
+                @click="toggleWeekday(day.value)"
+              >
+                {{ day.short }}
+              </button>
+            </div>
+          </n-form-item>
+          <n-form-item v-else label="每周完成">
+            <n-input-number v-model:value="draft.targetPerWeek" :min="1" :max="7">
+              <template #suffix>次</template>
+            </n-input-number>
+          </n-form-item>
+          <n-form-item label="页面提醒（可选）">
+            <n-time-picker
+              v-model:formatted-value="draft.reminderTime"
+              format="HH:mm"
+              value-format="HH:mm"
+              clearable
+            />
+          </n-form-item>
+        </template>
+
+        <n-form-item v-else label="替代方案（可选）">
+          <n-input
+            v-model:value="draft.alternative"
+            maxlength="80"
+            show-count
+            placeholder="例如：先喝一杯水，等 10 分钟"
+          />
         </n-form-item>
-        <n-form-item v-if="draft.kind === 'build'" label="页面提醒时间（可选）">
-          <n-time-picker v-model:formatted-value="draft.reminderTime" format="HH:mm" value-format="HH:mm" clearable />
-          <template #feedback>进入习惯页面后会显示时间提示；目前不会发送系统通知。</template>
+
+        <n-form-item label="颜色">
+          <div class="color-picker">
+            <button
+              v-for="color in colors"
+              :key="color"
+              type="button"
+              :style="{ background: color }"
+              :class="{ active: draft.color === color }"
+              :aria-label="`选择颜色 ${color}`"
+              @click="draft.color = color"
+            ></button>
+          </div>
         </n-form-item>
-        <n-form-item v-else label="替代动作（可选）">
-          <n-input v-model:value="draft.replacementAction" maxlength="80" placeholder="例如：先喝水并等待 10 分钟" />
-          <template #feedback>不会提醒原来的行动，只在你打开页面时提供这个选择。</template>
-        </n-form-item>
-        <div class="modal-actions">
+
+        <div class="editor-actions">
           <n-button @click="showEditor = false">取消</n-button>
-          <n-button type="primary" attr-type="submit">{{ editingId ? '保存修改' : '创建习惯' }}</n-button>
+          <n-button type="primary" attr-type="submit">{{ editingId ? "保存" : "创建习惯" }}</n-button>
         </div>
       </n-form>
     </n-modal>
@@ -248,130 +333,145 @@
 </template>
 
 <script setup lang="ts">
+import { AddOutline, CheckmarkOutline } from "@vicons/ionicons5";
 import {
   NAlert,
   NButton,
-  NButtonGroup,
-  NCheckbox,
-  NCheckboxGroup,
   NDropdown,
   NForm,
   NFormItem,
+  NIcon,
   NInput,
   NInputNumber,
   NModal,
-  NRadioButton,
-  NRadioGroup,
   NSelect,
   NSpin,
   NTimePicker,
   useMessage,
 } from "naive-ui";
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   fetchHabitState,
   saveHabitState,
   type Habit,
   type HabitKind,
-  type HabitRecord,
-  type HabitRecordStatus,
+  type HabitLog,
+  type HabitScheduleMode,
   type HabitState,
 } from "@/api";
 
 const message = useMessage();
-const loading = ref(true);
-const loadError = ref("");
-const saveLabel = ref("");
-const showEditor = ref(false);
-const editingId = ref("");
-const titleError = ref("");
-const selectedHabitId = ref("");
-const calendarCursor = ref(startOfMonth(new Date()));
-const state = reactive<HabitState>({ habits: [], records: [], settings: { weekStartsOn: 1 } });
-let saveTimer: number | undefined;
-let hasLoaded = false;
-
-const colors = ["#4f7c66", "#3d6f91", "#785f91", "#b06c4f", "#b08a3e", "#596875"];
+const colors = ["#47745f", "#3b7190", "#6f5d91", "#a55f48", "#a27c31", "#536575"];
 const weekdayOptions = [
-  { label: "一", value: 1 }, { label: "二", value: 2 }, { label: "三", value: 3 },
-  { label: "四", value: 4 }, { label: "五", value: 5 }, { label: "六", value: 6 }, { label: "日", value: 0 },
-];
-const weekdayLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-const scheduleOptions = [
-  { label: "指定星期", value: "daily" },
-  { label: "每周完成若干次", value: "weekly" },
+  { value: 1, short: "一", label: "周一" },
+  { value: 2, short: "二", label: "周二" },
+  { value: 3, short: "三", label: "周三" },
+  { value: 4, short: "四", label: "周四" },
+  { value: 5, short: "五", label: "周五" },
+  { value: 6, short: "六", label: "周六" },
+  { value: 0, short: "日", label: "周日" },
 ];
 const habitMenuOptions = [
   { label: "编辑", key: "edit" },
   { label: "归档", key: "archive" },
 ];
 
+const state = reactive<HabitState>({
+  version: 2,
+  habits: [],
+  logs: [],
+  settings: { weekStartsOn: 1 },
+});
+const loading = ref(true);
+const loadError = ref("");
+const saveState = ref("");
+const showEditor = ref(false);
+const editingId = ref("");
+const titleError = ref("");
+const selectedHabitId = ref("");
 const draft = reactive({
   title: "",
   kind: "build" as HabitKind,
   color: colors[0],
-  schedule: "daily" as Habit["schedule"],
-  targetCount: 3,
+  scheduleMode: "weekdays" as HabitScheduleMode,
   weekdays: [1, 2, 3, 4, 5] as number[],
+  targetPerWeek: 3,
   reminderTime: null as string | null,
-  replacementAction: "",
+  alternative: "",
 });
 
-const today = formatDate(new Date());
-const todayLabel = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(new Date());
-const greeting = computed(() => {
-  const hour = new Date().getHours();
-  return hour < 11 ? "早上好，今天从一件小事开始" : hour < 18 ? "下午好，给今天留一点进展" : "晚上好，看看今天留下了什么";
-});
+let loaded = false;
+let saveTimer: number | undefined;
+let saving = false;
+let saveAgain = false;
+let originalViewport: string | null = null;
+
+const todayDate = new Date();
+const today = formatDate(todayDate);
+const weekStart = formatDate(startOfWeek(todayDate));
+const todayLabel = new Intl.DateTimeFormat("zh-CN", {
+  month: "long",
+  day: "numeric",
+  weekday: "long",
+}).format(todayDate);
 const activeHabits = computed(() => state.habits.filter((habit) => !habit.archived));
 const buildHabits = computed(() => activeHabits.value.filter((habit) => habit.kind === "build"));
 const reduceHabits = computed(() => activeHabits.value.filter((habit) => habit.kind === "reduce"));
-const dueToday = computed(() => activeHabits.value.filter((habit) => isDueOn(habit, new Date())));
-const buildHabitsDueToday = computed(() => dueToday.value.filter((habit) => habit.kind === "build"));
-const todayCompleted = computed(() => buildHabitsDueToday.value.filter((habit) => isBuildDone(habit.id)).length);
-const todayProgressText = computed(() => {
-  if (!buildHabitsDueToday.value.length) return "今天没有培养任务";
-  if (todayCompleted.value === buildHabitsDueToday.value.length) return "今天的计划都完成了";
-  return `还剩 ${buildHabitsDueToday.value.length - todayCompleted.value} 个小行动`;
-});
-const habitSelectOptions = computed(() => activeHabits.value.map((habit) => ({ label: habit.title, value: habit.id })));
-const calendarTitle = computed(() => new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(calendarCursor.value));
-const calendarCells = computed(() => buildCalendarCells(calendarCursor.value));
-const lastSevenDates = computed(() => Array.from({ length: 7 }, (_, offset) => addDays(new Date(), offset - 6)));
-const sevenDayCompletion = computed(() => {
-  let planned = 0;
-  let completed = 0;
-  for (const date of lastSevenDates.value) {
-    for (const habit of buildHabits.value) {
-      if (!isDueOn(habit, date)) continue;
-      planned += 1;
-      if (recordFor(habit.id, formatDate(date))?.status === "completed") completed += 1;
-    }
-  }
-  return planned ? Math.round((completed / planned) * 100) : 0;
-});
-const weeklyOccurrenceCount = computed(() => {
-  const start = formatDate(startOfWeek(new Date()));
-  return state.records
-    .filter((record) => record.date >= start && reduceHabits.value.some((habit) => habit.id === record.habitId))
-    .reduce((sum, record) => sum + (record.status === "occurred" ? record.count : 0), 0);
-});
-const weeklyInsight = computed(() => {
-  if (!buildHabits.value.length) return "还没有培养习惯。可以从一个两分钟内能完成的行动开始。";
-  if (sevenDayCompletion.value >= 80) return "最近一周节奏很稳定。先保持当前难度，不必急着增加目标。";
-  if (sevenDayCompletion.value >= 40) return "已经形成一些稳定落点。可以观察最容易完成的是哪几天。";
-  return "最近的目标可能有点重。试着缩短时长或减少每周次数，会更容易继续。";
+const todayBuildHabits = computed(() => buildHabits.value.filter(isBuildDueToday));
+const todayHabits = computed(() => [...todayBuildHabits.value, ...reduceHabits.value]);
+const todayCompleted = computed(() =>
+  todayBuildHabits.value.filter((habit) => logFor(habit.id, today)?.completed).length,
+);
+const weeklyCompleted = computed(() =>
+  buildHabits.value.reduce((sum, habit) => sum + Math.min(weeklyCount(habit.id), weeklyTarget(habit)), 0),
+);
+const weeklyPlanned = computed(() =>
+  buildHabits.value.reduce((sum, habit) => sum + weeklyTarget(habit), 0),
+);
+const weeklyOccurrences = computed(() =>
+  state.logs
+    .filter((log) => log.date >= weekStart && reduceHabits.value.some((habit) => habit.id === log.habitId))
+    .reduce((sum, log) => sum + log.occurrences, 0),
+);
+const weeklyReplacements = computed(() =>
+  state.logs
+    .filter((log) => log.date >= weekStart && reduceHabits.value.some((habit) => habit.id === log.habitId))
+    .reduce((sum, log) => sum + log.replacements, 0),
+);
+const habitOptions = computed(() =>
+  activeHabits.value.map((habit) => ({ label: habit.title, value: habit.id })),
+);
+const selectedHabit = computed(() =>
+  activeHabits.value.find((habit) => habit.id === selectedHabitId.value) ?? activeHabits.value[0],
+);
+const historyDays = computed(() =>
+  Array.from({ length: 14 }, (_, index) => {
+    const date = addDays(todayDate, index - 13);
+    return {
+      date: formatDate(date),
+      day: date.getDate(),
+      weekday: new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(date).replace("周", ""),
+    };
+  }),
+);
+
+onMounted(() => {
+  lockViewport();
+  void loadState();
 });
 
-onMounted(loadState);
+onBeforeUnmount(() => {
+  window.clearTimeout(saveTimer);
+  unlockViewport();
+});
 
 watch(
   state,
   () => {
-    if (!hasLoaded) return;
+    if (!loaded) return;
+    saveState.value = "等待保存";
     window.clearTimeout(saveTimer);
-    saveLabel.value = "等待保存…";
-    saveTimer = window.setTimeout(persistState, 450);
+    saveTimer = window.setTimeout(() => void persistState(), 400);
   },
   { deep: true },
 );
@@ -381,11 +481,12 @@ async function loadState() {
   loadError.value = "";
   try {
     const remote = await fetchHabitState();
+    state.version = 2;
     state.habits = Array.isArray(remote.habits) ? remote.habits : [];
-    state.records = Array.isArray(remote.records) ? remote.records : [];
+    state.logs = Array.isArray(remote.logs) ? remote.logs : [];
     state.settings = remote.settings ?? { weekStartsOn: 1 };
     selectedHabitId.value = activeHabits.value[0]?.id ?? "";
-    hasLoaded = true;
+    loaded = true;
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : "未知错误";
   } finally {
@@ -394,14 +495,28 @@ async function loadState() {
 }
 
 async function persistState() {
-  saveLabel.value = "正在保存…";
+  if (saving) {
+    saveAgain = true;
+    return;
+  }
+  saving = true;
+  saveState.value = "保存中…";
   try {
     await saveHabitState(JSON.parse(JSON.stringify(state)));
-    saveLabel.value = "已保存";
-    window.setTimeout(() => { if (saveLabel.value === "已保存") saveLabel.value = ""; }, 1600);
+    saveState.value = "已保存";
   } catch {
-    saveLabel.value = "保存失败";
-    message.error("习惯数据保存失败，请稍后重试");
+    saveState.value = "保存失败";
+    message.error("习惯数据保存失败");
+  } finally {
+    saving = false;
+    if (saveAgain) {
+      saveAgain = false;
+      void persistState();
+    } else if (saveState.value === "已保存") {
+      window.setTimeout(() => {
+        if (saveState.value === "已保存") saveState.value = "";
+      }, 1400);
+    }
   }
 }
 
@@ -409,8 +524,14 @@ function openCreate() {
   editingId.value = "";
   titleError.value = "";
   Object.assign(draft, {
-    title: "", kind: "build", color: colors[state.habits.length % colors.length], schedule: "daily",
-    targetCount: 3, weekdays: [1, 2, 3, 4, 5], reminderTime: null, replacementAction: "",
+    title: "",
+    kind: "build",
+    color: colors[state.habits.length % colors.length],
+    scheduleMode: "weekdays",
+    weekdays: [1, 2, 3, 4, 5],
+    targetPerWeek: 3,
+    reminderTime: null,
+    alternative: "",
   });
   showEditor.value = true;
 }
@@ -419,9 +540,14 @@ function openEdit(habit: Habit) {
   editingId.value = habit.id;
   titleError.value = "";
   Object.assign(draft, {
-    title: habit.title, kind: habit.kind, color: habit.color, schedule: habit.schedule,
-    targetCount: habit.targetCount, weekdays: [...habit.weekdays], reminderTime: habit.reminderTime || null,
-    replacementAction: habit.replacementAction,
+    title: habit.title,
+    kind: habit.kind,
+    color: habit.color,
+    scheduleMode: habit.schedule.mode,
+    weekdays: [...habit.schedule.weekdays],
+    targetPerWeek: habit.schedule.targetPerWeek,
+    reminderTime: habit.reminderTime || null,
+    alternative: habit.alternative,
   });
   showEditor.value = true;
 }
@@ -429,110 +555,195 @@ function openEdit(habit: Habit) {
 function saveHabit() {
   const title = draft.title.trim();
   if (!title) {
-    titleError.value = "给这个习惯起一个容易识别的名字";
+    titleError.value = "请输入习惯名称";
     return;
   }
-  if (draft.schedule === "daily" && !draft.weekdays.length) {
+  if (draft.kind === "build" && draft.scheduleMode === "weekdays" && !draft.weekdays.length) {
     message.warning("请至少选择一天");
     return;
   }
   const now = new Date().toISOString();
   const existing = state.habits.find((habit) => habit.id === editingId.value);
-  const value: Habit = {
+  const habit: Habit = {
     id: existing?.id ?? crypto.randomUUID(),
     title,
     kind: draft.kind,
     color: draft.color,
-    schedule: draft.schedule,
-    targetCount: draft.schedule === "weekly" ? Number(draft.targetCount || 1) : 1,
-    weekdays: draft.schedule === "daily" ? [...draft.weekdays] : [],
+    schedule: draft.kind === "reduce"
+      ? { mode: "weekdays", weekdays: [0, 1, 2, 3, 4, 5, 6], targetPerWeek: 1 }
+      : {
+          mode: draft.scheduleMode,
+          weekdays: draft.scheduleMode === "weekdays" ? [...draft.weekdays] : [],
+          targetPerWeek: draft.scheduleMode === "weeklyTarget" ? draft.targetPerWeek : 1,
+        },
     reminderTime: draft.kind === "build" ? draft.reminderTime ?? "" : "",
-    replacementAction: draft.kind === "reduce" ? draft.replacementAction.trim() : "",
+    alternative: draft.kind === "reduce" ? draft.alternative.trim() : "",
     archived: false,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
-  if (existing) Object.assign(existing, value);
-  else state.habits.push(value);
-  selectedHabitId.value = value.id;
+  if (existing) Object.assign(existing, habit);
+  else state.habits.push(habit);
+  selectedHabitId.value = habit.id;
   showEditor.value = false;
-  message.success(existing ? "习惯已更新" : "已加入今天的旅程");
+  message.success(existing ? "习惯已更新" : "习惯已创建");
 }
 
 function handleHabitMenu(key: string, habit: Habit) {
-  if (key === "edit") openEdit(habit);
+  if (key === "edit") {
+    openEdit(habit);
+    return;
+  }
   if (key === "archive") {
     habit.archived = true;
     habit.updatedAt = new Date().toISOString();
-    if (selectedHabitId.value === habit.id) selectedHabitId.value = activeHabits.value[0]?.id ?? "";
-    message.info("习惯已归档，历史记录会被保留");
+    if (selectedHabitId.value === habit.id) {
+      selectedHabitId.value = activeHabits.value[0]?.id ?? "";
+    }
+    message.info("习惯已归档，历史记录仍会保留");
   }
 }
 
-function toggleBuildDone(habit: Habit) {
-  if (isBuildDone(habit.id)) {
-    clearTodayRecord(habit.id);
-    return;
+function toggleWeekday(day: number) {
+  draft.weekdays = draft.weekdays.includes(day)
+    ? draft.weekdays.filter((value) => value !== day)
+    : [...draft.weekdays, day];
+}
+
+function logFor(habitId: string, date: string) {
+  return state.logs.find((log) => log.habitId === habitId && log.date === date);
+}
+
+function ensureLog(habitId: string, date = today) {
+  let log = logFor(habitId, date);
+  if (!log) {
+    log = {
+      habitId,
+      date,
+      completed: false,
+      skipped: false,
+      occurrences: 0,
+      replacements: 0,
+      note: "",
+      updatedAt: new Date().toISOString(),
+    };
+    state.logs.push(log);
   }
-  upsertRecord(habit.id, "completed", 1);
-  const completed = todayCompleted.value;
-  message.success(completed === buildHabitsDueToday.value.length ? "今天的计划都完成了，做得很好。" : "记下来了，这次行动正在积累。", { duration: 2200 });
+  return log;
 }
 
-function markSkipped(habit: Habit) {
-  upsertRecord(habit.id, "skipped", 0);
-  message.info("已跳过。主动调整计划，也是一种掌控。", { duration: 2200 });
+function cleanupLog(log: HabitLog) {
+  if (!log.completed && !log.skipped && !log.occurrences && !log.replacements && !log.note) {
+    state.logs = state.logs.filter((item) => item !== log);
+  }
 }
 
-function recordOccurrence(habit: Habit) {
-  const current = todayRecord(habit.id);
-  upsertRecord(habit.id, "occurred", current?.status === "occurred" ? current.count + 1 : 1);
-  message.info("记录好了，不评价，只帮助你看清规律。", { duration: 2200 });
+function toggleCompleted(habitId: string) {
+  const log = ensureLog(habitId);
+  log.completed = !log.completed;
+  if (log.completed) log.skipped = false;
+  log.updatedAt = new Date().toISOString();
+  cleanupLog(log);
 }
 
-function recordReplacement(habit: Habit) {
-  const current = todayRecord(habit.id);
-  upsertRecord(habit.id, current?.status === "occurred" ? "occurred" : "replaced", current?.count ?? 0);
-  message.success("你为自己创造了另一个选择。", { duration: 2200 });
+function toggleSkipped(habitId: string) {
+  const log = ensureLog(habitId);
+  log.skipped = !log.skipped;
+  if (log.skipped) log.completed = false;
+  log.updatedAt = new Date().toISOString();
+  cleanupLog(log);
 }
 
-function upsertRecord(habitId: string, status: HabitRecordStatus, count: number) {
-  const now = new Date().toISOString();
-  const existing = todayRecord(habitId);
-  if (existing) Object.assign(existing, { status, count, updatedAt: now });
-  else state.records.push({ id: crypto.randomUUID(), habitId, date: today, status, count, note: "", createdAt: now, updatedAt: now });
+function changeCounter(habitId: string, field: "occurrences" | "replacements", delta: number) {
+  const log = ensureLog(habitId);
+  log[field] = Math.max(0, log[field] + delta);
+  log.updatedAt = new Date().toISOString();
+  cleanupLog(log);
 }
 
-function clearTodayRecord(habitId: string) {
-  state.records = state.records.filter((record) => !(record.habitId === habitId && record.date === today));
+function clearToday(habitId: string) {
+  state.logs = state.logs.filter((log) => !(log.habitId === habitId && log.date === today));
 }
 
-function todayRecord(habitId: string) { return recordFor(habitId, today); }
-function isBuildDone(habitId: string) { return todayRecord(habitId)?.status === "completed"; }
-function occurrenceCount(habitId: string) { const record = todayRecord(habitId); return record?.status === "occurred" ? record.count : 0; }
-function recordFor(habitId: string, date: string) { return state.records.find((record) => record.habitId === habitId && record.date === date); }
-
-function frequencyLabel(habit: Habit) {
-  if (habit.schedule === "weekly") return `每周 ${habit.targetCount} 次`;
-  if (habit.weekdays.length === 7) return "每天";
-  return habit.weekdays.map((value) => weekdayOptions.find((day) => day.value === value)?.label).filter(Boolean).join("、");
+function hasReduceLog(habitId: string) {
+  const log = logFor(habitId, today);
+  return Boolean(log?.occurrences || log?.replacements);
 }
 
-function isDueOn(habit: Habit, date: Date) {
-  if (formatDate(date) < habit.createdAt.slice(0, 10)) return false;
-  return habit.schedule === "weekly" || habit.weekdays.includes(date.getDay());
+function isBuildDueToday(habit: Habit) {
+  if (habit.createdAt.slice(0, 10) > today) return false;
+  if (habit.schedule.mode === "weekdays") return habit.schedule.weekdays.includes(todayDate.getDay());
+  return weeklyCount(habit.id) < habit.schedule.targetPerWeek || Boolean(logFor(habit.id, today)?.completed);
 }
 
-function recordStatusLabel(record?: HabitRecord) {
-  if (!record) return "无记录";
-  const labels: Record<HabitRecordStatus, string> = {
-    completed: "已完成", partial: "部分完成", skipped: "主动跳过", occurred: `发生 ${record.count} 次`, replaced: "使用了替代动作",
-  };
-  return labels[record.status];
+function weeklyCount(habitId: string) {
+  return state.logs.filter((log) =>
+    log.habitId === habitId && log.completed && log.date >= weekStart && log.date <= today
+  ).length;
 }
 
-function moveMonth(offset: number) { calendarCursor.value = new Date(calendarCursor.value.getFullYear(), calendarCursor.value.getMonth() + offset, 1); }
-function resetMonth() { calendarCursor.value = startOfMonth(new Date()); }
+function weeklyTarget(habit: Habit) {
+  if (habit.schedule.mode === "weeklyTarget") return habit.schedule.targetPerWeek;
+  const created = habit.createdAt.slice(0, 10);
+  return eachDate(startOfWeek(todayDate), todayDate)
+    .filter((date) => formatDate(date) >= created && habit.schedule.weekdays.includes(date.getDay()))
+    .length;
+}
+
+function weeklyPercent(habit: Habit) {
+  const target = weeklyTarget(habit);
+  return target ? Math.min(100, Math.round((weeklyCount(habit.id) / target) * 100)) : 0;
+}
+
+function scheduleLabel(habit: Habit) {
+  if (habit.schedule.mode === "weeklyTarget") return `每周 ${habit.schedule.targetPerWeek} 次`;
+  if (habit.schedule.weekdays.length === 7) return "每天";
+  return weekdayOptions
+    .filter((day) => habit.schedule.weekdays.includes(day.value))
+    .map((day) => day.label)
+    .join("、");
+}
+
+function historyClass(habit: Habit, date: string) {
+  const log = logFor(habit.id, date);
+  if (!log) return "empty";
+  if (habit.kind === "build") {
+    if (log.completed) return "completed";
+    if (log.skipped) return "skipped";
+    return "empty";
+  }
+  if (log.replacements && !log.occurrences) return "replaced";
+  if (log.occurrences) return "occurred";
+  return "empty";
+}
+
+function historyValue(habit: Habit, date: string) {
+  const log = logFor(habit.id, date);
+  if (!log) return "—";
+  if (habit.kind === "build") return log.completed ? "完成" : log.skipped ? "跳过" : "—";
+  if (log.occurrences && log.replacements) return `${log.occurrences}/${log.replacements}`;
+  if (log.occurrences) return `${log.occurrences} 次`;
+  if (log.replacements) return `替 ${log.replacements}`;
+  return "—";
+}
+
+function historyTitle(habit: Habit, date: string) {
+  const value = historyValue(habit, date);
+  return `${date} · ${value}`;
+}
+
+function lockViewport() {
+  const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (!viewport) return;
+  originalViewport = viewport.content;
+  viewport.content = "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover";
+}
+
+function unlockViewport() {
+  const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (viewport && originalViewport !== null) viewport.content = originalViewport;
+  originalViewport = null;
+}
 
 function formatDate(date: Date) {
   const year = date.getFullYear();
@@ -540,43 +751,370 @@ function formatDate(date: Date) {
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
-function addDays(date: Date, days: number) { const result = new Date(date); result.setDate(result.getDate() + days); return result; }
-function startOfMonth(date: Date) { return new Date(date.getFullYear(), date.getMonth(), 1); }
-function startOfWeek(date: Date) { const result = new Date(date); const offset = (result.getDay() + 6) % 7; result.setDate(result.getDate() - offset); result.setHours(0, 0, 0, 0); return result; }
-function buildCalendarCells(cursor: Date) {
-  const first = startOfMonth(cursor);
-  const start = addDays(first, -((first.getDay() + 6) % 7));
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = addDays(start, index);
-    return { date: formatDate(date), day: date.getDate(), inMonth: date.getMonth() === cursor.getMonth() };
-  });
+
+function startOfWeek(date: Date) {
+  const result = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  result.setDate(result.getDate() - ((result.getDay() + 6) % 7));
+  return result;
+}
+
+function addDays(date: Date, count: number) {
+  const result = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  result.setDate(result.getDate() + count);
+  return result;
+}
+
+function eachDate(start: Date, end: Date) {
+  const dates: Date[] = [];
+  for (let cursor = new Date(start); cursor <= end; cursor = addDays(cursor, 1)) dates.push(cursor);
+  return dates;
 }
 </script>
 
 <style scoped>
-.habit-tool { --ink: #20322d; --muted: #697973; --line: rgba(41, 69, 60, .13); display: grid; gap: 18px; color: var(--ink); }
-.habit-hero { min-height: 150px; padding: 28px 30px; display: flex; align-items: center; justify-content: space-between; gap: 24px; border-radius: 14px; color: #f5fbf7; background: linear-gradient(120deg, #244a3d, #426b59 58%, #6d8267); box-shadow: 0 18px 35px rgba(38, 72, 59, .18); }
-.habit-hero h3 { max-width: 620px; margin: 5px 0 7px; font-size: clamp(23px, 3vw, 32px); line-height: 1.25; }
-.habit-hero p { margin: 0; color: rgba(245, 251, 247, .76); }
-.habit-kicker { font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.hero-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-.save-state { color: rgba(255,255,255,.7); font-size: 12px; }
-.habit-hero :deep(.n-button--primary-type) { --n-color: #f3f7ef !important; --n-color-hover: #fff !important; --n-text-color: #294b3f !important; --n-text-color-hover: #294b3f !important; }
-.load-alert { margin-top: 6px; }
-.habit-empty { min-height: 390px; padding: 60px 24px; display: grid; place-items: center; align-content: center; gap: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.78); text-align: center; }
-.habit-empty h3, .habit-empty p { margin: 0; }.habit-empty p { color: var(--muted); }.empty-symbol { font-size: 56px; color: #658375; }
-.overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.overview-card { min-height: 112px; padding: 18px; display: grid; align-content: center; gap: 4px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.82); box-shadow: 0 8px 20px rgba(43, 67, 60, .05); }
-.overview-card span, .overview-card small { color: var(--muted); }.overview-card span { font-size: 12px; font-weight: 700; }.overview-card strong { font-size: 28px; line-height: 1.15; }.overview-card--accent { color: #f6fbf8; background: #315849; }.overview-card--accent span, .overview-card--accent small { color: rgba(255,255,255,.7); }
-.habit-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }.habit-main, .habit-sidebar { display: grid; gap: 16px; }
-.habit-section { padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.84); box-shadow: 0 10px 28px rgba(43, 67, 60, .05); }
-.section-heading { margin-bottom: 16px; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }.section-heading p { margin: 0 0 3px; color: #789086; font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }.section-heading h3 { margin: 0; font-size: 19px; }.section-heading > span { color: var(--muted); font-size: 12px; }
-.today-list { display: grid; gap: 10px; }.today-card { position: relative; display: grid; grid-template-columns: 5px 1fr; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #fff; transition: opacity .2s, background .2s; }.today-card--done { background: #f2f7f3; }.habit-color { width: 5px; height: 100%; }.today-card-body { min-width: 0; padding: 16px 18px; }.today-card-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }.today-card-title h4 { display: inline; margin: 0 0 0 8px; font-size: 16px; }.kind-label { padding: 3px 7px; border-radius: 999px; font-size: 10px; font-weight: 800; }.kind-label--build { color: #315d4c; background: #dcebe3; }.kind-label--reduce { color: #785542; background: #f0e5dc; }
-.habit-meta, .replacement-copy { margin: 9px 0 12px; color: var(--muted); font-size: 12px; }.habit-meta { display: flex; flex-wrap: wrap; gap: 12px; }.replacement-copy { padding: 9px 11px; border-radius: 7px; background: #f4f1ea; color: #665f50; }.card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }.quiet-state { color: var(--muted); font-size: 12px; }.quiet-empty { padding: 30px; border-radius: 8px; background: #f4f7f5; color: var(--muted); text-align: center; }
-.calendar-heading { align-items: center; }.calendar-controls { display: flex; align-items: center; gap: 8px; }.calendar-controls > :deep(.n-select) { width: 170px; }.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); }.calendar-weekdays { padding-bottom: 8px; color: var(--muted); font-size: 11px; text-align: center; }.calendar-days { overflow: hidden; border-top: 1px solid var(--line); border-left: 1px solid var(--line); border-radius: 8px; }.calendar-day { position: relative; min-height: 68px; padding: 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: rgba(255,255,255,.65); font-size: 12px; }.calendar-day--outside { color: #afb9b5; background: #f4f6f5; }.calendar-day--today > span { width: 24px; height: 24px; display: grid; place-items: center; margin: -4px; border-radius: 50%; background: #315849; color: white; font-weight: 800; }.record-dot { width: 9px; height: 9px; display: inline-block; border-radius: 50%; background: #d4dbd7; }.calendar-day .record-dot { position: absolute; right: 9px; bottom: 9px; width: 11px; height: 11px; }.record-dot--completed { background: #4e8a69; }.record-dot--partial { background: #d09b48; }.record-dot--skipped { background: #aab4b0; }.record-dot--occurred { background: #b66f54; }.record-dot--replaced { background: #657cac; }.record-dot--empty { border: 1px solid #bcc6c1; background: transparent; }.calendar-legend { padding-top: 12px; display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 11px; }.calendar-legend span { display: flex; align-items: center; gap: 5px; }
-.insight-card { background: linear-gradient(150deg, #f7f4e9, #fff); }.insight-copy { min-height: 86px; margin: 0; color: #4e5f58; font-size: 14px; line-height: 1.8; }.insight-bar { height: 6px; margin: 12px 0 10px; overflow: hidden; border-radius: 999px; background: #e1e5df; }.insight-bar i { height: 100%; display: block; border-radius: inherit; background: #66866e; }.insight-card > small { color: var(--muted); line-height: 1.6; }
-.all-habits { padding-bottom: 12px; }.habit-list-item { width: 100%; padding: 11px 4px; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; text-align: left; cursor: pointer; }.habit-list-item:hover { background: #f4f7f5; }.habit-list-item > i { width: 8px; height: 28px; border-radius: 999px; }.habit-list-item > span { min-width: 0; display: grid; gap: 2px; }.habit-list-item strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }.habit-list-item small { color: var(--muted); }.habit-list-item em { color: var(--muted); font-size: 10px; font-style: normal; }
-.habit-modal { width: min(620px, calc(100vw - 28px)); }.kind-choice { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }.kind-choice :deep(.n-radio-button) { justify-content: center; }.editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.editor-grid :deep(.n-input-number) { width: 100%; }.color-options { min-height: 34px; display: flex; align-items: center; gap: 8px; }.color-options button { width: 24px; height: 24px; padding: 0; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 0 1px #ccd4d0; cursor: pointer; }.color-options button.active { box-shadow: 0 0 0 2px #263f36; }.weekday-choice { display: flex; flex-wrap: wrap; gap: 11px; }.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
-@media (max-width: 900px) { .overview-grid { grid-template-columns: repeat(2, 1fr); }.habit-layout { grid-template-columns: 1fr; }.habit-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 620px) { .habit-hero { padding: 22px; display: grid; }.hero-actions { justify-content: space-between; }.overview-grid, .habit-sidebar, .editor-grid { grid-template-columns: 1fr; }.overview-card { min-height: 92px; }.habit-section { padding: 16px; }.calendar-heading { align-items: flex-start; display: grid; }.calendar-controls { width: 100%; justify-content: space-between; }.calendar-controls > :deep(.n-select) { width: min(170px, 52%); }.calendar-day { min-height: 48px; padding: 6px; }.calendar-day .record-dot { right: 6px; bottom: 6px; }.kind-choice { grid-template-columns: 1fr; } }
+.habit-app {
+  --ink: #20312b;
+  --muted: #6c7a75;
+  --line: rgba(45, 72, 62, 0.13);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  gap: 16px;
+  color: var(--ink);
+  overflow-x: clip;
+}
+
+.habit-app :deep(.n-spin-container),
+.habit-app :deep(.n-spin-content) { min-width: 0; max-width: 100%; }
+
+.habit-intro {
+  min-width: 0;
+  min-height: 142px;
+  padding: 26px 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border-radius: 18px;
+  background: linear-gradient(125deg, #203f34, #3f6756 62%, #73836d);
+  color: white;
+  box-shadow: 0 18px 42px rgba(32, 65, 52, 0.18);
+}
+
+.habit-intro p,
+.surface-heading p {
+  margin: 0 0 5px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.habit-intro p { color: rgba(255, 255, 255, 0.64); }
+.habit-intro h2 { margin: 0 0 7px; font-size: clamp(23px, 3vw, 31px); line-height: 1.2; }
+.habit-intro span { color: rgba(255, 255, 255, 0.72); font-size: 14px; }
+.intro-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.intro-actions small { color: rgba(255, 255, 255, 0.66); }
+.intro-actions small.error { color: #ffd1c8; }
+.habit-intro :deep(.n-button--primary-type) {
+  --n-color: #f5f8f4 !important;
+  --n-color-hover: #fff !important;
+  --n-text-color: #294b3d !important;
+  --n-text-color-hover: #294b3d !important;
+}
+
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-row article {
+  min-height: 106px;
+  padding: 17px 19px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 8px 24px rgba(39, 65, 56, 0.05);
+}
+
+.summary-row span,
+.summary-row small { color: var(--muted); }
+.summary-row span { font-size: 12px; font-weight: 700; }
+.summary-row strong { font-size: 27px; line-height: 1.15; }
+
+.habit-dashboard {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 310px;
+  gap: 14px;
+  align-items: start;
+}
+
+.surface {
+  width: 100%;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 10px 28px rgba(39, 65, 56, 0.05);
+}
+
+.surface-heading {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.surface-heading p { color: #789087; }
+.surface-heading h3 { margin: 0; font-size: 19px; }
+.surface-heading > span { color: var(--muted); font-size: 12px; }
+.dashboard-side { min-width: 0; display: grid; gap: 14px; }
+.today-list { display: grid; gap: 10px; }
+
+.today-item {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+}
+
+.color-bar { width: 5px; height: 100%; }
+.today-copy { min-width: 0; padding: 15px 16px; }
+.item-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.item-title > div { min-width: 0; }
+.item-title h4 { overflow-wrap: anywhere; display: inline; margin: 0 0 0 7px; font-size: 16px; }
+.kind-tag { padding: 3px 7px; border-radius: 999px; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.kind-tag--build { background: #dcebe3; color: #315d4c; }
+.kind-tag--reduce { background: #f0e4dc; color: #7a523f; }
+.item-meta { margin: 8px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.build-actions, .counter-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+.done-button {
+  min-height: 36px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #315849;
+  border-radius: 8px;
+  background: #315849;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.done-button.active { background: #e6f1ea; color: #315849; }
+.text-action, .undo-action { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.text-action:hover, .undo-action:hover { color: var(--ink); }
+
+.counter-actions > button:not(.undo-action) {
+  min-width: 112px;
+  min-height: 44px;
+  padding: 7px 10px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #f7f9f8;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.counter-actions span { color: var(--muted); font-size: 12px; text-align: left; }
+.counter-actions strong { font-size: 17px; }
+.counter-actions em { color: #315849; font-size: 12px; font-style: normal; font-weight: 800; }
+.section-empty { padding: 32px 18px; border-radius: 9px; background: #f5f7f6; color: var(--muted); text-align: center; }
+.section-empty.compact { padding: 18px; margin: 0; }
+.rhythm-list, .habit-list { display: grid; }
+
+.rhythm-item {
+  padding: 11px 0;
+  display: grid;
+  gap: 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.rhythm-item:last-child { border-bottom: 0; }
+.rhythm-item > div:first-child { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.rhythm-item > div > i { width: 8px; height: 8px; border-radius: 50%; }
+.rhythm-item span { overflow: hidden; font-size: 13px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.rhythm-item em { color: var(--muted); font-size: 11px; font-style: normal; }
+.progress-track { height: 5px; overflow: hidden; border-radius: 999px; background: #e6ebe8; }
+.progress-track i { height: 100%; display: block; border-radius: inherit; }
+
+.habit-list > button {
+  width: 100%;
+  padding: 10px 5px;
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.habit-list > button.active { background: #f2f6f3; }
+.habit-list > button > i { width: 6px; height: 30px; border-radius: 999px; }
+.habit-list button > span { min-width: 0; display: grid; gap: 2px; }
+.habit-list strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.habit-list small, .habit-list em { color: var(--muted); font-size: 10px; font-style: normal; }
+.history-surface { grid-column: 1 / -1; }
+.history-heading { align-items: center; }
+.history-heading :deep(.n-select) { width: 220px; }
+
+.history-grid {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(14, minmax(44px, 1fr));
+  gap: 6px;
+}
+
+.history-day {
+  min-width: 0;
+  padding: 8px 4px;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbfa;
+}
+
+.history-day span, .history-day small { color: var(--muted); font-size: 9px; }
+.history-day strong { font-size: 12px; }
+.history-day i { width: 10px; height: 10px; border-radius: 50%; background: #d9dfdc; }
+.history-day.completed i { background: #4d8767; }
+.history-day.skipped i { background: #abb5b0; }
+.history-day.occurred i { background: #b46b50; }
+.history-day.replaced i { background: #647cab; }
+.history-day.completed { background: #f0f7f3; }
+.history-day.occurred { background: #fbf3ef; }
+.history-day.replaced { background: #f2f4fa; }
+
+.empty-state {
+  min-height: 430px;
+  padding: 40px 20px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.84);
+  text-align: center;
+}
+
+.empty-state h3, .empty-state p { margin: 0; }
+.empty-state p { max-width: 430px; color: var(--muted); line-height: 1.7; }
+.empty-mark { width: 58px; height: 58px; display: grid; place-items: center; border-radius: 50%; background: #e4efe8; color: #315849; font-size: 28px; }
+
+.habit-editor {
+  width: min(560px, calc(100dvw - 24px));
+  max-height: calc(100dvh - 24px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.habit-editor :deep(.n-card-header) { flex: 0 0 auto; border-bottom: 1px solid var(--line); }
+.habit-editor :deep(.n-card__content) { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.habit-editor :deep(.n-input), .habit-editor :deep(.n-base-selection), .habit-editor :deep(.n-input-number) { font-size: 16px; }
+.habit-editor :deep(.n-input-number), .habit-editor :deep(.n-time-picker) { width: 100%; }
+.kind-picker, .schedule-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+
+.kind-picker button, .schedule-picker button {
+  padding: 11px 12px;
+  border: 1px solid #ccd6d1;
+  border-radius: 9px;
+  background: white;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.kind-picker button { min-height: 68px; display: grid; gap: 3px; text-align: left; }
+.kind-picker span { color: var(--muted); font-size: 11px; }
+.kind-picker button.active, .schedule-picker button.active { border-color: #315849; background: #edf5f0; box-shadow: inset 0 0 0 1px #315849; }
+.weekday-picker { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.weekday-picker button { aspect-ratio: 1; border: 1px solid #ccd6d1; border-radius: 50%; background: white; color: var(--muted); cursor: pointer; }
+.weekday-picker button.active { border-color: #315849; background: #315849; color: white; }
+.color-picker { display: flex; flex-wrap: wrap; gap: 12px; }
+.color-picker button { width: 28px; height: 28px; padding: 0; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 0 1px #c7d0cc; cursor: pointer; }
+.color-picker button.active { box-shadow: 0 0 0 2px #203f34; }
+.editor-actions { position: sticky; bottom: -1px; padding-top: 14px; display: flex; justify-content: flex-end; gap: 9px; background: linear-gradient(to bottom, transparent, white 12px); }
+
+@media (max-width: 900px) {
+  .habit-dashboard { grid-template-columns: 1fr; }
+  .dashboard-side { grid-template-columns: 1fr 1fr; }
+  .history-surface { grid-column: auto; }
+  .history-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+}
+
+@media (max-width: 620px) {
+  .habit-app { gap: 12px; }
+  .habit-intro { min-height: 0; padding: 18px; display: grid; gap: 18px; }
+  .habit-intro h2 { font-size: 23px; }
+  .habit-intro span { font-size: 13px; line-height: 1.6; }
+  .intro-actions { width: 100%; justify-content: space-between; }
+  .intro-actions :deep(.n-button) { flex: 0 0 auto; }
+  .summary-row { grid-template-columns: 1fr; gap: 8px; }
+  .summary-row article { min-height: 76px; padding: 12px 14px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .summary-row article span, .summary-row article small { grid-column: 1; }
+  .summary-row article strong { grid-column: 2; grid-row: 1 / span 2; }
+  .summary-row strong { font-size: 23px; }
+  .surface { padding: 15px; }
+  .dashboard-side { grid-template-columns: 1fr; }
+  .today-copy { padding: 14px 12px; }
+  .item-title { gap: 6px; }
+  .item-title h4 { display: block; margin: 7px 0 0; line-height: 1.35; }
+  .build-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .done-button { width: 100%; justify-content: center; }
+  .counter-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .counter-actions > button:not(.undo-action) { min-width: 0; width: 100%; }
+  .undo-action { grid-column: 1 / -1; justify-self: end; padding: 6px 0; }
+  .history-heading { align-items: flex-start; display: grid; }
+  .history-heading :deep(.n-select) { width: 100%; }
+  .history-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .history-day { padding: 7px 2px; gap: 3px; }
+  .history-day small { overflow: hidden; width: 100%; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+  .habit-editor { width: calc(100dvw - 12px); max-height: calc(100dvh - 12px); }
+  .kind-picker { grid-template-columns: 1fr; }
+  .schedule-picker { grid-template-columns: 1fr 1fr; }
+  .weekday-picker { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .weekday-picker button { width: 38px; max-width: 100%; justify-self: center; }
+  .editor-actions :deep(.n-button) { flex: 1 1 0; }
+}
+
+@media (max-width: 360px) {
+  .habit-intro { padding: 16px; }
+  .intro-actions small { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .counter-actions { grid-template-columns: 1fr; }
+  .undo-action { grid-column: 1; }
+  .history-day span, .history-day small { font-size: 8px; }
+  .history-day strong { font-size: 11px; }
+  .schedule-picker { grid-template-columns: 1fr; }
+}
 </style>

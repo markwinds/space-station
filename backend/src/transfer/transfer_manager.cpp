@@ -68,6 +68,9 @@ nlohmann::json ProgressJson(const FileProgress& progress)
             {"fileSize", progress.file_size},
             {"matchedBytes", progress.matched_bytes},
             {"uploadedBytes", progress.uploaded_bytes},
+            {"wireBytes", progress.wire_bytes},
+            {"compressedChunks", progress.compressed_chunks},
+            {"compressionMode", progress.compression_mode},
             {"error", progress.error}};
 }
 } // namespace

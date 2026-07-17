@@ -210,38 +210,40 @@ export interface TimeManagerState {
 }
 
 export type HabitKind = "build" | "reduce";
+export type HabitScheduleMode = "weekdays" | "weeklyTarget";
 
 export interface Habit {
   id: string;
   title: string;
   kind: HabitKind;
   color: string;
-  schedule: "daily" | "weekly";
-  targetCount: number;
-  weekdays: number[];
+  schedule: {
+    mode: HabitScheduleMode;
+    weekdays: number[];
+    targetPerWeek: number;
+  };
   reminderTime: string;
-  replacementAction: string;
+  alternative: string;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
-export type HabitRecordStatus = "completed" | "partial" | "skipped" | "occurred" | "replaced";
-
-export interface HabitRecord {
-  id: string;
+export interface HabitLog {
   habitId: string;
   date: string;
-  status: HabitRecordStatus;
-  count: number;
+  completed: boolean;
+  skipped: boolean;
+  occurrences: number;
+  replacements: number;
   note: string;
-  createdAt: string;
   updatedAt: string;
 }
 
 export interface HabitState {
+  version: 2;
   habits: Habit[];
-  records: HabitRecord[];
+  logs: HabitLog[];
   settings: {
     weekStartsOn: number;
   };
@@ -292,6 +294,9 @@ export interface TransferFileProgress {
   fileSize: number;
   matchedBytes: number;
   uploadedBytes: number;
+  wireBytes: number;
+  compressedChunks: number;
+  compressionMode: "none" | "chunk" | "stream";
   error: string;
 }
 
@@ -317,6 +322,7 @@ export interface TransferClientRequest {
   serverCaPath: string;
   serverName: string;
   chunkSize: number;
+  compressionMode: "chunk" | "stream";
   files: string[];
 }
 

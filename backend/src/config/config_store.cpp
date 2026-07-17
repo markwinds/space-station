@@ -2,10 +2,14 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #elif defined(_WIN32)
@@ -277,6 +281,212 @@ std::string NormalizeLogLevel(std::string level)
     }
     return "info";
 }
+
+std::string JsonString(const nlohmann::json& json, const char* key, const std::string& fallback = {})
+{
+    const auto it = json.find(key);
+    return it != json.end() && it->is_string() ? it->get<std::string>() : fallback;
+}
+
+int JsonInt(const nlohmann::json& json, const char* key, int fallback)
+{
+    const auto it = json.find(key);
+    return it != json.end() && it->is_number_integer() ? it->get<int>() : fallback;
+}
+
+bool JsonBool(const nlohmann::json& json, const char* key, bool fallback = false)
+{
+    const auto it = json.find(key);
+    return it != json.end() && it->is_boolean() ? it->get<bool>() : fallback;
+}
+
+std::vector<int> NormalizeWeekdays(const nlohmann::json& value)
+{
+    std::vector<int> weekdays;
+    if (value.is_array())
+    {
+        for (const auto& item : value)
+        {
+            if (!item.is_number_integer())
+            {
+                continue;
+            }
+            const auto day = item.get<int>();
+            if (day >= 0 && day <= 6 && std::find(weekdays.begin(), weekdays.end(), day) == weekdays.end())
+            {
+                weekdays.push_back(day);
+            }
+        }
+    }
+    std::sort(weekdays.begin(), weekdays.end());
+    return weekdays;
+}
+
+nlohmann::json NormalizeHabit(const nlohmann::json& input)
+{
+    if (!input.is_object())
+    {
+        return nullptr;
+    }
+    const auto id = JsonString(input, "id");
+    const auto title = JsonString(input, "title");
+    if (id.empty() || title.empty())
+    {
+        return nullptr;
+    }
+
+    const auto kind = JsonString(input, "kind") == "reduce" ? std::string("reduce") : std::string("build");
+    auto mode = std::string("weekdays");
+    auto weekdays = std::vector<int>{1, 2, 3, 4, 5};
+    auto target_per_week = 3;
+    const auto schedule_it = input.find("schedule");
+    if (schedule_it != input.end() && schedule_it->is_object())
+    {
+        mode = JsonString(*schedule_it, "mode") == "weeklyTarget" ? "weeklyTarget" : "weekdays";
+        weekdays = NormalizeWeekdays(schedule_it->value("weekdays", nlohmann::json::array()));
+        target_per_week = std::clamp(JsonInt(*schedule_it, "targetPerWeek", 3), 1, 7);
+    }
+    else
+    {
+        mode = JsonString(input, "schedule") == "weekly" ? "weeklyTarget" : "weekdays";
+        weekdays = NormalizeWeekdays(input.value("weekdays", nlohmann::json::array()));
+        target_per_week = std::clamp(JsonInt(input, "targetCount", 3), 1, 7);
+    }
+    if (weekdays.empty())
+    {
+        weekdays = {1, 2, 3, 4, 5};
+    }
+    if (kind == "reduce")
+    {
+        mode = "weekdays";
+        weekdays = {0, 1, 2, 3, 4, 5, 6};
+        target_per_week = 1;
+    }
+
+    return {
+        {"id", id},
+        {"title", title},
+        {"kind", kind},
+        {"color", JsonString(input, "color", "#4f7c66")},
+        {"schedule",
+         {
+             {"mode", mode},
+             {"weekdays", weekdays},
+             {"targetPerWeek", target_per_week},
+         }},
+        {"reminderTime", JsonString(input, "reminderTime")},
+        {"alternative", JsonString(input, "alternative", JsonString(input, "replacementAction"))},
+        {"archived", JsonBool(input, "archived")},
+        {"createdAt", JsonString(input, "createdAt")},
+        {"updatedAt", JsonString(input, "updatedAt")},
+    };
+}
+
+nlohmann::json NormalizeHabitState(const nlohmann::json& input)
+{
+    nlohmann::json state = {
+        {"version", 2},
+        {"habits", nlohmann::json::array()},
+        {"logs", nlohmann::json::array()},
+        {"settings", {{"weekStartsOn", 1}}},
+    };
+    if (!input.is_object())
+    {
+        return state;
+    }
+
+    std::unordered_set<std::string> habit_ids;
+    const auto habits_it = input.find("habits");
+    if (habits_it != input.end() && habits_it->is_array())
+    {
+        for (const auto& item : *habits_it)
+        {
+            auto habit = NormalizeHabit(item);
+            if (!habit.is_object())
+            {
+                continue;
+            }
+            const auto id = habit["id"].get<std::string>();
+            if (habit_ids.insert(id).second)
+            {
+                state["habits"].push_back(std::move(habit));
+            }
+        }
+    }
+
+    std::unordered_map<std::string, std::size_t> log_indices;
+    const auto append_log = [&](const nlohmann::json& item, bool legacy) {
+        if (!item.is_object())
+        {
+            return;
+        }
+        const auto habit_id = JsonString(item, "habitId");
+        const auto date = JsonString(item, "date");
+        if (!habit_ids.contains(habit_id) || date.size() != 10)
+        {
+            return;
+        }
+
+        auto completed = JsonBool(item, "completed");
+        auto skipped = JsonBool(item, "skipped");
+        auto occurrences = std::max(0, JsonInt(item, "occurrences", 0));
+        auto replacements = std::max(0, JsonInt(item, "replacements", 0));
+        if (legacy)
+        {
+            const auto status = JsonString(item, "status");
+            completed = status == "completed";
+            skipped = status == "skipped";
+            occurrences = status == "occurred" ? std::max(1, JsonInt(item, "count", 1)) : 0;
+            replacements = status == "replaced" ? 1 : 0;
+        }
+
+        nlohmann::json log = {
+            {"habitId", habit_id},
+            {"date", date},
+            {"completed", completed},
+            {"skipped", completed ? false : skipped},
+            {"occurrences", occurrences},
+            {"replacements", replacements},
+            {"note", JsonString(item, "note")},
+            {"updatedAt", JsonString(item, "updatedAt", JsonString(item, "createdAt"))},
+        };
+        const auto key = habit_id + '\n' + date;
+        const auto found = log_indices.find(key);
+        if (found == log_indices.end())
+        {
+            log_indices.emplace(key, state["logs"].size());
+            state["logs"].push_back(std::move(log));
+        }
+        else
+        {
+            state["logs"][found->second] = std::move(log);
+        }
+    };
+
+    const auto logs_it = input.find("logs");
+    if (logs_it != input.end() && logs_it->is_array())
+    {
+        for (const auto& item : *logs_it)
+        {
+            append_log(item, false);
+        }
+    }
+    const auto records_it = input.find("records");
+    if (records_it != input.end() && records_it->is_array())
+    {
+        for (const auto& item : *records_it)
+        {
+            append_log(item, true);
+        }
+    }
+
+    const auto settings_it = input.find("settings");
+    if (settings_it != input.end() && settings_it->is_object())
+    {
+        state["settings"]["weekStartsOn"] = JsonInt(*settings_it, "weekStartsOn", 1) == 0 ? 0 : 1;
+    }
+    return state;
+}
 } // namespace
 
 ConfigStore::ConfigStore() : ConfigStore(DefaultConfigPath())
@@ -423,47 +633,13 @@ void ConfigStore::SaveTimeManagerState(const nlohmann::json& json)
 nlohmann::json ConfigStore::LoadHabitState()
 {
     std::lock_guard lock(mutex_);
-    auto state = LoadBusinessJsonUnlocked("habitState", BuildDefaultHabitStateJson());
-    if (!state.is_object())
-    {
-        state = BuildDefaultHabitStateJson();
-    }
-    if (!state.contains("habits") || !state["habits"].is_array())
-    {
-        state["habits"] = nlohmann::json::array();
-    }
-    if (!state.contains("records") || !state["records"].is_array())
-    {
-        state["records"] = nlohmann::json::array();
-    }
-    if (!state.contains("settings") || !state["settings"].is_object())
-    {
-        state["settings"] = BuildDefaultHabitStateJson()["settings"];
-    }
-    return state;
+    return NormalizeHabitState(LoadBusinessJsonUnlocked("habitState", BuildDefaultHabitStateJson()));
 }
 
 void ConfigStore::SaveHabitState(const nlohmann::json& json)
 {
     std::lock_guard lock(mutex_);
-    auto state = BuildDefaultHabitStateJson();
-    if (json.is_object())
-    {
-        state.merge_patch(json);
-    }
-    if (!state["habits"].is_array())
-    {
-        state["habits"] = nlohmann::json::array();
-    }
-    if (!state["records"].is_array())
-    {
-        state["records"] = nlohmann::json::array();
-    }
-    if (!state["settings"].is_object())
-    {
-        state["settings"] = BuildDefaultHabitStateJson()["settings"];
-    }
-    SaveBusinessJsonUnlocked("habitState", state);
+    SaveBusinessJsonUnlocked("habitState", NormalizeHabitState(json));
 }
 
 nlohmann::json ConfigStore::LoadTransferConfig()
@@ -604,8 +780,9 @@ nlohmann::json ConfigStore::BuildDefaultTimeManagerStateJson() const
 nlohmann::json ConfigStore::BuildDefaultHabitStateJson() const
 {
     return {
+        {"version", 2},
         {"habits", nlohmann::json::array()},
-        {"records", nlohmann::json::array()},
+        {"logs", nlohmann::json::array()},
         {"settings", {{"weekStartsOn", 1}}},
     };
 }
