@@ -105,7 +105,7 @@
           </n-icon>
         </template>
       </n-button>
-      <n-button v-if="selectedTaskId" size="small" tertiary @click="activePanel = 'editor'">
+      <n-button v-if="selectedTaskId" size="small" tertiary @click="openTaskEditor">
         <template #icon><n-icon><CreateOutline /></n-icon></template>
         详情
       </n-button>
@@ -208,40 +208,53 @@
       </div>
       <div v-if="selectedTask" class="tm-drawer-body">
         <n-input :value="selectedTask.title" placeholder="任务标题" @update:value="updateTask(selectedTask.id, { title: $event })" />
-        <n-checkbox :checked="selectedTask.completed" @update:checked="toggleTask(selectedTask.id, $event)">
-          已完成
-        </n-checkbox>
-        <n-date-picker
-          :value="dateValue(selectedTask.scheduledAt)"
-          type="datetime"
-          clearable
-          :actions="['now', 'confirm']"
-          @update:value="updateTask(selectedTask.id, { scheduledAt: $event ? new Date($event).toISOString() : '' })"
-        />
-        <n-select
-          :value="selectedTask.tagIds"
-          multiple
-          clearable
-          placeholder="标签"
-          :options="tagOptions"
-          @update:value="updateTask(selectedTask.id, { tagIds: $event })"
-        />
-        <n-input-group>
-          <n-input v-model:value="newTagName" placeholder="新增标签" @keydown.enter.prevent="addTag" />
-          <n-button type="primary" @click="addTag">添加</n-button>
-        </n-input-group>
-        <div class="tm-tag-list">
-          <span v-for="tag in state.tags" :key="tag.id" class="tm-tag" :style="{ '--tag-color': tag.color }">
-            {{ tag.name }}
-            <button @click="deleteTag(tag.id)">×</button>
+        <button
+          class="tm-detail-toggle"
+          type="button"
+          :aria-expanded="detailsExpanded"
+          @click="detailsExpanded = !detailsExpanded"
+        >
+          <span class="tm-detail-toggle-label">
+            <n-icon :class="{ expanded: detailsExpanded }"><ChevronDownOutline /></n-icon>
+            {{ detailsExpanded ? "收起详细配置" : "展开详细配置" }}
           </span>
+        </button>
+        <div class="tm-detail-options" :class="{ expanded: detailsExpanded }">
+          <n-checkbox :checked="selectedTask.completed" @update:checked="toggleTask(selectedTask.id, $event)">
+            已完成
+          </n-checkbox>
+          <n-date-picker
+            :value="dateValue(selectedTask.scheduledAt)"
+            type="datetime"
+            clearable
+            :actions="['now', 'confirm']"
+            @update:value="updateTask(selectedTask.id, { scheduledAt: $event ? new Date($event).toISOString() : '' })"
+          />
+          <n-select
+            :value="selectedTask.tagIds"
+            multiple
+            clearable
+            placeholder="标签"
+            :options="tagOptions"
+            @update:value="updateTask(selectedTask.id, { tagIds: $event })"
+          />
+          <n-input-group>
+            <n-input v-model:value="newTagName" placeholder="新增标签" @keydown.enter.prevent="addTag" />
+            <n-button type="primary" @click="addTag">添加</n-button>
+          </n-input-group>
+          <div class="tm-tag-list">
+            <span v-for="tag in state.tags" :key="tag.id" class="tm-tag" :style="{ '--tag-color': tag.color }">
+              {{ tag.name }}
+              <button @click="deleteTag(tag.id)">×</button>
+            </span>
+          </div>
+          <n-input
+            :value="selectedTask.notes"
+            type="textarea"
+            placeholder="备注"
+            @update:value="updateTask(selectedTask.id, { notes: $event })"
+          />
         </div>
-        <n-input
-          :value="selectedTask.notes"
-          type="textarea"
-          placeholder="备注"
-          @update:value="updateTask(selectedTask.id, { notes: $event })"
-        />
       </div>
       <div v-else class="tm-empty-state">
         选择一个节点后编辑任务。
@@ -258,6 +271,7 @@ import {
   CalendarOutline,
   CheckmarkCircleOutline,
   ChevronBackOutline,
+  ChevronDownOutline,
   ChevronForwardOutline,
   CloseOutline,
   CreateOutline,
@@ -317,6 +331,7 @@ const calendarMode = ref<CalendarMode>("month");
 const calendarCursor = ref(startOfDay(new Date()));
 const activePanel = ref<PanelName>(null);
 const selectedTaskId = ref<string | null>(null);
+const detailsExpanded = ref(false);
 const activeFilterId = ref<string | null>(null);
 const keyword = ref("");
 const newTagName = ref("");
@@ -331,6 +346,7 @@ const skipNextMindRefresh = ref(false);
 const canvasPointerStart = ref<{ x: number; y: number } | null>(null);
 let saveTimer = 0;
 let searchFocusTimer = 0;
+let initialScaleFrame = 0;
 let originalViewportContent = "";
 
 const selectedTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value));
@@ -419,6 +435,7 @@ onBeforeUnmount(() => {
   mind.value?.destroy();
   window.clearTimeout(saveTimer);
   window.clearTimeout(searchFocusTimer);
+  window.cancelAnimationFrame(initialScaleFrame);
   unlockPageViewport();
 });
 
@@ -452,6 +469,10 @@ watch(activeFilterId, (filterId) => {
   }
 });
 
+watch(selectedTaskId, () => {
+  detailsExpanded.value = false;
+});
+
 watch(keyword, () => {
   window.clearTimeout(searchFocusTimer);
   if (!keyword.value.trim()) {
@@ -477,7 +498,8 @@ function initMind() {
     draggable: true,
     compact: false,
     overflowHidden: false,
-    newTopicName: "新任务",
+    alignment: "nodes",
+    newTopicName: " ",
     theme: {
       name: "space-station-task",
       palette,
@@ -507,7 +529,10 @@ function initMind() {
   });
   mind.value.init(mindData.value);
   mind.value.clearHistory?.();
-  setTimeout(() => mind.value?.scaleFit(), 80);
+  initialScaleFrame = window.requestAnimationFrame(() => {
+    initialScaleFrame = 0;
+    mind.value?.scaleFit();
+  });
 }
 
 function refreshMind() {
@@ -659,7 +684,7 @@ function extractTasksFromNode(root: NodeObj<TaskNodeMeta>) {
       const existing = state.tasks.find((task) => task.id === node.id);
       tasks.push({
         id: node.id,
-        title: node.topic || "未命名任务",
+        title: node.topic?.trim() ?? "",
         parentId,
         tagIds: existing?.tagIds ?? node.metadata?.tagIds ?? [],
         scheduledAt: existing?.scheduledAt ?? node.metadata?.scheduledAt ?? "",
@@ -681,7 +706,7 @@ async function addTask(parentId: string | null) {
   const now = new Date().toISOString();
   const task: TimeManagerTask = {
     id: createId(),
-    title: "新任务",
+    title: "",
     parentId: resolvedParentId,
     tagIds: [],
     scheduledAt: "",
@@ -697,7 +722,7 @@ async function addTask(parentId: string | null) {
     await mind.value.addChild(parentEl, node);
     selectedTaskId.value = task.id;
     viewMode.value = "map";
-    activePanel.value = "editor";
+    openTaskEditor();
     await nextTick();
     const el = findTopic(task.id);
     if (el) {
@@ -708,7 +733,7 @@ async function addTask(parentId: string | null) {
   state.tasks.push(task);
   selectedTaskId.value = task.id;
   viewMode.value = "map";
-  activePanel.value = "editor";
+  openTaskEditor();
   nextTick(() => {
     refreshMind();
     const el = findTopic(task.id);
@@ -956,7 +981,7 @@ function tagName(id: string) {
 function openTask(id: string) {
   selectedTaskId.value = id;
   viewMode.value = "map";
-  activePanel.value = "editor";
+  openTaskEditor();
   nextTick(() => {
     const el = findTopic(id);
     if (el) {
@@ -964,6 +989,11 @@ function openTask(id: string) {
       mind.value?.scrollIntoView(el, true);
     }
   });
+}
+
+function openTaskEditor() {
+  detailsExpanded.value = false;
+  activePanel.value = "editor";
 }
 
 function togglePanel(panel: Exclude<PanelName, null>) {
@@ -1332,6 +1362,62 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
   overflow: auto;
 }
 
+.tm-detail-toggle {
+  display: none;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 2px;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.tm-detail-toggle::before,
+.tm-detail-toggle::after {
+  min-width: 20px;
+  flex: 1 1 auto;
+  border-top: 1px dashed rgba(71, 103, 134, 0.28);
+  content: "";
+}
+
+.tm-detail-toggle-label {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.tm-detail-toggle:hover,
+.tm-detail-toggle:focus-visible {
+  color: #1d4ed8;
+}
+
+.tm-detail-toggle:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 2px;
+}
+
+.tm-detail-toggle .n-icon {
+  flex: 0 0 auto;
+  transition: transform 0.18s ease;
+}
+
+.tm-detail-toggle .n-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.tm-detail-options {
+  display: grid;
+  gap: 12px;
+}
+
 .tm-condition-list,
 .tm-saved-list,
 .tm-tag-list {
@@ -1577,12 +1663,20 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
   .tm-drawer--right {
     top: 54px;
     bottom: auto;
-    height: min(72dvh, 620px);
+    height: auto;
     max-height: calc(100dvh - 54px);
     padding-bottom: 0;
     border-top: 0;
     border-radius: 0 0 8px 8px;
     transform: translateY(calc(-100% - 18px));
+  }
+
+  .tm-detail-toggle {
+    display: flex;
+  }
+
+  .tm-detail-options:not(.expanded) {
+    display: none;
   }
 
   .tm-drawer--right .tm-drawer-body {
