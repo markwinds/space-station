@@ -1,5 +1,5 @@
 <template>
-  <div class="time-manager">
+  <div ref="timeManagerRef" class="time-manager">
     <section
       v-show="viewMode === 'map'"
       class="tm-canvas-shell"
@@ -260,6 +260,28 @@
         选择一个节点后编辑任务。
       </div>
     </aside>
+
+    <div
+      v-if="completionBurst"
+      :key="completionBurst.id"
+      class="tm-completion-burst"
+      :style="{ left: `${completionBurst.x}px`, top: `${completionBurst.y}px` }"
+      aria-hidden="true"
+    >
+      <div class="tm-kaleidoscope-wheel"></div>
+      <span
+        v-for="particle in completionParticles"
+        :key="particle.angle"
+        class="tm-kaleidoscope-particle"
+        :style="{
+          '--particle-angle': `${particle.angle}deg`,
+          '--particle-color': particle.color,
+          '--particle-distance': `-${particle.distance}px`,
+          '--particle-delay': `${particle.delay}ms`,
+        }"
+      ></span>
+      <div class="tm-completion-check">✓</div>
+    </div>
   </div>
 </template>
 
@@ -317,6 +339,7 @@ type TaskNodeMeta = {
 };
 
 const rootId = "space-station";
+const timeManagerRef = ref<HTMLElement | null>(null);
 const mindContainerRef = ref<HTMLElement | null>(null);
 const mind = shallowRef<MindElixirInstance | null>(null);
 const state = reactive<TimeManagerState>({
@@ -435,6 +458,7 @@ onBeforeUnmount(() => {
   mind.value?.destroy();
   window.clearTimeout(saveTimer);
   window.clearTimeout(searchFocusTimer);
+  window.clearTimeout(completionTimer);
   window.cancelAnimationFrame(initialScaleFrame);
   unlockPageViewport();
 });
@@ -753,13 +777,48 @@ function updateTask(id: string, patch: Partial<TimeManagerTask>) {
 
 function toggleTask(id: string, checked: boolean) {
   updateTask(id, { completed: checked });
+  if (checked) {
+    celebrateTaskCompletion(id);
+  }
 }
 
 function toggleSelectedTaskCompleted() {
   if (!selectedTask.value) {
     return;
   }
-  updateTask(selectedTask.value.id, { completed: !selectedTask.value.completed });
+  const taskId = selectedTask.value.id;
+  const completed = !selectedTask.value.completed;
+  updateTask(taskId, { completed });
+  if (completed) {
+    celebrateTaskCompletion(taskId);
+  }
+}
+
+function celebrateTaskCompletion(taskId: string) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return;
+  }
+  const hostRect = timeManagerRef.value?.getBoundingClientRect();
+  if (!hostRect) {
+    return;
+  }
+  const topicRect = findTopic(taskId)?.getBoundingClientRect();
+  const topicIsVisible = Boolean(
+    topicRect &&
+    topicRect.width > 0 &&
+    topicRect.height > 0 &&
+    topicRect.right > hostRect.left &&
+    topicRect.left < hostRect.right &&
+    topicRect.bottom > hostRect.top &&
+    topicRect.top < hostRect.bottom
+  );
+  const x = topicIsVisible && topicRect ? topicRect.left + topicRect.width / 2 - hostRect.left : hostRect.width / 2;
+  const y = topicIsVisible && topicRect ? topicRect.top + topicRect.height / 2 - hostRect.top : hostRect.height / 2;
+  window.clearTimeout(completionTimer);
+  completionBurst.value = { id: ++completionBurstId, x, y };
+  completionTimer = window.setTimeout(() => {
+    completionBurst.value = null;
+  }, 1000);
 }
 
 function deleteTask(id: string) {
@@ -1189,6 +1248,15 @@ function formatDateTime(value: string) {
 }
 
 const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2"];
+const completionParticles = Array.from({ length: 18 }, (_, index) => ({
+  angle: index * 20,
+  color: palette[index % palette.length],
+  distance: 54 + (index % 3) * 14,
+  delay: (index % 2) * 35,
+}));
+const completionBurst = ref<{ id: number; x: number; y: number } | null>(null);
+let completionBurstId = 0;
+let completionTimer = 0;
 </script>
 
 <style scoped>
@@ -1577,6 +1645,123 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
 .tm-calendar-task.done span {
   color: #788895;
   text-decoration: line-through;
+}
+
+.tm-completion-burst {
+  position: absolute;
+  z-index: 80;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.tm-kaleidoscope-wheel {
+  position: absolute;
+  left: -52px;
+  top: -52px;
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    #2563eb,
+    #7c3aed,
+    #dc2626,
+    #d97706,
+    #16a34a,
+    #0891b2,
+    #2563eb
+  );
+  opacity: 0;
+  -webkit-mask: radial-gradient(circle, transparent 0 21%, #000 22% 28%, transparent 29% 39%, #000 40% 47%, transparent 48%);
+  mask: radial-gradient(circle, transparent 0 21%, #000 22% 28%, transparent 29% 39%, #000 40% 47%, transparent 48%);
+  animation: tm-kaleidoscope-wheel 850ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tm-kaleidoscope-particle {
+  position: absolute;
+  left: -3px;
+  top: -8px;
+  width: 6px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--particle-color);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--particle-color) 55%, transparent);
+  opacity: 0;
+  transform-origin: 3px 8px;
+  animation: tm-kaleidoscope-particle 760ms cubic-bezier(0.16, 1, 0.3, 1) var(--particle-delay) both;
+}
+
+.tm-completion-check {
+  position: absolute;
+  left: -18px;
+  top: -18px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 3px solid rgba(255, 255, 255, 0.94);
+  border-radius: 50%;
+  background: #16a34a;
+  box-shadow: 0 8px 22px rgba(22, 163, 74, 0.3);
+  color: #ffffff;
+  font-size: 21px;
+  font-weight: 800;
+  opacity: 0;
+  animation: tm-completion-check 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes tm-kaleidoscope-wheel {
+  0% {
+    opacity: 0;
+    transform: scale(0.15) rotate(-35deg);
+  }
+  24% {
+    opacity: 0.82;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.42) rotate(145deg);
+  }
+}
+
+@keyframes tm-kaleidoscope-particle {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--particle-angle)) translateY(-8px) scale(0.25);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--particle-angle)) translateY(var(--particle-distance)) scale(0.65);
+  }
+}
+
+@keyframes tm-completion-check {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-20deg);
+  }
+  24% {
+    opacity: 1;
+    transform: scale(1.16) rotate(5deg);
+  }
+  48% {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.92) rotate(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tm-completion-burst {
+    display: none;
+  }
 }
 
 @media (max-width: 760px) {
