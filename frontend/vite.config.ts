@@ -27,6 +27,7 @@ export default defineConfig(({ mode }) => ({
       "/api": {
         target: "http://127.0.0.1:34827",
         changeOrigin: true,
+        ws: true,
       },
     },
   },

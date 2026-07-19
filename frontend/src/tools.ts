@@ -6,9 +6,10 @@ import {
   FolderOpenOutline,
   KeyOutline,
   SwapHorizontalOutline,
+  TerminalOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "timeManager" | "habits" | "fileShare" | "transfer" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -68,6 +69,14 @@ export const tools: ToolDefinition[] = [
     category: "Transfer",
     icon: SwapHorizontalOutline,
     path: "/tools/transfer",
+  },
+  {
+    id: "ssh",
+    title: "SSH 终端",
+    description: "管理主机并打开远程终端",
+    category: "Remote",
+    icon: TerminalOutline,
+    path: "/tools/ssh",
   },
   {
     id: "runtime",

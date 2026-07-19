@@ -3,6 +3,7 @@
 #include "cert/certificate_service.hpp"
 #include "embedded_assets.hpp"
 #include "logging/logger.hpp"
+#include "ssh/ssh_websocket.hpp"
 
 #include <nlohmann/json.hpp>
 #include <openssl/bn.h>
@@ -83,13 +84,14 @@ drogon::ContentType StaticAssetContentType(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 7> hashed_asset_prefixes{
+    const std::array<std::string_view, 8> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/TimeManagerTool-",
         "/assets/HabitTool-",
         "/assets/DatePicker-",
         "/assets/FileShareTool-",
         "/assets/TransferTool-",
+        "/assets/SshTool-",
         "/assets/_plugin-vue_export-helper-",
     };
 
@@ -133,6 +135,18 @@ bool ParseJsonBody(const drogon::HttpRequestPtr& req,
         return false;
     }
     return true;
+}
+
+bool RequireSecureRequest(const drogon::HttpRequestPtr& request,
+                          std::function<void(const drogon::HttpResponsePtr&)>& callback)
+{
+    if (request->isOnSecureConnection() || request->peerAddr().isLoopbackIp())
+    {
+        return true;
+    }
+    callback(JsonResponse({{"code", "https_required"}, {"message", "SSH 管理接口只允许通过 HTTPS 访问。"}},
+                          drogon::k403Forbidden));
+    return false;
 }
 
 drogon::HttpStatusCode StatusForToolResult(const nlohmann::json& result)
@@ -421,7 +435,8 @@ HttpServer::HttpServer(ConfigStore& config_store, AppConfig config)
       private_key_path_(std::move(config.private_key_path)),
       trusted_root_certificate_path_(std::move(config.trusted_root_certificate_path)),
       config_store_(config_store),
-      transfer_manager_(config_store)
+      transfer_manager_(config_store),
+      sftp_service_(config_store)
 {
     RegisterRoutes();
 }
@@ -488,6 +503,9 @@ std::string HttpServer::UiUrl() const
 
 void HttpServer::RegisterRoutes()
 {
+    ssh_websocket_controller_ = std::make_shared<ssh::SshWebSocketController>(config_store_);
+    drogon::app().registerController(ssh_websocket_controller_);
+
     drogon::app().registerHandler(
         "/",
         [](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
@@ -741,6 +759,230 @@ void HttpServer::RegisterRoutes()
             callback(JsonResponse({{"shares", items}}));
         },
         {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/hosts",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback))
+            {
+                return;
+            }
+            auto hosts = config_store_.LoadSshHosts();
+            for (auto& host : hosts)
+            {
+                if (host.is_object())
+                {
+                    host["hasCredential"] = config_store_.HasSshCredential(host.value("id", ""));
+                }
+            }
+            callback(JsonResponse({{"hosts", hosts}}));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/hosts",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback))
+            {
+                return;
+            }
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback))
+            {
+                return;
+            }
+            const auto hosts = body.value("hosts", nlohmann::json::array());
+            if (!hosts.is_array())
+            {
+                callback(JsonResponse({{"code", "invalid_hosts"}, {"message", "SSH 主机必须是数组。"}},
+                                      drogon::k400BadRequest));
+                return;
+            }
+            config_store_.SaveSshHosts(hosts);
+            callback(JsonResponse({{"ok", true}}));
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/credential",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback))
+            {
+                return;
+            }
+            const auto host_id = req->getParameter("hostId");
+            if (host_id.empty())
+            {
+                callback(JsonResponse({{"code", "missing_host_id"}}, drogon::k400BadRequest));
+                return;
+            }
+            config_store_.DeleteSshCredential(host_id);
+            callback(JsonResponse({{"ok", true}}));
+        },
+        {drogon::Delete});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/list",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                callback(JsonResponse(sftp_service_.List(req->getParameter("hostId"), req->getParameter("path"))));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/folder",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                sftp_service_.CreateDirectory(body.value("hostId", ""), body.value("path", ""));
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/item",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                sftp_service_.Remove(body.value("hostId", ""), body.value("path", ""),
+                                     body.value("directory", false));
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Delete});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/rename",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                sftp_service_.Rename(body.value("hostId", ""), body.value("from", ""), body.value("to", ""));
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/upload",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            drogon::MultiPartParser parser;
+            if (parser.parse(req) != 0)
+            {
+                callback(JsonResponse({{"code", "invalid_multipart"}}, drogon::k400BadRequest));
+                return;
+            }
+            const auto host_id = parser.getParameter<std::string>("hostId");
+            const auto path = parser.getParameter<std::string>("path");
+            const auto& files = parser.getFiles();
+            if (host_id.empty() || files.empty())
+            {
+                callback(JsonResponse({{"code", "missing_host_or_file"}}, drogon::k400BadRequest));
+                return;
+            }
+            try
+            {
+                int uploaded = 0;
+                for (const auto& file : files)
+                {
+                    const auto filename = SanitizeFileName(file.getFileName());
+                    const auto destination = path.empty() || path == "/" ? "/" + filename : path + "/" + filename;
+                    sftp_service_.Upload(host_id, destination, {file.fileData(), file.fileLength()});
+                    ++uploaded;
+                }
+                callback(JsonResponse({{"ok", true}, {"uploaded", uploaded}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/download",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                auto download = sftp_service_.Download(req->getParameter("hostId"), req->getParameter("path"));
+                auto response = drogon::HttpResponse::newHttpResponse();
+                response->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+                response->addHeader("Content-Disposition", "attachment; filename=\"" + SanitizeFileName(download.filename) + "\"");
+                response->setBody(std::move(download.content));
+                callback(response);
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/forwards",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            callback(JsonResponse(sftp_service_.ForwardState()));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/forwards",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                callback(JsonResponse(sftp_service_.StartForward(body.value("hostId", ""), body.value("localPort", 0),
+                                                                  body.value("remoteHost", ""), body.value("remotePort", 0))));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/forwards/{1}",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               const std::string& id) {
+            if (!RequireSecureRequest(req, callback)) return;
+            sftp_service_.StopForward(id);
+            callback(JsonResponse({{"ok", true}}));
+        },
+        {drogon::Delete});
 
     drogon::app().registerHandler(
         "/api/tools/file-share/shares",

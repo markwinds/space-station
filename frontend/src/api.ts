@@ -265,6 +265,43 @@ export interface FileShareItem {
   modifiedAt: number;
 }
 
+export interface SshHost {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  group: string;
+  hostKeySha256: string;
+  hasCredential?: boolean;
+  useAgent?: boolean;
+  jumpHostId?: string;
+}
+
+export interface SftpItem {
+  name: string;
+  path: string;
+  type: "directory" | "file" | "symlink";
+  size: number;
+  modifiedAt: number;
+}
+
+export interface SftpListResponse {
+  path: string;
+  parentPath: string;
+  items: SftpItem[];
+}
+
+export interface SshPortForward {
+  id: string;
+  hostId: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  running: boolean;
+  message: string;
+}
+
 export interface FileShareListResponse {
   share: FileShare;
   path: string;
@@ -412,6 +449,67 @@ export async function saveHabitState(payload: HabitState): Promise<void> {
 export async function fetchFileShareState(): Promise<{ shares: FileShare[] }> {
   const { data } = await api.get<{ shares: FileShare[] }>("/tools/file-share/state");
   return data;
+}
+
+export async function fetchSshHosts(): Promise<{ hosts: SshHost[] }> {
+  const { data } = await api.get<{ hosts: SshHost[] }>("/tools/ssh/hosts");
+  return data;
+}
+
+export async function saveSshHosts(hosts: SshHost[]): Promise<void> {
+  await api.put("/tools/ssh/hosts", { hosts });
+}
+
+export async function deleteSshCredential(hostId: string): Promise<void> {
+  await api.delete("/tools/ssh/credential", { params: { hostId } });
+}
+
+export async function listSftp(hostId: string, path = "/"): Promise<SftpListResponse> {
+  const { data } = await api.get<SftpListResponse>("/tools/ssh/sftp/list", {
+    params: { hostId, path },
+    timeout: 30000,
+  });
+  return data;
+}
+
+export async function createSftpFolder(hostId: string, path: string): Promise<void> {
+  await api.post("/tools/ssh/sftp/folder", { hostId, path }, { timeout: 30000 });
+}
+
+export async function deleteSftpItem(hostId: string, path: string, directory: boolean): Promise<void> {
+  await api.delete("/tools/ssh/sftp/item", { data: { hostId, path, directory }, timeout: 30000 });
+}
+
+export async function renameSftpItem(hostId: string, from: string, to: string): Promise<void> {
+  await api.put("/tools/ssh/sftp/rename", { hostId, from, to }, { timeout: 30000 });
+}
+
+export async function uploadSftpFiles(hostId: string, path: string, files: FileList | File[]): Promise<void> {
+  const formData = new FormData();
+  formData.append("hostId", hostId);
+  formData.append("path", path);
+  Array.from(files).forEach((file) => formData.append("files", file));
+  await api.post("/tools/ssh/sftp/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 300000,
+  });
+}
+
+export function sftpDownloadUrl(hostId: string, path: string): string {
+  return `/api/tools/ssh/sftp/download?${new URLSearchParams({ hostId, path }).toString()}`;
+}
+
+export async function fetchSshPortForwards(): Promise<{ forwards: SshPortForward[] }> {
+  const { data } = await api.get<{ forwards: SshPortForward[] }>("/tools/ssh/forwards");
+  return data;
+}
+
+export async function startSshPortForward(payload: { hostId: string; localPort: number; remoteHost: string; remotePort: number }): Promise<void> {
+  await api.post("/tools/ssh/forwards", payload);
+}
+
+export async function stopSshPortForward(id: string): Promise<void> {
+  await api.delete(`/tools/ssh/forwards/${encodeURIComponent(id)}`);
 }
 
 export async function saveFileShares(shares: FileShare[]): Promise<void> {

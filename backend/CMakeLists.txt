@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 project(SpaceStation LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Drogon CONFIG REQUIRED)
+find_package(libssh2 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
@@ -60,6 +63,9 @@ add_executable(space-station
         src/config/config_store.cpp
         src/http/http_server.cpp
         src/logging/logger.cpp
+        src/ssh/ssh_session.cpp
+        src/ssh/sftp_service.cpp
+        src/ssh/ssh_websocket.cpp
         src/transfer/transfer_manager.cpp
         "${SPACESTATION_EMBED_CPP}")
 
@@ -74,6 +80,7 @@ target_link_libraries(space-station
         nlohmann_json::nlohmann_json
         unofficial::sqlite3::sqlite3
         OpenSSL::Crypto
+        libssh2::libssh2
         space-transfer-core)
 
 function(strip_release_executable target)
@@ -94,6 +101,19 @@ endfunction()
 strip_release_executable(space-station)
 strip_release_executable(space-transfer-client)
 strip_release_executable(space-transfer-server)
+
+if (BUILD_TESTING)
+    add_executable(config-store-vault-test
+            tests/config_store_vault_test.cpp
+            src/config/config_store.cpp)
+    target_include_directories(config-store-vault-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(config-store-vault-test
+            PRIVATE
+            nlohmann_json::nlohmann_json
+            unofficial::sqlite3::sqlite3
+            OpenSSL::Crypto)
+    add_test(NAME config-store-vault-test COMMAND config-store-vault-test)
+endif ()
 
 if (WIN32)
     target_compile_definitions(space-transfer-core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)

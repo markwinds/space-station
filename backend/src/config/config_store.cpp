@@ -1,9 +1,13 @@
 #include "config/config_store.hpp"
 
 #include <sqlite3.h>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -49,6 +53,177 @@ struct StatementDeleter
 };
 
 using SqliteStatement = std::unique_ptr<sqlite3_stmt, StatementDeleter>;
+
+inline constexpr std::string_view kSshCredentialVaultKey = "sshCredentials";
+
+struct CipherContextDeleter
+{
+    void operator()(EVP_CIPHER_CTX* context) const
+    {
+        EVP_CIPHER_CTX_free(context);
+    }
+};
+
+using CipherContext = std::unique_ptr<EVP_CIPHER_CTX, CipherContextDeleter>;
+
+std::string HexEncode(const unsigned char* data, std::size_t size)
+{
+    constexpr char digits[] = "0123456789abcdef";
+    std::string encoded(size * 2, '\0');
+    for (std::size_t index = 0; index < size; ++index)
+    {
+        encoded[index * 2] = digits[data[index] >> 4];
+        encoded[index * 2 + 1] = digits[data[index] & 0x0f];
+    }
+    return encoded;
+}
+
+std::vector<unsigned char> HexDecode(const std::string& value)
+{
+    if (value.size() % 2 != 0)
+    {
+        throw std::runtime_error("SSH 凭据密文格式无效。");
+    }
+    const auto nibble = [](char character) -> int {
+        if (character >= '0' && character <= '9') return character - '0';
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+        return -1;
+    };
+    std::vector<unsigned char> decoded(value.size() / 2);
+    for (std::size_t index = 0; index < decoded.size(); ++index)
+    {
+        const auto high = nibble(value[index * 2]);
+        const auto low = nibble(value[index * 2 + 1]);
+        if (high < 0 || low < 0)
+        {
+            throw std::runtime_error("SSH 凭据密文格式无效。");
+        }
+        decoded[index] = static_cast<unsigned char>((high << 4) | low);
+    }
+    return decoded;
+}
+
+std::array<unsigned char, 32> LoadOrCreateVaultKey(const std::filesystem::path& path)
+{
+    std::array<unsigned char, 32> key{};
+    if (std::filesystem::exists(path))
+    {
+        std::ifstream input(path, std::ios::binary);
+        input.read(reinterpret_cast<char*>(key.data()), static_cast<std::streamsize>(key.size()));
+        if (input.gcount() != static_cast<std::streamsize>(key.size()))
+        {
+            throw std::runtime_error("SSH 凭据库主密钥长度无效。");
+        }
+        return key;
+    }
+    std::filesystem::create_directories(path.parent_path());
+    if (RAND_bytes(key.data(), static_cast<int>(key.size())) != 1)
+    {
+        throw std::runtime_error("SSH 凭据库主密钥生成失败。");
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(key.data()), static_cast<std::streamsize>(key.size()));
+    output.close();
+    if (!output)
+    {
+        OPENSSL_cleanse(key.data(), key.size());
+        throw std::runtime_error("SSH 凭据库主密钥写入失败。");
+    }
+    std::error_code permission_error;
+    std::filesystem::permissions(path,
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace,
+                                 permission_error);
+    return key;
+}
+
+nlohmann::json EncryptCredential(const std::filesystem::path& key_path,
+                                 const std::string& host_id,
+                                 const nlohmann::json& credential)
+{
+    auto key = LoadOrCreateVaultKey(key_path);
+    std::array<unsigned char, 12> nonce{};
+    std::array<unsigned char, 16> tag{};
+    if (RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) != 1)
+    {
+        OPENSSL_cleanse(key.data(), key.size());
+        throw std::runtime_error("SSH 凭据加密随机数生成失败。");
+    }
+    const auto plaintext = credential.dump();
+    std::vector<unsigned char> ciphertext(plaintext.size() + 16);
+    CipherContext context(EVP_CIPHER_CTX_new());
+    int written = 0;
+    int total = 0;
+    const auto ok = context && EVP_EncryptInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) == 1 &&
+                    EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN, nonce.size(), nullptr) == 1 &&
+                    EVP_EncryptInit_ex(context.get(), nullptr, nullptr, key.data(), nonce.data()) == 1 &&
+                    EVP_EncryptUpdate(context.get(), nullptr, &written,
+                                      reinterpret_cast<const unsigned char*>(host_id.data()), host_id.size()) == 1 &&
+                    EVP_EncryptUpdate(context.get(), ciphertext.data(), &written,
+                                      reinterpret_cast<const unsigned char*>(plaintext.data()), plaintext.size()) == 1;
+    total = written;
+    const auto final_ok = ok && EVP_EncryptFinal_ex(context.get(), ciphertext.data() + total, &written) == 1;
+    total += written;
+    const auto tag_ok = final_ok && EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_GET_TAG, tag.size(), tag.data()) == 1;
+    OPENSSL_cleanse(key.data(), key.size());
+    if (!tag_ok)
+    {
+        throw std::runtime_error("SSH 凭据加密失败。");
+    }
+    ciphertext.resize(static_cast<std::size_t>(total));
+    return {
+        {"version", 1},
+        {"nonce", HexEncode(nonce.data(), nonce.size())},
+        {"ciphertext", HexEncode(ciphertext.data(), ciphertext.size())},
+        {"tag", HexEncode(tag.data(), tag.size())},
+    };
+}
+
+nlohmann::json DecryptCredential(const std::filesystem::path& key_path,
+                                 const std::string& host_id,
+                                 const nlohmann::json& envelope)
+{
+    if (!envelope.is_object() || envelope.value("version", 0) != 1)
+    {
+        throw std::runtime_error("SSH 凭据密文版本无效。");
+    }
+    auto nonce = HexDecode(envelope.value("nonce", ""));
+    auto ciphertext = HexDecode(envelope.value("ciphertext", ""));
+    auto tag = HexDecode(envelope.value("tag", ""));
+    if (nonce.size() != 12 || tag.size() != 16)
+    {
+        throw std::runtime_error("SSH 凭据密文格式无效。");
+    }
+    auto key = LoadOrCreateVaultKey(key_path);
+    std::vector<unsigned char> plaintext(ciphertext.size() + 1);
+    CipherContext context(EVP_CIPHER_CTX_new());
+    int written = 0;
+    int total = 0;
+    const auto ok = context && EVP_DecryptInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) == 1 &&
+                    EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN, nonce.size(), nullptr) == 1 &&
+                    EVP_DecryptInit_ex(context.get(), nullptr, nullptr, key.data(), nonce.data()) == 1 &&
+                    EVP_DecryptUpdate(context.get(), nullptr, &written,
+                                      reinterpret_cast<const unsigned char*>(host_id.data()), host_id.size()) == 1 &&
+                    EVP_DecryptUpdate(context.get(), plaintext.data(), &written, ciphertext.data(), ciphertext.size()) == 1;
+    total = written;
+    const auto tag_ok = ok && EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_TAG, tag.size(), tag.data()) == 1;
+    const auto final_ok = tag_ok && EVP_DecryptFinal_ex(context.get(), plaintext.data() + total, &written) == 1;
+    total += written;
+    OPENSSL_cleanse(key.data(), key.size());
+    if (!final_ok)
+    {
+        OPENSSL_cleanse(plaintext.data(), plaintext.size());
+        throw std::runtime_error("SSH 凭据解密失败或密文已被修改。");
+    }
+    const auto parsed = nlohmann::json::parse(plaintext.begin(), plaintext.begin() + total, nullptr, false);
+    OPENSSL_cleanse(plaintext.data(), plaintext.size());
+    if (parsed.is_discarded() || !parsed.is_object())
+    {
+        throw std::runtime_error("SSH 凭据内容无效。");
+    }
+    return parsed;
+}
 
 SqliteDb OpenDatabase(const std::filesystem::path& path)
 {
@@ -696,6 +871,138 @@ void ConfigStore::SaveFileShares(const nlohmann::json& json)
         }
     }
     SaveBusinessJsonUnlocked("fileShares", shares);
+}
+
+nlohmann::json ConfigStore::LoadSshHosts()
+{
+    std::lock_guard lock(mutex_);
+    auto hosts = LoadBusinessJsonUnlocked("sshHosts", nlohmann::json::array());
+    return hosts.is_array() ? hosts : nlohmann::json::array();
+}
+
+void ConfigStore::SaveSshHosts(const nlohmann::json& json)
+{
+    std::lock_guard lock(mutex_);
+    auto hosts = nlohmann::json::array();
+    std::unordered_set<std::string> ids;
+    if (json.is_array())
+    {
+        for (const auto& item : json)
+        {
+            if (!item.is_object())
+            {
+                continue;
+            }
+            const auto id = item.value("id", "");
+            const auto name = item.value("name", "");
+            const auto host = item.value("host", "");
+            const auto username = item.value("username", "");
+            const auto port = std::clamp(item.value("port", 22), 1, 65535);
+            if (id.empty() || name.empty() || host.empty() || username.empty() || !ids.insert(id).second)
+            {
+                continue;
+            }
+            hosts.push_back({
+                {"id", id},
+                {"name", name},
+                {"host", host},
+                {"port", port},
+                {"username", username},
+                {"group", item.value("group", "")},
+                {"hostKeySha256", item.value("hostKeySha256", "")},
+            });
+        }
+    }
+    SaveBusinessJsonUnlocked("sshHosts", hosts);
+    auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());
+    if (vault.is_object())
+    {
+        for (auto item = vault.begin(); item != vault.end();)
+        {
+            item = ids.contains(item.key()) ? std::next(item) : vault.erase(item);
+        }
+        SaveBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), vault);
+    }
+}
+
+bool ConfigStore::SaveSshHostFingerprint(const std::string& id, const std::string& fingerprint)
+{
+    std::lock_guard lock(mutex_);
+    auto hosts = LoadBusinessJsonUnlocked("sshHosts", nlohmann::json::array());
+    if (!hosts.is_array())
+    {
+        return false;
+    }
+    for (auto& host : hosts)
+    {
+        if (host.is_object() && host.value("id", "") == id)
+        {
+            host["hostKeySha256"] = fingerprint;
+            SaveBusinessJsonUnlocked("sshHosts", hosts);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ConfigStore::HasSshCredential(const std::string& host_id)
+{
+    std::lock_guard lock(mutex_);
+    const auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());
+    return vault.is_object() && vault.contains(host_id) && vault[host_id].is_object();
+}
+
+std::optional<nlohmann::json> ConfigStore::LoadSshCredential(const std::string& host_id)
+{
+    std::lock_guard lock(mutex_);
+    const auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());
+    if (!vault.is_object() || !vault.contains(host_id) || !vault[host_id].is_object())
+    {
+        return std::nullopt;
+    }
+    const auto database_path = DatabasePathForConfigJson(LoadJsonUnlocked());
+    return DecryptCredential(database_path.parent_path() / "ssh" / "vault.key", host_id, vault[host_id]);
+}
+
+void ConfigStore::SaveSshCredential(const std::string& host_id, const nlohmann::json& credential)
+{
+    if (host_id.empty() || !credential.is_object())
+    {
+        throw std::invalid_argument("SSH 凭据不能为空。");
+    }
+    const auto method = credential.value("method", "");
+    const auto password = credential.value("password", "");
+    const auto private_key = credential.value("privateKey", "");
+    if ((method != "password" && method != "privateKey") ||
+        (method == "password" && password.empty()) || (method == "privateKey" && private_key.empty()))
+    {
+        throw std::invalid_argument("SSH 凭据内容无效。");
+    }
+    std::lock_guard lock(mutex_);
+    auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());
+    if (!vault.is_object())
+    {
+        vault = nlohmann::json::object();
+    }
+    const auto database_path = DatabasePathForConfigJson(LoadJsonUnlocked());
+    vault[host_id] = EncryptCredential(database_path.parent_path() / "ssh" / "vault.key", host_id, {
+        {"method", method},
+        {"password", method == "password" ? password : ""},
+        {"privateKey", method == "privateKey" ? private_key : ""},
+        {"passphrase", credential.value("passphrase", "")},
+    });
+    SaveBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), vault);
+}
+
+void ConfigStore::DeleteSshCredential(const std::string& host_id)
+{
+    std::lock_guard lock(mutex_);
+    auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());
+    if (!vault.is_object() || vault.erase(host_id) == 0)
+    {
+        return;
+    }
+    SaveBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), vault);
 }
 
 std::filesystem::path ConfigStore::DefaultDataPath()

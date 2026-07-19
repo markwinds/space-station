@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace spacestation
@@ -35,6 +36,13 @@ class ConfigStore
     void SaveHabitState(const nlohmann::json& json);
     nlohmann::json LoadFileShares();
     void SaveFileShares(const nlohmann::json& json);
+    nlohmann::json LoadSshHosts();
+    void SaveSshHosts(const nlohmann::json& json);
+    bool SaveSshHostFingerprint(const std::string& id, const std::string& fingerprint);
+    bool HasSshCredential(const std::string& host_id);
+    std::optional<nlohmann::json> LoadSshCredential(const std::string& host_id);
+    void SaveSshCredential(const std::string& host_id, const nlohmann::json& credential);
+    void DeleteSshCredential(const std::string& host_id);
     nlohmann::json LoadTransferConfig();
     void SaveTransferConfig(const nlohmann::json& json);
 

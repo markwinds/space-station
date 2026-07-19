@@ -1,7 +1,10 @@
 #pragma once
 
 #include "config/config_store.hpp"
+#include "ssh/sftp_service.hpp"
 #include "transfer/transfer_manager.hpp"
+
+#include <memory>
 
 #include <drogon/drogon.h>
 #include <atomic>
@@ -10,6 +13,10 @@
 
 namespace spacestation
 {
+namespace ssh
+{
+class SshWebSocketController;
+}
 inline constexpr std::uint16_t kDefaultPort = 443;
 
 class HttpServer
@@ -35,6 +42,8 @@ class HttpServer
     std::string trusted_root_certificate_path_;
     ConfigStore& config_store_;
     transfer::TransferManager transfer_manager_;
+    ssh::SftpService sftp_service_;
+    std::shared_ptr<ssh::SshWebSocketController> ssh_websocket_controller_;
     std::thread server_thread_;
     std::atomic<bool> started_{false};
 };

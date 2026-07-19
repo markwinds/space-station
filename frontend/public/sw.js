@@ -1,4 +1,4 @@
-const CACHE_NAME = "space-station-pwa-v3";
+const CACHE_NAME = "space-station-pwa-v7";
 const APP_BASE = "/web/";
 const PRECACHE_URLS = [APP_BASE, `${APP_BASE}manifest.webmanifest`, `${APP_BASE}pwa-icon.svg`];
 

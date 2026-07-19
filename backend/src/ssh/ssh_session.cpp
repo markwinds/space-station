@@ -1,0 +1,621 @@
+#include "ssh/ssh_session.hpp"
+
+#include "logging/logger.hpp"
+
+#include <libssh2.h>
+#include <openssl/evp.h>
+#include <openssl/sha.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstring>
+#include <memory>
+#include <stdexcept>
+#include <utility>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <netdb.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+namespace spacestation::ssh
+{
+namespace
+{
+using namespace std::chrono_literals;
+
+struct SocketHandle
+{
+    libssh2_socket_t value = LIBSSH2_INVALID_SOCKET;
+
+    SocketHandle() = default;
+    SocketHandle(const SocketHandle&) = delete;
+    SocketHandle& operator=(const SocketHandle&) = delete;
+    SocketHandle(SocketHandle&& other) noexcept : value(std::exchange(other.value, LIBSSH2_INVALID_SOCKET))
+    {
+    }
+    SocketHandle& operator=(SocketHandle&& other) noexcept
+    {
+        if (this != &other)
+        {
+            SocketHandle old;
+            old.value = std::exchange(value, LIBSSH2_INVALID_SOCKET);
+            value = std::exchange(other.value, LIBSSH2_INVALID_SOCKET);
+        }
+        return *this;
+    }
+
+    ~SocketHandle()
+    {
+        if (value == LIBSSH2_INVALID_SOCKET)
+        {
+            return;
+        }
+#ifdef _WIN32
+        closesocket(value);
+#else
+        close(value);
+#endif
+    }
+};
+
+struct SessionDeleter
+{
+    void operator()(LIBSSH2_SESSION* session) const
+    {
+        if (session)
+        {
+            libssh2_session_free(session);
+        }
+    }
+};
+
+struct ChannelDeleter
+{
+    void operator()(LIBSSH2_CHANNEL* channel) const
+    {
+        if (channel)
+        {
+            libssh2_channel_free(channel);
+        }
+    }
+};
+
+struct AgentDeleter
+{
+    void operator()(LIBSSH2_AGENT* agent) const
+    {
+        if (!agent) return;
+        libssh2_agent_disconnect(agent);
+        libssh2_agent_free(agent);
+    }
+};
+
+using SessionPtr = std::unique_ptr<LIBSSH2_SESSION, SessionDeleter>;
+using ChannelPtr = std::unique_ptr<LIBSSH2_CHANNEL, ChannelDeleter>;
+using AgentPtr = std::unique_ptr<LIBSSH2_AGENT, AgentDeleter>;
+
+void EnsureLibssh2Initialized()
+{
+    static const int initialized = [] {
+#ifdef _WIN32
+        WSADATA data{};
+        if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
+        {
+            return -1;
+        }
+#endif
+        return libssh2_init(0);
+    }();
+    if (initialized != 0)
+    {
+        throw std::runtime_error("SSH 库初始化失败。");
+    }
+}
+
+SocketHandle ConnectSocket(const std::string& host, int port)
+{
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    addrinfo* raw_addresses = nullptr;
+    const auto service = std::to_string(port);
+    const auto resolve_result = getaddrinfo(host.c_str(), service.c_str(), &hints, &raw_addresses);
+    if (resolve_result != 0)
+    {
+        throw std::runtime_error("无法解析 SSH 主机地址。");
+    }
+    std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(raw_addresses, freeaddrinfo);
+    for (auto* address = addresses.get(); address; address = address->ai_next)
+    {
+        SocketHandle socket_handle;
+        socket_handle.value = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (socket_handle.value == LIBSSH2_INVALID_SOCKET)
+        {
+            continue;
+        }
+        if (connect(socket_handle.value, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0)
+        {
+            return socket_handle;
+        }
+    }
+    throw std::runtime_error("无法连接 SSH 主机。");
+}
+
+void WaitSocket(libssh2_socket_t socket, LIBSSH2_SESSION* session)
+{
+    timeval timeout{};
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 100000;
+    fd_set read_set;
+    fd_set write_set;
+    FD_ZERO(&read_set);
+    FD_ZERO(&write_set);
+    const auto directions = libssh2_session_block_directions(session);
+    if ((directions & LIBSSH2_SESSION_BLOCK_INBOUND) != 0)
+    {
+        FD_SET(socket, &read_set);
+    }
+    if ((directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0)
+    {
+        FD_SET(socket, &write_set);
+    }
+    select(static_cast<int>(socket + 1), &read_set, &write_set, nullptr, &timeout);
+}
+
+template <typename Operation>
+int Retry(libssh2_socket_t socket, LIBSSH2_SESSION* session, std::stop_token stop_token, Operation&& operation)
+{
+    int result = LIBSSH2_ERROR_EAGAIN;
+    while (!stop_token.stop_requested() && result == LIBSSH2_ERROR_EAGAIN)
+    {
+        result = operation();
+        if (result == LIBSSH2_ERROR_EAGAIN)
+        {
+            WaitSocket(socket, session);
+        }
+    }
+    return result;
+}
+
+std::string LastSessionError(LIBSSH2_SESSION* session, std::string fallback)
+{
+    char* message = nullptr;
+    int length = 0;
+    libssh2_session_last_error(session, &message, &length, 0);
+    if (message && length > 0)
+    {
+        return std::string(message, static_cast<std::size_t>(length));
+    }
+    return fallback;
+}
+
+std::string HostFingerprint(LIBSSH2_SESSION* session)
+{
+    std::size_t key_length = 0;
+    int key_type = 0;
+    const auto* key = libssh2_session_hostkey(session, &key_length, &key_type);
+    if (!key || key_length == 0)
+    {
+        throw std::runtime_error("无法读取 SSH 主机公钥。");
+    }
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    SHA256(reinterpret_cast<const unsigned char*>(key), key_length, digest.data());
+    std::array<unsigned char, 4 * ((SHA256_DIGEST_LENGTH + 2) / 3) + 1> encoded{};
+    const auto encoded_length = EVP_EncodeBlock(encoded.data(), digest.data(), digest.size());
+    auto value = std::string(reinterpret_cast<const char*>(encoded.data()), static_cast<std::size_t>(encoded_length));
+    while (!value.empty() && value.back() == '=')
+    {
+        value.pop_back();
+    }
+    return "SHA256:" + value;
+}
+
+int ClampTerminalSize(int value, int fallback)
+{
+    return std::clamp(value > 0 ? value : fallback, 2, 1000);
+}
+
+LIBSSH2_RECV_FUNC(ChannelReceive)
+{
+    const auto channel = static_cast<LIBSSH2_CHANNEL*>(*abstract);
+    const auto result = libssh2_channel_read(channel, static_cast<char*>(buffer), length);
+    if (result == LIBSSH2_ERROR_EAGAIN)
+    {
+        errno = EAGAIN;
+        return -1;
+    }
+    return result;
+}
+
+LIBSSH2_SEND_FUNC(ChannelSend)
+{
+    const auto channel = static_cast<LIBSSH2_CHANNEL*>(*abstract);
+    const auto result = libssh2_channel_write(channel, static_cast<const char*>(buffer), length);
+    if (result == LIBSSH2_ERROR_EAGAIN)
+    {
+        errno = EAGAIN;
+        return -1;
+    }
+    return result;
+}
+
+int Authenticate(LIBSSH2_SESSION* session,
+                 libssh2_socket_t socket,
+                 std::stop_token stop_token,
+                 const std::string& username,
+                 const std::string& password,
+                 const std::string& private_key,
+                 const std::string& passphrase,
+                 bool use_agent)
+{
+    if (use_agent)
+    {
+        AgentPtr agent(libssh2_agent_init(session));
+        if (!agent || libssh2_agent_connect(agent.get()) != 0 || libssh2_agent_list_identities(agent.get()) != 0)
+            throw std::runtime_error("无法连接 SSH Agent，请检查 SSH_AUTH_SOCK。");
+        libssh2_agent_publickey* identity = nullptr;
+        libssh2_agent_publickey* previous = nullptr;
+        int result = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
+        while (libssh2_agent_get_identity(agent.get(), &identity, previous) == 0)
+        {
+            result = libssh2_agent_userauth(agent.get(), username.c_str(), identity);
+            if (result == 0) break;
+            previous = identity;
+        }
+        return result;
+    }
+    if (!private_key.empty())
+    {
+        return Retry(socket, session, stop_token, [&] {
+            return libssh2_userauth_publickey_frommemory(
+                session, username.c_str(), username.size(), nullptr, 0, private_key.data(), private_key.size(),
+                passphrase.empty() ? nullptr : passphrase.c_str());
+        });
+    }
+    return Retry(socket, session, stop_token, [&] {
+        return libssh2_userauth_password_ex(session, username.c_str(), static_cast<unsigned int>(username.size()),
+                                            password.c_str(), static_cast<unsigned int>(password.size()), nullptr);
+    });
+}
+} // namespace
+
+SshSession::SshSession(ConfigStore& config_store, drogon::WebSocketConnectionPtr connection)
+    : config_store_(config_store), connection_(std::move(connection))
+{
+}
+
+SshSession::~SshSession()
+{
+    Stop();
+}
+
+void SshSession::Start(SshConnectOptions options)
+{
+    if (worker_.joinable())
+    {
+        SendEvent({{"type", "error"}, {"message", "当前终端已经开始连接。"}});
+        return;
+    }
+    worker_ = std::jthread([this, options = std::move(options)](std::stop_token token) mutable {
+        Run(token, std::move(options));
+    });
+}
+
+void SshSession::Write(std::string data)
+{
+    if (data.empty())
+    {
+        return;
+    }
+    {
+        std::lock_guard lock(mutex_);
+        commands_.push_back({CommandType::Input, std::move(data)});
+    }
+    condition_.notify_all();
+}
+
+void SshSession::Resize(int columns, int rows)
+{
+    {
+        std::lock_guard lock(mutex_);
+        commands_.push_back({CommandType::Resize, {}, ClampTerminalSize(columns, 100), ClampTerminalSize(rows, 30)});
+    }
+    condition_.notify_all();
+}
+
+void SshSession::ConfirmHostKey(bool trusted)
+{
+    {
+        std::lock_guard lock(mutex_);
+        trust_answered_ = true;
+        host_trusted_ = trusted;
+    }
+    condition_.notify_all();
+}
+
+void SshSession::Stop()
+{
+    if (!worker_.joinable())
+    {
+        return;
+    }
+    worker_.request_stop();
+    condition_.notify_all();
+    worker_.join();
+}
+
+void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
+{
+    try
+    {
+        EnsureLibssh2Initialized();
+        SendEvent({{"type", "status"}, {"status", "connecting"}, {"message", "正在连接…"}});
+        SocketHandle socket;
+        SessionPtr jump_session;
+        ChannelPtr jump_channel;
+        if (!options.jump_host_id.empty())
+        {
+            nlohmann::json jump_host;
+            for (const auto& candidate : config_store_.LoadSshHosts())
+                if (candidate.value("id", "") == options.jump_host_id) { jump_host = candidate; break; }
+            if (!jump_host.is_object()) throw std::runtime_error("找不到配置的跳板机。");
+            const auto jump_fingerprint = jump_host.value("hostKeySha256", "");
+            if (jump_fingerprint.empty()) throw std::runtime_error("请先直接连接并信任跳板机主机指纹。");
+            const auto jump_credential = config_store_.LoadSshCredential(options.jump_host_id);
+            const auto jump_use_agent = jump_host.value("useAgent", false);
+            if (!jump_credential && !jump_use_agent) throw std::runtime_error("请先保存跳板机凭据或启用 SSH Agent。");
+            socket = ConnectSocket(jump_host.value("host", ""), std::clamp(jump_host.value("port", 22), 1, 65535));
+            jump_session.reset(libssh2_session_init());
+            if (!jump_session) throw std::runtime_error("无法创建跳板机 SSH 会话。");
+            libssh2_session_set_blocking(jump_session.get(), 0);
+            if (Retry(socket.value, jump_session.get(), stop_token, [&] { return libssh2_session_handshake(jump_session.get(), socket.value); }) != 0)
+                throw std::runtime_error(LastSessionError(jump_session.get(), "跳板机 SSH 握手失败。"));
+            if (HostFingerprint(jump_session.get()) != jump_fingerprint)
+                throw std::runtime_error("跳板机主机指纹已经变化，连接已中止。");
+            const auto jump_username = jump_host.value("username", "");
+            if (Authenticate(jump_session.get(), socket.value, stop_token, jump_username,
+                             jump_credential ? jump_credential->value("password", "") : "",
+                             jump_credential ? jump_credential->value("privateKey", "") : "",
+                             jump_credential ? jump_credential->value("passphrase", "") : "",
+                             jump_use_agent) != 0)
+                throw std::runtime_error(LastSessionError(jump_session.get(), "跳板机认证失败。"));
+            LIBSSH2_CHANNEL* raw_jump_channel = nullptr;
+            while (!stop_token.stop_requested() && !raw_jump_channel)
+            {
+                raw_jump_channel = libssh2_channel_direct_tcpip(jump_session.get(), options.host.c_str(), options.port);
+                if (!raw_jump_channel && libssh2_session_last_errno(jump_session.get()) == LIBSSH2_ERROR_EAGAIN)
+                {
+                    WaitSocket(socket.value, jump_session.get());
+                    continue;
+                }
+                break;
+            }
+            jump_channel.reset(raw_jump_channel);
+            if (!jump_channel) throw std::runtime_error(LastSessionError(jump_session.get(), "跳板机无法打开目标连接。"));
+        }
+        else
+        {
+            socket = ConnectSocket(options.host, options.port);
+        }
+        SessionPtr session(options.jump_host_id.empty()
+                               ? libssh2_session_init()
+                               : libssh2_session_init_ex(nullptr, nullptr, nullptr, jump_channel.get()));
+        if (!session)
+        {
+            throw std::runtime_error("无法创建 SSH 会话。");
+        }
+        libssh2_session_set_blocking(session.get(), 0);
+        libssh2_session_set_timeout(session.get(), 15000);
+        if (jump_channel)
+        {
+            libssh2_session_callback_set2(session.get(), LIBSSH2_CALLBACK_RECV,
+                                          reinterpret_cast<libssh2_cb_generic*>(ChannelReceive));
+            libssh2_session_callback_set2(session.get(), LIBSSH2_CALLBACK_SEND,
+                                          reinterpret_cast<libssh2_cb_generic*>(ChannelSend));
+        }
+        if (Retry(socket.value, session.get(), stop_token, [&] {
+                return libssh2_session_handshake(session.get(), socket.value);
+            }) != 0)
+        {
+            throw std::runtime_error(LastSessionError(session.get(), "SSH 握手失败。"));
+        }
+
+        const auto fingerprint = HostFingerprint(session.get());
+        if (!options.expected_fingerprint.empty() && options.expected_fingerprint != fingerprint)
+        {
+            SendEvent({
+                {"type", "host-key-mismatch"},
+                {"expected", options.expected_fingerprint},
+                {"actual", fingerprint},
+                {"message", "主机密钥已变化，连接已中止。"},
+            });
+            return;
+        }
+        if (options.expected_fingerprint.empty())
+        {
+            SendEvent({
+                {"type", "host-key"},
+                {"fingerprint", fingerprint},
+                {"host", options.host},
+                {"port", options.port},
+            });
+            std::unique_lock lock(mutex_);
+            condition_.wait(lock, [&] { return trust_answered_ || stop_token.stop_requested(); });
+            if (stop_token.stop_requested() || !host_trusted_)
+            {
+                SendEvent({{"type", "status"}, {"status", "closed"}, {"message", "未信任主机密钥。"}});
+                return;
+            }
+            lock.unlock();
+            config_store_.SaveSshHostFingerprint(options.host_id, fingerprint);
+        }
+
+        SendEvent({{"type", "status"}, {"status", "authenticating"}, {"message", "正在认证…"}});
+        const auto auth_result = Authenticate(session.get(), socket.value, stop_token, options.username,
+                                              options.password, options.private_key, options.passphrase,
+                                              options.use_agent);
+        if (auth_result != 0)
+        {
+            std::fill(options.password.begin(), options.password.end(), '\0');
+            std::fill(options.private_key.begin(), options.private_key.end(), '\0');
+            std::fill(options.passphrase.begin(), options.passphrase.end(), '\0');
+            throw std::runtime_error(LastSessionError(session.get(), "SSH 认证失败。"));
+        }
+        if (options.save_credential)
+        {
+            try
+            {
+                config_store_.SaveSshCredential(options.host_id, {
+                    {"method", options.private_key.empty() ? "password" : "privateKey"},
+                    {"password", options.password},
+                    {"privateKey", options.private_key},
+                    {"passphrase", options.passphrase},
+                });
+            }
+            catch (const std::exception& error)
+            {
+                const auto log_message = std::string("SSH credential save failed: ") + error.what();
+                logE(log_message.c_str());
+                SendEvent({{"type", "warning"}, {"message", "SSH 已连接，但凭据保存失败。"}});
+            }
+        }
+        std::fill(options.password.begin(), options.password.end(), '\0');
+        std::fill(options.private_key.begin(), options.private_key.end(), '\0');
+        std::fill(options.passphrase.begin(), options.passphrase.end(), '\0');
+
+        LIBSSH2_CHANNEL* raw_channel = nullptr;
+        while (!stop_token.stop_requested() && !raw_channel)
+        {
+            raw_channel = libssh2_channel_open_session(session.get());
+            if (!raw_channel && libssh2_session_last_errno(session.get()) == LIBSSH2_ERROR_EAGAIN)
+            {
+                WaitSocket(socket.value, session.get());
+                continue;
+            }
+            break;
+        }
+        ChannelPtr channel(raw_channel);
+        if (!channel)
+        {
+            throw std::runtime_error(LastSessionError(session.get(), "无法创建 SSH Channel。"));
+        }
+        options.columns = ClampTerminalSize(options.columns, 100);
+        options.rows = ClampTerminalSize(options.rows, 30);
+        if (Retry(socket.value, session.get(), stop_token, [&] {
+                return libssh2_channel_request_pty_ex(channel.get(), "xterm-256color", 14, nullptr, 0,
+                                                      options.columns, options.rows, 0, 0);
+            }) != 0 ||
+            Retry(socket.value, session.get(), stop_token, [&] { return libssh2_channel_shell(channel.get()); }) != 0)
+        {
+            throw std::runtime_error(LastSessionError(session.get(), "无法启动远程 Shell。"));
+        }
+        libssh2_keepalive_config(session.get(), 1, 20);
+        SendEvent({{"type", "status"}, {"status", "connected"}, {"message", "已连接"}});
+
+        std::string pending_input;
+        std::size_t pending_offset = 0;
+        std::array<char, 32768> output{};
+        auto last_keepalive = std::chrono::steady_clock::now();
+        while (!stop_token.stop_requested() && !libssh2_channel_eof(channel.get()))
+        {
+            std::deque<Command> commands;
+            {
+                std::lock_guard lock(mutex_);
+                commands.swap(commands_);
+            }
+            for (auto& command : commands)
+            {
+                if (command.type == CommandType::Resize)
+                {
+                    libssh2_channel_request_pty_size(channel.get(), command.columns, command.rows);
+                }
+                else
+                {
+                    pending_input.append(command.data);
+                }
+            }
+
+            while (pending_offset < pending_input.size())
+            {
+                const auto written = libssh2_channel_write(channel.get(), pending_input.data() + pending_offset,
+                                                           pending_input.size() - pending_offset);
+                if (written == LIBSSH2_ERROR_EAGAIN)
+                {
+                    break;
+                }
+                if (written < 0)
+                {
+                    throw std::runtime_error(LastSessionError(session.get(), "终端输入发送失败。"));
+                }
+                pending_offset += static_cast<std::size_t>(written);
+            }
+            if (pending_offset == pending_input.size())
+            {
+                pending_input.clear();
+                pending_offset = 0;
+            }
+
+            bool received = false;
+            while (true)
+            {
+                const auto count = libssh2_channel_read(channel.get(), output.data(), output.size());
+                if (count > 0)
+                {
+                    received = true;
+                    SendOutput(output.data(), static_cast<std::size_t>(count));
+                    continue;
+                }
+                if (count != 0 && count != LIBSSH2_ERROR_EAGAIN)
+                {
+                    throw std::runtime_error(LastSessionError(session.get(), "终端输出读取失败。"));
+                }
+                break;
+            }
+            if (std::chrono::steady_clock::now() - last_keepalive >= 20s)
+            {
+                int seconds_to_next = 0;
+                libssh2_keepalive_send(session.get(), &seconds_to_next);
+                last_keepalive = std::chrono::steady_clock::now();
+            }
+            if (!received)
+            {
+                std::unique_lock lock(mutex_);
+                condition_.wait_for(lock, 20ms, [&] { return !commands_.empty() || stop_token.stop_requested(); });
+            }
+        }
+
+        libssh2_channel_send_eof(channel.get());
+        libssh2_session_disconnect(session.get(), "Space Station terminal closed");
+        SendEvent({{"type", "status"}, {"status", "closed"}, {"message", "连接已关闭"}});
+    }
+    catch (const std::exception& error)
+    {
+        const auto log_message = std::string("SSH session failed: ") + error.what();
+        logE(log_message.c_str());
+        SendEvent({{"type", "error"}, {"message", error.what()}});
+    }
+}
+
+void SshSession::SendEvent(const nlohmann::json& event) const
+{
+    if (const auto connection = connection_.lock(); connection && connection->connected())
+    {
+        connection->send(event.dump(), drogon::WebSocketMessageType::Text);
+    }
+}
+
+void SshSession::SendOutput(const char* data, std::size_t size) const
+{
+    if (const auto connection = connection_.lock(); connection && connection->connected())
+    {
+        connection->send(data, size, drogon::WebSocketMessageType::Binary);
+    }
+}
+} // namespace spacestation::ssh

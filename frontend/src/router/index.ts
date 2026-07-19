@@ -11,6 +11,7 @@ const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/Ti
 const HabitTool = defineAsyncComponent(() => import("@/components/tools/HabitTool.vue"));
 const FileShareTool = defineAsyncComponent(() => import("@/components/tools/FileShareTool.vue"));
 const TransferTool = defineAsyncComponent(() => import("@/components/tools/TransferTool.vue"));
+const SshTool = defineAsyncComponent(() => import("@/components/tools/SshTool.vue"));
 
 const router = createRouter({
   history: createWebHistory("/web/"),
@@ -74,6 +75,17 @@ const router = createRouter({
       props: {
         tool: findTool("transfer"),
         component: TransferTool,
+      },
+    },
+    {
+      path: "/tools/ssh",
+      name: "ssh",
+      component: ToolView,
+      meta: { hideChrome: true },
+      props: {
+        tool: findTool("ssh"),
+        component: SshTool,
+        hideHeader: true,
       },
     },
     {
