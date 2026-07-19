@@ -161,6 +161,7 @@ export interface ParsedP12Response {
 export interface TimeManagerTask {
   id: string;
   title: string;
+  icon: string;
   parentId: string | null;
   tagIds: string[];
   scheduledAt: string;

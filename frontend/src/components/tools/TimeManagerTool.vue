@@ -1,5 +1,5 @@
 <template>
-  <div ref="timeManagerRef" class="time-manager">
+  <div class="time-manager">
     <section
       v-show="viewMode === 'map'"
       class="tm-canvas-shell"
@@ -37,11 +37,12 @@
             v-for="task in day.tasks"
             :key="task.id"
             class="tm-calendar-task"
-            :class="{ done: task.completed }"
+            :class="{ done: task.completed, 'has-icon': task.icon }"
             @click="openTask(task.id)"
           >
             <time>{{ formatTime(task.scheduledAt) }}</time>
-            <span>{{ task.title }}</span>
+            <span v-if="task.icon" class="tm-calendar-task-icon" aria-hidden="true">{{ task.icon }}</span>
+            <span class="tm-calendar-task-title">{{ task.title }}</span>
           </button>
         </article>
       </div>
@@ -207,7 +208,47 @@
         </n-button>
       </div>
       <div v-if="selectedTask" class="tm-drawer-body">
-        <n-input :value="selectedTask.title" placeholder="任务标题" @update:value="updateTask(selectedTask.id, { title: $event })" />
+        <div class="tm-task-title-row">
+          <n-popover
+            v-model:show="iconPickerOpen"
+            trigger="click"
+            placement="bottom-start"
+            :show-arrow="false"
+          >
+            <template #trigger>
+              <button class="tm-task-icon-button" type="button" :title="selectedTask.icon ? '更换任务图标' : '添加任务图标'">
+                <span v-if="selectedTask.icon" aria-hidden="true">{{ selectedTask.icon }}</span>
+                <n-icon v-else><AddOutline /></n-icon>
+              </button>
+            </template>
+            <div class="tm-icon-picker">
+              <div class="tm-icon-picker-header">
+                <strong>选择任务图标</strong>
+                <n-button v-if="selectedTask.icon" quaternary size="tiny" @click="chooseTaskIcon('')">清除</n-button>
+              </div>
+              <section v-for="group in taskIconGroups" :key="group.name" class="tm-icon-group">
+                <small>{{ group.name }}</small>
+                <div class="tm-icon-grid">
+                  <button
+                    v-for="icon in group.icons"
+                    :key="icon"
+                    type="button"
+                    :class="{ selected: selectedTask.icon === icon }"
+                    :aria-label="`选择图标 ${icon}`"
+                    @click="chooseTaskIcon(icon)"
+                  >
+                    {{ icon }}
+                  </button>
+                </div>
+              </section>
+            </div>
+          </n-popover>
+          <n-input
+            :value="selectedTask.title"
+            placeholder="任务标题"
+            @update:value="updateTask(selectedTask.id, { title: $event })"
+          />
+        </div>
         <button
           class="tm-detail-toggle"
           type="button"
@@ -262,26 +303,15 @@
     </aside>
 
     <div
-      v-if="completionBurst"
-      :key="completionBurst.id"
-      class="tm-completion-burst"
-      :style="{ left: `${completionBurst.x}px`, top: `${completionBurst.y}px` }"
+      v-if="completionEffect"
+      :key="completionEffect.id"
+      class="tm-completion-effect"
+      :style="{ left: `${completionEffect.x}px`, top: `${completionEffect.y}px` }"
       aria-hidden="true"
     >
-      <div class="tm-kaleidoscope-wheel"></div>
-      <span
-        v-for="particle in completionParticles"
-        :key="particle.angle"
-        class="tm-kaleidoscope-particle"
-        :style="{
-          '--particle-angle': `${particle.angle}deg`,
-          '--particle-color': particle.color,
-          '--particle-distance': `-${particle.distance}px`,
-          '--particle-delay': `${particle.delay}ms`,
-        }"
-      ></span>
-      <div class="tm-completion-check">✓</div>
+      <span>✓</span>
     </div>
+
   </div>
 </template>
 
@@ -313,6 +343,7 @@ import {
   NIcon,
   NInput,
   NInputGroup,
+  NPopover,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -332,6 +363,7 @@ type CalendarMode = "month" | "week" | "day";
 type PanelName = "filters" | "editor" | null;
 type TaskNodeMeta = {
   taskId?: string;
+  icon?: string;
   completed?: boolean;
   scheduledAt?: string;
   tagIds?: string[];
@@ -339,7 +371,6 @@ type TaskNodeMeta = {
 };
 
 const rootId = "space-station";
-const timeManagerRef = ref<HTMLElement | null>(null);
 const mindContainerRef = ref<HTMLElement | null>(null);
 const mind = shallowRef<MindElixirInstance | null>(null);
 const state = reactive<TimeManagerState>({
@@ -355,6 +386,8 @@ const calendarCursor = ref(startOfDay(new Date()));
 const activePanel = ref<PanelName>(null);
 const selectedTaskId = ref<string | null>(null);
 const detailsExpanded = ref(false);
+const iconPickerOpen = ref(false);
+const completionEffect = ref<{ id: number; x: number; y: number } | null>(null);
 const activeFilterId = ref<string | null>(null);
 const keyword = ref("");
 const newTagName = ref("");
@@ -370,6 +403,8 @@ const canvasPointerStart = ref<{ x: number; y: number } | null>(null);
 let saveTimer = 0;
 let searchFocusTimer = 0;
 let initialScaleFrame = 0;
+let completionEffectId = 0;
+let completionEffectTimer = 0;
 let originalViewportContent = "";
 
 const selectedTask = computed(() => state.tasks.find((task) => task.id === selectedTaskId.value));
@@ -387,6 +422,12 @@ const conditionFieldOptions = [
   { label: "完成状态", value: "completed" },
   { label: "时间点", value: "scheduledAt" },
   { label: "关键字", value: "keyword" },
+];
+const taskIconGroups = [
+  { name: "可爱动物", icons: ["🐶", "🐱", "🐰", "🐼", "🐻", "🐨", "🦊", "🐯", "🦁", "🐸", "🐧", "🐥", "🦄", "🐹", "🐵"] },
+  { name: "数字", icons: ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"] },
+  { name: "生活与心情", icons: ["⭐", "❤️", "🌈", "🌸", "☀️", "🔥", "☕", "🍎", "🎵", "🎁", "🏃", "🏠"] },
+  { name: "工作与学习", icons: ["📌", "📚", "💡", "🎯", "✏️", "💻", "🔧", "📞", "✉️", "🗓️", "🚀", "✅"] },
 ];
 
 const filteredTasks = computed(() => {
@@ -458,7 +499,7 @@ onBeforeUnmount(() => {
   mind.value?.destroy();
   window.clearTimeout(saveTimer);
   window.clearTimeout(searchFocusTimer);
-  window.clearTimeout(completionTimer);
+  window.clearTimeout(completionEffectTimer);
   window.cancelAnimationFrame(initialScaleFrame);
   unlockPageViewport();
 });
@@ -495,6 +536,7 @@ watch(activeFilterId, (filterId) => {
 
 watch(selectedTaskId, () => {
   detailsExpanded.value = false;
+  iconPickerOpen.value = false;
 });
 
 watch(keyword, () => {
@@ -651,16 +693,18 @@ function buildNodeChildren(tasks: TimeManagerTask[], parentId: string | null): N
 }
 
 function taskToNode(task: TimeManagerTask): NodeObj<TaskNodeMeta> {
+  const statusIcons = task.completed ? ["✓"] : task.scheduledAt ? ["⏱"] : [];
   return {
     id: task.id,
     topic: task.title,
     expanded: true,
     style: nodeStyle(task),
     tags: nodeTags(task),
-    icons: task.completed ? ["✓"] : task.scheduledAt ? ["⏱"] : [],
+    icons: task.icon ? [task.icon, ...statusIcons] : statusIcons,
     note: task.notes,
     metadata: {
       taskId: task.id,
+      icon: task.icon,
       completed: task.completed,
       scheduledAt: task.scheduledAt,
       tagIds: task.tagIds,
@@ -709,6 +753,7 @@ function extractTasksFromNode(root: NodeObj<TaskNodeMeta>) {
       tasks.push({
         id: node.id,
         title: node.topic?.trim() ?? "",
+        icon: existing?.icon ?? node.metadata?.icon ?? "",
         parentId,
         tagIds: existing?.tagIds ?? node.metadata?.tagIds ?? [],
         scheduledAt: existing?.scheduledAt ?? node.metadata?.scheduledAt ?? "",
@@ -731,6 +776,7 @@ async function addTask(parentId: string | null) {
   const task: TimeManagerTask = {
     id: createId(),
     title: "",
+    icon: "",
     parentId: resolvedParentId,
     tagIds: [],
     scheduledAt: "",
@@ -775,10 +821,18 @@ function updateTask(id: string, patch: Partial<TimeManagerTask>) {
   Object.assign(task, patch, { updatedAt: new Date().toISOString() });
 }
 
+function chooseTaskIcon(icon: string) {
+  if (!selectedTask.value) {
+    return;
+  }
+  updateTask(selectedTask.value.id, { icon });
+  iconPickerOpen.value = false;
+}
+
 function toggleTask(id: string, checked: boolean) {
   updateTask(id, { completed: checked });
   if (checked) {
-    celebrateTaskCompletion(id);
+    playTaskCompletionEffect(id);
   }
 }
 
@@ -790,16 +844,12 @@ function toggleSelectedTaskCompleted() {
   const completed = !selectedTask.value.completed;
   updateTask(taskId, { completed });
   if (completed) {
-    celebrateTaskCompletion(taskId);
+    playTaskCompletionEffect(taskId);
   }
 }
 
-function celebrateTaskCompletion(taskId: string) {
+function playTaskCompletionEffect(taskId: string) {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    return;
-  }
-  const hostRect = timeManagerRef.value?.getBoundingClientRect();
-  if (!hostRect) {
     return;
   }
   const topicRect = findTopic(taskId)?.getBoundingClientRect();
@@ -807,18 +857,18 @@ function celebrateTaskCompletion(taskId: string) {
     topicRect &&
     topicRect.width > 0 &&
     topicRect.height > 0 &&
-    topicRect.right > hostRect.left &&
-    topicRect.left < hostRect.right &&
-    topicRect.bottom > hostRect.top &&
-    topicRect.top < hostRect.bottom
+    topicRect.right > 0 &&
+    topicRect.left < window.innerWidth &&
+    topicRect.bottom > 0 &&
+    topicRect.top < window.innerHeight
   );
-  const x = topicIsVisible && topicRect ? topicRect.left + topicRect.width / 2 - hostRect.left : hostRect.width / 2;
-  const y = topicIsVisible && topicRect ? topicRect.top + topicRect.height / 2 - hostRect.top : hostRect.height / 2;
-  window.clearTimeout(completionTimer);
-  completionBurst.value = { id: ++completionBurstId, x, y };
-  completionTimer = window.setTimeout(() => {
-    completionBurst.value = null;
-  }, 1000);
+  const x = topicIsVisible && topicRect ? topicRect.left + topicRect.width / 2 : window.innerWidth / 2;
+  const y = topicIsVisible && topicRect ? topicRect.top + topicRect.height / 2 : window.innerHeight / 2;
+  window.clearTimeout(completionEffectTimer);
+  completionEffect.value = { id: ++completionEffectId, x, y };
+  completionEffectTimer = window.setTimeout(() => {
+    completionEffect.value = null;
+  }, 720);
 }
 
 function deleteTask(id: string) {
@@ -1181,7 +1231,8 @@ function normalizeState(input: TimeManagerState): TimeManagerState {
     tasks: Array.isArray(input.tasks)
       ? input.tasks.map((task, index) => ({
           id: task.id || createId(),
-          title: task.title || "未命名任务",
+          title: typeof task.title === "string" ? task.title : "",
+          icon: typeof task.icon === "string" ? task.icon : "",
           parentId: task.parentId ?? null,
           tagIds: Array.isArray(task.tagIds) ? task.tagIds : [],
           scheduledAt: task.scheduledAt || "",
@@ -1248,15 +1299,6 @@ function formatDateTime(value: string) {
 }
 
 const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2"];
-const completionParticles = Array.from({ length: 18 }, (_, index) => ({
-  angle: index * 20,
-  color: palette[index % palette.length],
-  distance: 54 + (index % 3) * 14,
-  delay: (index % 2) * 35,
-}));
-const completionBurst = ref<{ id: number; x: number; y: number } | null>(null);
-let completionBurstId = 0;
-let completionTimer = 0;
 </script>
 
 <style scoped>
@@ -1428,6 +1470,95 @@ let completionTimer = 0;
   gap: 12px;
   padding: 12px;
   overflow: auto;
+}
+
+.tm-task-title-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.tm-task-icon-button {
+  width: 38px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(54, 77, 99, 0.16);
+  border-radius: 6px;
+  background: rgba(238, 243, 247, 0.72);
+  color: #60707e;
+  cursor: pointer;
+  font-size: 21px;
+}
+
+.tm-task-icon-button:hover,
+.tm-task-icon-button:focus-visible {
+  border-color: rgba(37, 99, 235, 0.42);
+  background: rgba(219, 234, 254, 0.66);
+  color: #2563eb;
+}
+
+.tm-task-icon-button:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.24);
+  outline-offset: 2px;
+}
+
+.tm-icon-picker {
+  width: min(272px, calc(100vw - 80px));
+  max-height: min(60dvh, 420px);
+  display: grid;
+  gap: 12px;
+  overflow: auto;
+}
+
+.tm-icon-picker-header {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tm-icon-group {
+  display: grid;
+  gap: 6px;
+}
+
+.tm-icon-group small {
+  color: #60707e;
+  font-weight: 600;
+}
+
+.tm-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(30px, 1fr));
+  gap: 4px;
+}
+
+.tm-icon-grid button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.tm-icon-grid button:hover,
+.tm-icon-grid button:focus-visible {
+  background: #eef3f7;
+}
+
+.tm-icon-grid button.selected {
+  border-color: rgba(37, 99, 235, 0.42);
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.1);
 }
 
 .tm-detail-toggle {
@@ -1631,23 +1762,32 @@ let completionTimer = 0;
   cursor: pointer;
 }
 
+.tm-calendar-task.has-icon {
+  grid-template-columns: 44px 24px minmax(0, 1fr);
+}
+
 .tm-calendar-task time {
   color: #60707e;
   font-size: 12px;
 }
 
-.tm-calendar-task span {
+.tm-calendar-task-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tm-calendar-task.done span {
+.tm-calendar-task-icon {
+  font-size: 17px;
+  text-align: center;
+}
+
+.tm-calendar-task.done .tm-calendar-task-title {
   color: #788895;
   text-decoration: line-through;
 }
 
-.tm-completion-burst {
+.tm-completion-effect {
   position: absolute;
   z-index: 80;
   width: 0;
@@ -1655,112 +1795,71 @@ let completionTimer = 0;
   pointer-events: none;
 }
 
-.tm-kaleidoscope-wheel {
+.tm-completion-effect::before,
+.tm-completion-effect::after {
   position: absolute;
-  left: -52px;
-  top: -52px;
-  width: 104px;
-  height: 104px;
+  left: 0;
+  top: 0;
+  width: 42px;
+  height: 42px;
+  border: 2px solid rgba(22, 163, 74, 0.72);
   border-radius: 50%;
-  background: conic-gradient(
-    from 0deg,
-    #2563eb,
-    #7c3aed,
-    #dc2626,
-    #d97706,
-    #16a34a,
-    #0891b2,
-    #2563eb
-  );
+  content: "";
   opacity: 0;
-  -webkit-mask: radial-gradient(circle, transparent 0 21%, #000 22% 28%, transparent 29% 39%, #000 40% 47%, transparent 48%);
-  mask: radial-gradient(circle, transparent 0 21%, #000 22% 28%, transparent 29% 39%, #000 40% 47%, transparent 48%);
-  animation: tm-kaleidoscope-wheel 850ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform: translate(-50%, -50%) scale(0.25);
+  animation: tm-completion-ring 650ms ease-out both;
 }
 
-.tm-kaleidoscope-particle {
-  position: absolute;
-  left: -3px;
-  top: -8px;
-  width: 6px;
-  height: 16px;
-  border-radius: 999px;
-  background: var(--particle-color);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--particle-color) 55%, transparent);
-  opacity: 0;
-  transform-origin: 3px 8px;
-  animation: tm-kaleidoscope-particle 760ms cubic-bezier(0.16, 1, 0.3, 1) var(--particle-delay) both;
+.tm-completion-effect::after {
+  border-color: rgba(37, 99, 235, 0.42);
+  animation-delay: 80ms;
 }
 
-.tm-completion-check {
+.tm-completion-effect span {
   position: absolute;
-  left: -18px;
-  top: -18px;
-  width: 36px;
-  height: 36px;
+  left: -17px;
+  top: -17px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   border: 3px solid rgba(255, 255, 255, 0.94);
   border-radius: 50%;
   background: #16a34a;
-  box-shadow: 0 8px 22px rgba(22, 163, 74, 0.3);
+  box-shadow: 0 7px 18px rgba(22, 163, 74, 0.28);
   color: #ffffff;
-  font-size: 21px;
+  font-size: 20px;
   font-weight: 800;
-  opacity: 0;
-  animation: tm-completion-check 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: tm-completion-check 700ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-@keyframes tm-kaleidoscope-wheel {
+@keyframes tm-completion-ring {
   0% {
-    opacity: 0;
-    transform: scale(0.15) rotate(-35deg);
-  }
-  24% {
-    opacity: 0.82;
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(0.25);
   }
   100% {
     opacity: 0;
-    transform: scale(1.42) rotate(145deg);
-  }
-}
-
-@keyframes tm-kaleidoscope-particle {
-  0% {
-    opacity: 0;
-    transform: rotate(var(--particle-angle)) translateY(-8px) scale(0.25);
-  }
-  18% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-    transform: rotate(var(--particle-angle)) translateY(var(--particle-distance)) scale(0.65);
+    transform: translate(-50%, -50%) scale(1.75);
   }
 }
 
 @keyframes tm-completion-check {
   0% {
     opacity: 0;
-    transform: scale(0.2) rotate(-20deg);
+    transform: scale(0.25) rotate(-18deg);
   }
-  24% {
+  28% {
     opacity: 1;
-    transform: scale(1.16) rotate(5deg);
+    transform: scale(1.18) rotate(5deg);
   }
-  48% {
+  58% {
     opacity: 1;
     transform: scale(1) rotate(0);
   }
   100% {
     opacity: 0;
     transform: scale(0.92) rotate(0);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tm-completion-burst {
-    display: none;
   }
 }
 
@@ -1931,6 +2030,14 @@ let completionTimer = 0;
     padding: 2px 3px;
     border-radius: 4px;
     font-size: 10px;
+  }
+
+  .tm-calendar-task.has-icon {
+    grid-template-columns: 17px minmax(0, 1fr);
+  }
+
+  .tm-calendar-task-icon {
+    font-size: 12px;
   }
 
   .tm-calendar-task time {
