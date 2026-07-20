@@ -670,13 +670,24 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             }
         }
 
+        if (stop_token.stop_requested())
+        {
+            const auto message = "SSH terminal stopped after WebSocket close: host=" + options.host_id;
+            logI(message.c_str());
+        }
+        else
+        {
+            const auto message = "SSH remote channel reached EOF: host=" + options.host_id;
+            logW(message.c_str());
+        }
+
         libssh2_channel_send_eof(channel.get());
         libssh2_session_disconnect(session.get(), "Space Station terminal closed");
         SendEvent({{"type", "status"}, {"status", "closed"}, {"message", "连接已关闭"}});
     }
     catch (const std::exception& error)
     {
-        const auto log_message = std::string("SSH session failed: ") + error.what();
+        const auto log_message = "SSH session failed: host=" + options.host_id + " error=" + error.what();
         logE(log_message.c_str());
         SendEvent({{"type", "error"}, {"message", error.what()}});
     }

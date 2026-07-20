@@ -79,7 +79,7 @@
         <div v-if="activeTab" class="ssh-tab-actions">
           <div class="ssh-pane-switch">
             <button type="button" :class="{ active: activePane === 'terminal' }" @click="showTerminalPane">终端</button>
-            <button type="button" :class="{ active: activePane === 'sftp' }" @click="activePane = 'sftp'">文件</button>
+            <button type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
           </div>
           <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
           <n-button v-if="activePane === 'terminal'" secondary size="tiny" @click="openSearch">搜索</n-button>
@@ -166,9 +166,11 @@
         </div>
       </div>
       <sftp-panel
-        v-if="activeTab && activePane === 'sftp'"
-        :host="activeTab.host"
-        @request-credentials="requestPersistentCredentials(activeTab.host)"
+        v-for="tab in openedSftpTabs"
+        v-show="tab.id === activeTabId && activePane === 'sftp'"
+        :key="`sftp-${tab.id}`"
+        :host="tab.host"
+        @request-credentials="requestPersistentCredentials(tab.host)"
       />
     </main>
 
@@ -427,6 +429,7 @@ interface TerminalTab {
   searchMatches: Array<Array<{ row: number; column: number; width: number }>>;
   searchOverlay?: HTMLElement;
   clipboardCleanup?: () => void;
+  reconnectHintShown: boolean;
 }
 
 interface CommandSnippet { id: string; name: string; command: string; pinned?: boolean }
@@ -460,6 +463,8 @@ const tabs = ref<TerminalTab[]>([]);
 const activeTabId = ref("");
 const draggedTabId = ref("");
 const activePane = ref<"terminal" | "sftp">("terminal");
+const openedSftpTabIds = ref<string[]>([]);
+const openedSftpTabs = computed(() => tabs.value.filter((tab) => openedSftpTabIds.value.includes(tab.id)));
 const showSearch = ref(false);
 const searchQuery = ref("");
 const searchTargetIndex = ref<number | null>(null);
@@ -707,24 +712,14 @@ async function openTerminal(
   persistCredential: boolean,
 ) {
   const id = crypto.randomUUID();
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${window.location.host}/api/tools/ssh/terminal`);
-  socket.binaryType = "arraybuffer";
+  const socket = createTerminalSocket();
   const tab: TerminalTab = {
     id,
     host,
     status: "connecting",
     message: "正在打开连接…",
     socket,
-    connectPayload: {
-      type: "connect",
-      hostId: host.id,
-      password: credential.method === "password" ? credential.password : "",
-      privateKey: credential.method === "privateKey" ? credential.privateKey : "",
-      passphrase: credential.passphrase,
-      useAgent: credential.method === "agent",
-      saveCredential: persistCredential,
-    },
+    connectPayload: buildConnectPayload(host, credential, persistCredential),
     pendingCredential: credential,
     rememberCredential,
     persistCredential,
@@ -741,16 +736,51 @@ async function openTerminal(
     searchResultCount: 0,
     searchTerm: "",
     searchMatches: [],
+    reconnectHintShown: false,
   };
   tabs.value.push(tab);
   activeTabId.value = id;
   activePane.value = "terminal";
   await nextTick();
   initializeTerminal(tab);
-  socket.onmessage = (event) => handleSocketMessage(tab, event);
-  socket.onerror = () => updateTab(tab, "error", "WebSocket 连接失败");
-  socket.onclose = () => {
-    if (tab.status !== "closed" && tab.status !== "error") updateTab(tab, "closed", "连接已关闭");
+  bindTerminalSocket(tab, socket);
+}
+
+function createTerminalSocket() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${protocol}//${window.location.host}/api/tools/ssh/terminal`);
+  socket.binaryType = "arraybuffer";
+  return socket;
+}
+
+function buildConnectPayload(host: SshHost, credential: CredentialData, persistCredential: boolean) {
+  return {
+    type: "connect",
+    hostId: host.id,
+    password: credential.method === "password" ? credential.password : "",
+    privateKey: credential.method === "privateKey" ? credential.privateKey : "",
+    passphrase: credential.passphrase,
+    useAgent: credential.method === "agent",
+    saveCredential: persistCredential,
+  };
+}
+
+function bindTerminalSocket(tab: TerminalTab, socket: WebSocket) {
+  socket.onmessage = (event) => {
+    if (tab.socket === socket) handleSocketMessage(tab, event);
+  };
+  socket.onerror = () => {
+    if (tab.socket !== socket) return;
+    updateTab(tab, "error", "WebSocket 连接失败");
+    showReconnectHint(tab);
+  };
+  socket.onclose = (event) => {
+    if (tab.socket !== socket) return;
+    if (tab.status !== "closed" && tab.status !== "error") {
+      const reason = event.reason ? `：${event.reason}` : "";
+      updateTab(tab, "closed", `连接已关闭（${event.code}）${reason}`);
+    }
+    showReconnectHint(tab);
   };
 }
 
@@ -803,6 +833,10 @@ function initializeTerminal(tab: TerminalTab) {
   fitAddon.fit();
   terminal.focus();
   terminal.onData((data) => {
+    if (tab.status === "closed" || tab.status === "error") {
+      reconnectTab(tab);
+      return;
+    }
     if (tab.socket.readyState === WebSocket.OPEN) tab.socket.send(new TextEncoder().encode(data));
   });
   setupTerminalClipboard(tab, terminal, element);
@@ -984,7 +1018,14 @@ function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
     }
     updateTab(tab, "error", String(payload.message ?? "SSH 连接失败"));
     tab.terminal?.writeln(`\r\n\x1b[31m${String(payload.message ?? "SSH 连接失败")}\x1b[0m`);
+    showReconnectHint(tab);
   }
+}
+
+function showReconnectHint(tab: TerminalTab) {
+  if (tab.reconnectHintShown) return;
+  tab.reconnectHintShown = true;
+  tab.terminal?.writeln("\r\n\x1b[33m连接已中断，按任意键重连…\x1b[0m");
 }
 
 function answerFingerprint(trusted: boolean) {
@@ -1014,12 +1055,15 @@ function updateTab(tab: TerminalTab, status: ConnectionStatus, statusMessage: st
 
 function activateTab(id: string) {
   activeTabId.value = id;
+  if (activePane.value === "sftp" && !openedSftpTabIds.value.includes(id)) openedSftpTabIds.value.push(id);
   nextTick(() => {
     const tab = tabs.value.find((item) => item.id === id);
-    tab?.fitAddon?.fit();
-    tab?.terminal?.focus();
-    if (tab) sendResize(tab);
-    if (tab && showSearch.value && searchQuery.value) searchTerminal(false, true);
+    if (activePane.value === "terminal") {
+      tab?.fitAddon?.fit();
+      tab?.terminal?.focus();
+      if (tab) sendResize(tab);
+      if (tab && showSearch.value && searchQuery.value) searchTerminal(false, true);
+    }
   });
 }
 
@@ -1071,17 +1115,29 @@ function showTerminalPane() {
   });
 }
 
+function showSftpPane() {
+  const tab = activeTab.value;
+  if (!tab) return;
+  if (!openedSftpTabIds.value.includes(tab.id)) openedSftpTabIds.value.push(tab.id);
+  activePane.value = "sftp";
+}
+
 function reconnectTab(tab: TerminalTab) {
   const credential = tab.pendingCredential ? { ...tab.pendingCredential } : { method: "stored", password: "", privateKey: "", passphrase: "" };
-  const restoreBuffer = tab.serializeAddon?.serialize();
-  const host = tab.host;
-  const remember = tab.rememberCredential;
-  const persist = tab.persistCredential;
-  closeTab(tab.id);
-  void openTerminal(host, credential, remember, persist).then(() => {
-    const replacement = tabs.value.find((item) => item.id === activeTabId.value);
-    if (replacement && restoreBuffer) replacement.terminal?.write(restoreBuffer);
-  });
+  const previousSocket = tab.socket;
+  previousSocket.onopen = null;
+  previousSocket.onmessage = null;
+  previousSocket.onerror = null;
+  previousSocket.onclose = null;
+  if (previousSocket.readyState === WebSocket.OPEN || previousSocket.readyState === WebSocket.CONNECTING) previousSocket.close();
+  tab.connectPayload = buildConnectPayload(tab.host, credential, tab.persistCredential);
+  tab.usedStoredCredential = credential.method === "stored";
+  tab.reconnectHintShown = false;
+  updateTab(tab, "connecting", "正在重新连接…");
+  tab.terminal?.writeln("\r\n\x1b[36m正在重新连接，文件传输状态将继续保留…\x1b[0m");
+  const socket = createTerminalSocket();
+  tab.socket = socket;
+  bindTerminalSocket(tab, socket);
 }
 
 function searchTerminal(previous: boolean, incremental = false) {
@@ -1530,8 +1586,14 @@ function closeTab(id: string) {
   const index = tabs.value.findIndex((tab) => tab.id === id);
   if (index < 0) return;
   const [tab] = tabs.value.splice(index, 1);
+  openedSftpTabIds.value = openedSftpTabIds.value.filter((tabId) => tabId !== id);
   disposeTab(tab);
-  if (activeTabId.value === id) activeTabId.value = tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? "";
+  if (activeTabId.value === id) {
+    activeTabId.value = tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? "";
+    if (activePane.value === "sftp" && activeTabId.value && !openedSftpTabIds.value.includes(activeTabId.value)) {
+      openedSftpTabIds.value.push(activeTabId.value);
+    }
+  }
 }
 
 function disposeTab(tab: TerminalTab) {

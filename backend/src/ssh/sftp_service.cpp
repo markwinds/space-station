@@ -1,4 +1,5 @@
 #include "ssh/sftp_service.hpp"
+#include "logging/logger.hpp"
 #include "ssh/network_utils.hpp"
 
 #include <libssh2.h>
@@ -11,7 +12,9 @@
 #include <atomic>
 #include <chrono>
 #include <cerrno>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -44,9 +47,40 @@ struct SftpService::Forward
     std::jthread worker;
 };
 
+struct SftpService::DownloadWorker
+{
+    std::atomic<bool> finished{false};
+    std::jthread thread;
+};
+
+struct SftpService::UploadWorker
+{
+    struct Chunk
+    {
+        std::uint64_t offset = 0;
+        std::string content;
+        std::function<void(const std::string&)> on_complete;
+    };
+
+    std::string id;
+    std::string host_id;
+    std::string path;
+    std::uint64_t total_size = 0;
+    std::uint64_t next_offset = 0;
+    std::atomic<bool> finished{false};
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::deque<Chunk> chunks;
+    std::jthread thread;
+};
+
 namespace
 {
-constexpr std::size_t kMaximumSftpFileSize = 256ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kMaximumSftpDownloadSize = 256ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kMaximumSftpUploadSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMaximumSftpUploadChunkSize = 8ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMaximumConcurrentUploadsPerHost = 2;
+constexpr auto kUploadInactivityTimeout = std::chrono::minutes(2);
 using namespace std::chrono_literals;
 using Deadline = std::chrono::steady_clock::time_point;
 constexpr auto kConnectionTimeout = 15s;
@@ -194,6 +228,20 @@ void SetSocketBlocking(libssh2_socket_t socket_value, bool blocking)
 #endif
 }
 
+void SetSocketIoTimeout(libssh2_socket_t socket_value)
+{
+#ifdef _WIN32
+    DWORD timeout = static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(kConnectionTimeout).count());
+    setsockopt(socket_value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    setsockopt(socket_value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(kConnectionTimeout).count();
+    timeval timeout{static_cast<time_t>(seconds), 0};
+    setsockopt(socket_value, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(socket_value, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+}
+
 bool ConnectInProgress()
 {
 #ifdef _WIN32
@@ -241,6 +289,7 @@ SocketHandle ConnectSocket(const std::string& host, int port, std::stop_token st
         SocketHandle socket_handle;
         socket_handle.value = socket(address.family, address.socket_type, address.protocol);
         if (socket_handle.value == LIBSSH2_INVALID_SOCKET) continue;
+        SetSocketIoTimeout(socket_handle.value);
         SetSocketBlocking(socket_handle.value, false);
         if (connect(socket_handle.value, reinterpret_cast<const sockaddr*>(&address.address),
                     static_cast<int>(address.length)) == 0)
@@ -265,21 +314,6 @@ void WaitSocket(libssh2_socket_t socket_value, LIBSSH2_SESSION* session)
     if ((directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0) FD_SET(socket_value, &writes);
     timeval timeout{0, 100000};
     select(static_cast<int>(socket_value + 1), &reads, &writes, nullptr, &timeout);
-}
-
-template <typename Operation>
-int RetryConnection(libssh2_socket_t socket_value, LIBSSH2_SESSION* session, std::stop_token stop_token,
-                    Deadline deadline, const char* timeout_message, Operation&& operation)
-{
-    int result = LIBSSH2_ERROR_EAGAIN;
-    while (result == LIBSSH2_ERROR_EAGAIN)
-    {
-        CheckConnectionDeadline(stop_token, deadline, timeout_message);
-        result = operation();
-        if (result == LIBSSH2_ERROR_EAGAIN) WaitSocket(socket_value, session);
-    }
-    CheckConnectionDeadline(stop_token, deadline, timeout_message);
-    return result;
 }
 
 std::string SessionError(LIBSSH2_SESSION* session, const char* fallback)
@@ -321,31 +355,23 @@ nlohmann::json FindHost(ConfigStore& store, const std::string& host_id)
     throw std::runtime_error("找不到 SFTP 主机。");
 }
 
-void AuthenticateConnection(LIBSSH2_SESSION* session,
-                            libssh2_socket_t socket_value,
-                            std::stop_token stop_token,
-                            Deadline deadline,
-                            const std::string& username,
-                            const std::optional<nlohmann::json>& credential,
-                            bool use_agent,
-                            const char* fallback)
+void AuthenticateBlocking(LIBSSH2_SESSION* session,
+                          const std::string& username,
+                          const std::optional<nlohmann::json>& credential,
+                          bool use_agent,
+                          const char* fallback)
 {
     int result = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
     if (use_agent)
     {
         AgentPtr agent(libssh2_agent_init(session));
-        if (!agent ||
-            RetryConnection(socket_value, session, stop_token, deadline, "SSH Agent 连接超时。",
-                            [&] { return libssh2_agent_connect(agent.get()); }) != 0 ||
-            RetryConnection(socket_value, session, stop_token, deadline, "SSH Agent 身份读取超时。",
-                            [&] { return libssh2_agent_list_identities(agent.get()); }) != 0)
+        if (!agent || libssh2_agent_connect(agent.get()) != 0 || libssh2_agent_list_identities(agent.get()) != 0)
             throw std::runtime_error("无法连接 SSH Agent，请检查 SSH_AUTH_SOCK。");
         libssh2_agent_publickey* identity = nullptr;
         libssh2_agent_publickey* previous = nullptr;
         while (libssh2_agent_get_identity(agent.get(), &identity, previous) == 0)
         {
-            result = RetryConnection(socket_value, session, stop_token, deadline, "SSH Agent 认证超时。",
-                                     [&] { return libssh2_agent_userauth(agent.get(), username.c_str(), identity); });
+            result = libssh2_agent_userauth(agent.get(), username.c_str(), identity);
             if (result == 0) break;
             previous = identity;
         }
@@ -354,19 +380,15 @@ void AuthenticateConnection(LIBSSH2_SESSION* session,
     {
         const auto private_key = credential->value("privateKey", "");
         const auto passphrase = credential->value("passphrase", "");
-        result = RetryConnection(socket_value, session, stop_token, deadline, "SSH 私钥认证超时。", [&] {
-            return libssh2_userauth_publickey_frommemory(session, username.c_str(), username.size(), nullptr, 0,
-                                                         private_key.data(), private_key.size(),
-                                                         passphrase.empty() ? nullptr : passphrase.c_str());
-        });
+        result = libssh2_userauth_publickey_frommemory(session, username.c_str(), username.size(), nullptr, 0,
+                                                       private_key.data(), private_key.size(),
+                                                       passphrase.empty() ? nullptr : passphrase.c_str());
     }
     else if (credential)
     {
         const auto password = credential->value("password", "");
-        result = RetryConnection(socket_value, session, stop_token, deadline, "SSH 密码认证超时。", [&] {
-            return libssh2_userauth_password_ex(session, username.c_str(), username.size(), password.c_str(),
-                                                password.size(), nullptr);
-        });
+        result = libssh2_userauth_password_ex(session, username.c_str(), username.size(), password.c_str(),
+                                              password.size(), nullptr);
     }
     if (result != 0) throw std::runtime_error(SessionError(session, fallback));
 }
@@ -392,42 +414,34 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
         if (!jump_credential && !jump_use_agent) throw std::runtime_error("请先保存跳板机凭据或启用 SSH Agent。");
         connection.socket = ConnectSocket(jump_host.value("host", ""), std::clamp(jump_host.value("port", 22), 1, 65535),
                                           stop_token, deadline);
+        SetSocketBlocking(connection.socket.value, true);
         connection.jump_session.reset(libssh2_session_init());
         if (!connection.jump_session) throw std::runtime_error("无法创建跳板机 SSH 会话。");
-        libssh2_session_set_blocking(connection.jump_session.get(), 0);
-        if (RetryConnection(connection.socket.value, connection.jump_session.get(), stop_token, deadline,
-                            "跳板机 SSH 握手超时。",
-                            [&] { return libssh2_session_handshake(connection.jump_session.get(), connection.socket.value); }) != 0)
+        libssh2_session_set_blocking(connection.jump_session.get(), 1);
+        libssh2_session_set_timeout(connection.jump_session.get(), 15000);
+        if (libssh2_session_handshake(connection.jump_session.get(), connection.socket.value) != 0)
             throw std::runtime_error(SessionError(connection.jump_session.get(), "跳板机 SSH 握手失败。"));
         if (Fingerprint(connection.jump_session.get()) != jump_fingerprint)
             throw std::runtime_error("跳板机主机指纹已经变化，连接已中止。");
-        AuthenticateConnection(connection.jump_session.get(), connection.socket.value, stop_token, deadline,
-                               jump_host.value("username", ""), jump_credential, jump_use_agent, "跳板机认证失败。");
-        LIBSSH2_CHANNEL* raw_jump_channel = nullptr;
-        while (!raw_jump_channel)
-        {
-            CheckConnectionDeadline(stop_token, deadline, "跳板机打开目标连接超时。");
-            raw_jump_channel = libssh2_channel_direct_tcpip(connection.jump_session.get(),
-                                                            host.value("host", "").c_str(),
-                                                            std::clamp(host.value("port", 22), 1, 65535));
-            if (!raw_jump_channel && libssh2_session_last_errno(connection.jump_session.get()) == LIBSSH2_ERROR_EAGAIN)
-                WaitSocket(connection.socket.value, connection.jump_session.get());
-            else
-                break;
-        }
-        connection.jump_channel.reset(raw_jump_channel);
+        AuthenticateBlocking(connection.jump_session.get(), jump_host.value("username", ""), jump_credential,
+                             jump_use_agent, "跳板机认证失败。");
+        connection.jump_channel.reset(libssh2_channel_direct_tcpip(connection.jump_session.get(),
+                                                                    host.value("host", "").c_str(),
+                                                                    std::clamp(host.value("port", 22), 1, 65535)));
         if (!connection.jump_channel) throw std::runtime_error(SessionError(connection.jump_session.get(), "跳板机无法打开目标连接。"));
     }
     else
     {
         connection.socket = ConnectSocket(host.value("host", ""), std::clamp(host.value("port", 22), 1, 65535),
                                           stop_token, deadline);
+        SetSocketBlocking(connection.socket.value, true);
     }
     connection.session.reset(jump_host_id.empty()
                                  ? libssh2_session_init()
                                  : libssh2_session_init_ex(nullptr, nullptr, nullptr, connection.jump_channel.get()));
     if (!connection.session) throw std::runtime_error("无法创建 SFTP SSH 会话。");
-    libssh2_session_set_blocking(connection.session.get(), 0);
+    libssh2_session_set_blocking(connection.session.get(), 1);
+    libssh2_session_set_timeout(connection.session.get(), 15000);
     if (connection.jump_channel)
     {
         libssh2_session_callback_set2(connection.session.get(), LIBSSH2_CALLBACK_RECV,
@@ -435,8 +449,7 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
         libssh2_session_callback_set2(connection.session.get(), LIBSSH2_CALLBACK_SEND,
                                       reinterpret_cast<libssh2_cb_generic*>(ChannelSend));
     }
-    if (RetryConnection(connection.socket.value, connection.session.get(), stop_token, deadline, "SFTP SSH 握手超时。",
-                        [&] { return libssh2_session_handshake(connection.session.get(), connection.socket.value); }) != 0)
+    if (libssh2_session_handshake(connection.session.get(), connection.socket.value) != 0)
     {
         throw std::runtime_error(SessionError(connection.session.get(), "SFTP SSH 握手失败。"));
     }
@@ -445,31 +458,13 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
     {
         throw std::runtime_error("SFTP 主机指纹未确认或已经变化。");
     }
-    AuthenticateConnection(connection.session.get(), connection.socket.value, stop_token, deadline,
-                           host.value("username", ""), credential, use_agent, "SFTP SSH 认证失败。");
+    AuthenticateBlocking(connection.session.get(), host.value("username", ""), credential, use_agent,
+                         "SFTP SSH 认证失败。");
     if (initialize_sftp)
     {
-        LIBSSH2_SFTP* raw_sftp = nullptr;
-        while (!raw_sftp)
-        {
-            CheckConnectionDeadline(stop_token, deadline, "SFTP 子系统启动超时。");
-            raw_sftp = libssh2_sftp_init(connection.session.get());
-            if (!raw_sftp && libssh2_session_last_errno(connection.session.get()) == LIBSSH2_ERROR_EAGAIN)
-                WaitSocket(connection.socket.value, connection.session.get());
-            else
-                break;
-        }
-        connection.sftp.reset(raw_sftp);
+        connection.sftp.reset(libssh2_sftp_init(connection.session.get()));
         if (!connection.sftp) throw std::runtime_error(SessionError(connection.session.get(), "SFTP 子系统启动失败。"));
     }
-    SetSocketBlocking(connection.socket.value, true);
-    if (connection.jump_session)
-    {
-        libssh2_session_set_blocking(connection.jump_session.get(), 1);
-        libssh2_session_set_timeout(connection.jump_session.get(), 15000);
-    }
-    libssh2_session_set_blocking(connection.session.get(), 1);
-    libssh2_session_set_timeout(connection.session.get(), 15000);
     return connection;
 }
 
@@ -576,6 +571,28 @@ SftpService::~SftpService()
     for (auto& [_, forward] : forwards) forward->worker.request_stop();
     for (auto& [_, forward] : forwards)
         if (forward->worker.joinable()) forward->worker.join();
+
+    std::vector<std::shared_ptr<DownloadWorker>> downloads;
+    {
+        std::lock_guard lock(downloads_mutex_);
+        downloads.swap(downloads_);
+    }
+    for (auto& download : downloads) download->thread.request_stop();
+    for (auto& download : downloads)
+        if (download->thread.joinable()) download->thread.join();
+
+    std::unordered_map<std::string, std::shared_ptr<UploadWorker>> uploads;
+    {
+        std::lock_guard lock(uploads_mutex_);
+        uploads.swap(uploads_);
+    }
+    for (auto& [_, upload] : uploads)
+    {
+        upload->thread.request_stop();
+        upload->condition.notify_all();
+    }
+    for (auto& [_, upload] : uploads)
+        if (upload->thread.joinable()) upload->thread.join();
 }
 
 nlohmann::json SftpService::List(const std::string& host_id, const std::string& path) const
@@ -650,41 +667,174 @@ void SftpService::Rename(const std::string& host_id, const std::string& from, co
     if (result != 0) throw SftpError(connection.sftp.get(), "远程项目重命名失败");
 }
 
-void SftpService::Upload(const std::string& host_id, const std::string& path, std::string_view content) const
+void SftpService::StartUploadChunk(const std::string& upload_id,
+                                   const std::string& host_id,
+                                   const std::string& path,
+                                   std::uint64_t offset,
+                                   std::uint64_t total_size,
+                                   std::string content,
+                                   std::function<void(const std::string&)> on_complete)
 {
-    if (content.size() > kMaximumSftpFileSize) throw std::runtime_error("SFTP 上传文件不能超过 256 MiB。");
-    auto connection = OpenConnection(config_store_, host_id);
-    const auto normalized = NormalizePath(path);
-    SftpHandlePtr file(libssh2_sftp_open(connection.sftp.get(), normalized.c_str(),
-                                        LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, 0600));
-    if (!file) throw SftpError(connection.sftp.get(), "远程文件创建失败");
-    std::size_t offset = 0;
-    while (offset < content.size())
+    if (upload_id.empty() || upload_id.size() > 128) throw std::runtime_error("SFTP 上传会话标识无效。");
+    if (total_size > kMaximumSftpUploadSize) throw std::runtime_error("SFTP 上传文件不能超过 2 GiB。");
+    if (content.size() > kMaximumSftpUploadChunkSize) throw std::runtime_error("SFTP 上传分片不能超过 8 MiB。");
+    if (offset > total_size || content.size() > total_size - offset)
+        throw std::runtime_error("SFTP 上传分片范围无效。");
+
+    std::shared_ptr<UploadWorker> worker;
+    bool start_worker = false;
     {
-        const auto written = libssh2_sftp_write(file.get(), content.data() + offset, content.size() - offset);
-        if (written < 0) throw SftpError(connection.sftp.get(), "远程文件写入失败");
-        offset += static_cast<std::size_t>(written);
+        std::lock_guard lock(uploads_mutex_);
+        std::erase_if(uploads_, [](const auto& item) { return item.second->finished.load(); });
+        const auto existing = uploads_.find(upload_id);
+        if (existing != uploads_.end())
+        {
+            worker = existing->second;
+        }
+        else
+        {
+            if (offset != 0) throw std::runtime_error("SFTP 上传会话已失效，请重新上传文件。");
+            const auto active_for_host = std::count_if(uploads_.begin(), uploads_.end(), [&](const auto& item) {
+                return item.second->host_id == host_id && !item.second->finished.load();
+            });
+            if (active_for_host >= kMaximumConcurrentUploadsPerHost)
+                throw std::runtime_error("同一主机最多同时上传 2 个文件，请稍后重试。");
+            worker = std::make_shared<UploadWorker>();
+            worker->id = upload_id;
+            worker->host_id = host_id;
+            worker->path = path;
+            worker->total_size = total_size;
+            uploads_.emplace(upload_id, worker);
+            start_worker = true;
+        }
     }
+
+    {
+        std::lock_guard lock(worker->mutex);
+        if (worker->finished.load()) throw std::runtime_error("SFTP 上传会话已结束，请重新上传文件。");
+        if (worker->host_id != host_id || worker->path != path || worker->total_size != total_size)
+            throw std::runtime_error("SFTP 上传会话参数不一致。");
+        if (offset != worker->next_offset) throw std::runtime_error("SFTP 上传分片顺序无效。");
+        worker->next_offset += content.size();
+        worker->chunks.push_back({offset, std::move(content), std::move(on_complete)});
+    }
+
+    if (start_worker)
+    {
+        auto* const worker_ptr = worker.get();
+        worker->thread = std::jthread([this, worker_ptr](std::stop_token stop_token) {
+            std::string failure;
+            try
+            {
+                const auto started_message = "SFTP upload session started: host=" + worker_ptr->host_id +
+                                             " upload=" + worker_ptr->id;
+                logI(started_message.c_str());
+                auto connection = OpenConnection(config_store_, worker_ptr->host_id, true, stop_token);
+                const auto normalized = NormalizePath(worker_ptr->path);
+                SftpHandlePtr file(libssh2_sftp_open(connection.sftp.get(), normalized.c_str(),
+                                                    LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, 0600));
+                if (!file) throw SftpError(connection.sftp.get(), "远程文件创建失败");
+
+                while (!stop_token.stop_requested())
+                {
+                    UploadWorker::Chunk chunk;
+                    {
+                        std::unique_lock lock(worker_ptr->mutex);
+                        if (!worker_ptr->condition.wait_for(lock, kUploadInactivityTimeout, [&] {
+                                return !worker_ptr->chunks.empty() || stop_token.stop_requested();
+                            }))
+                            throw std::runtime_error("SFTP 上传会话等待分片超时。");
+                        if (stop_token.stop_requested()) throw std::runtime_error("上传已取消。");
+                        chunk = std::move(worker_ptr->chunks.front());
+                        worker_ptr->chunks.pop_front();
+                    }
+
+                    try
+                    {
+                        libssh2_sftp_seek64(file.get(), chunk.offset);
+                        std::size_t chunk_offset = 0;
+                        while (chunk_offset < chunk.content.size() && !stop_token.stop_requested())
+                        {
+                            const auto written = libssh2_sftp_write(file.get(), chunk.content.data() + chunk_offset,
+                                                                    chunk.content.size() - chunk_offset);
+                            if (written < 0) throw SftpError(connection.sftp.get(), "远程文件写入失败");
+                            chunk_offset += static_cast<std::size_t>(written);
+                        }
+                        if (stop_token.stop_requested()) throw std::runtime_error("上传已取消。");
+                        chunk.on_complete("");
+                        if (chunk.offset + chunk.content.size() == worker_ptr->total_size) break;
+                    }
+                    catch (const std::exception& error)
+                    {
+                        chunk.on_complete(error.what());
+                        throw;
+                    }
+                }
+            }
+            catch (const std::exception& error)
+            {
+                failure = error.what();
+            }
+
+            std::deque<UploadWorker::Chunk> pending;
+            {
+                std::lock_guard lock(worker_ptr->mutex);
+                pending.swap(worker_ptr->chunks);
+            }
+            for (auto& chunk : pending) chunk.on_complete(failure.empty() ? "上传已取消。" : failure);
+            const auto finished_message = "SFTP upload session finished: host=" + worker_ptr->host_id +
+                                          " upload=" + worker_ptr->id +
+                                          (failure.empty() ? " status=ok" : " error=" + failure);
+            if (failure.empty()) logI(finished_message.c_str());
+            else logE(finished_message.c_str());
+            worker_ptr->finished = true;
+        });
+    }
+    worker->condition.notify_one();
 }
 
-SftpDownload SftpService::Download(const std::string& host_id, const std::string& path) const
+void SftpService::StartDownload(const std::string& host_id,
+                                const std::string& path,
+                                std::function<bool(std::string_view)> on_chunk,
+                                std::function<void(const std::string&)> on_complete)
 {
-    auto connection = OpenConnection(config_store_, host_id);
-    const auto normalized = NormalizePath(path);
-    SftpHandlePtr file(libssh2_sftp_open(connection.sftp.get(), normalized.c_str(), LIBSSH2_FXF_READ, 0));
-    if (!file) throw SftpError(connection.sftp.get(), "远程文件打开失败");
-    std::string content;
-    std::array<char, 65536> buffer{};
-    while (true)
-    {
-        const auto count = libssh2_sftp_read(file.get(), buffer.data(), buffer.size());
-        if (count == 0) break;
-        if (count < 0) throw SftpError(connection.sftp.get(), "远程文件读取失败");
-        if (content.size() + static_cast<std::size_t>(count) > kMaximumSftpFileSize)
-            throw std::runtime_error("SFTP 下载文件不能超过 256 MiB。");
-        content.append(buffer.data(), static_cast<std::size_t>(count));
-    }
-    return {std::filesystem::path(normalized).filename().string(), std::move(content)};
+    auto worker = std::make_shared<DownloadWorker>();
+    auto* const worker_ptr = worker.get();
+    worker->thread = std::jthread(
+        [this, worker_ptr, host_id, path, on_chunk = std::move(on_chunk),
+         on_complete = std::move(on_complete)](std::stop_token stop_token) mutable {
+            std::string error_message;
+            try
+            {
+                auto connection = OpenConnection(config_store_, host_id, true, stop_token);
+                const auto normalized = NormalizePath(path);
+                SftpHandlePtr file(libssh2_sftp_open(connection.sftp.get(), normalized.c_str(), LIBSSH2_FXF_READ, 0));
+                if (!file) throw SftpError(connection.sftp.get(), "远程文件打开失败");
+                std::size_t downloaded = 0;
+                std::array<char, 65536> buffer{};
+                while (!stop_token.stop_requested())
+                {
+                    const auto count = libssh2_sftp_read(file.get(), buffer.data(), buffer.size());
+                    if (count == 0) break;
+                    if (count < 0) throw SftpError(connection.sftp.get(), "远程文件读取失败");
+                    downloaded += static_cast<std::size_t>(count);
+                    if (downloaded > kMaximumSftpDownloadSize)
+                        throw std::runtime_error("SFTP 下载文件不能超过 256 MiB。");
+                    if (!on_chunk({buffer.data(), static_cast<std::size_t>(count)})) break;
+                }
+                if (stop_token.stop_requested()) error_message = "下载已取消。";
+            }
+            catch (const std::exception& error)
+            {
+                error_message = error.what();
+            }
+            on_complete(error_message);
+            worker_ptr->finished = true;
+        });
+
+    std::lock_guard lock(downloads_mutex_);
+    std::erase_if(downloads_, [](const auto& download) { return download->finished.load(); });
+    downloads_.push_back(std::move(worker));
 }
 
 nlohmann::json SftpService::StartForward(const std::string& host_id, int local_port,

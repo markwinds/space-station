@@ -22,6 +22,8 @@ namespace spacestation
 {
 namespace
 {
+constexpr std::size_t kMaximumHttpRequestBodySize = 12ULL * 1024ULL * 1024ULL;
+
 template <typename T, void (*Deleter)(T*)>
 using OpenSslPtr = std::unique_ptr<T, decltype(Deleter)>;
 
@@ -454,6 +456,7 @@ void HttpServer::Start()
     }
 
     drogon::app().setThreadNum(std::max(2u, std::thread::hardware_concurrency()));
+    drogon::app().setClientMaxBodySize(kMaximumHttpRequestBodySize);
     drogon::app().enableGzip(true);
     drogon::app().enableBrotli(true);
     drogon::app().disableSigtermHandling();
@@ -902,28 +905,52 @@ void HttpServer::RegisterRoutes()
                 return;
             }
             const auto host_id = parser.getParameter<std::string>("hostId");
+            const auto upload_id = parser.getParameter<std::string>("uploadId");
             const auto path = parser.getParameter<std::string>("path");
             const auto& files = parser.getFiles();
-            if (host_id.empty() || files.empty())
+            if (upload_id.empty() || host_id.empty() || files.size() != 1)
             {
                 callback(JsonResponse({{"code", "missing_host_or_file"}}, drogon::k400BadRequest));
                 return;
             }
+            std::shared_ptr<std::function<void(const drogon::HttpResponsePtr&)>> response_callback;
             try
             {
-                int uploaded = 0;
-                for (const auto& file : files)
-                {
-                    const auto filename = SanitizeFileName(file.getFileName());
-                    const auto destination = path.empty() || path == "/" ? "/" + filename : path + "/" + filename;
-                    sftp_service_.Upload(host_id, destination, {file.fileData(), file.fileLength()});
-                    ++uploaded;
-                }
-                callback(JsonResponse({{"ok", true}, {"uploaded", uploaded}}));
+                const auto& file = files.front();
+                const auto filename = SanitizeFileName(file.getFileName());
+                const auto destination = path.empty() || path == "/" ? "/" + filename : path + "/" + filename;
+                const auto offset_text = parser.getParameter<std::string>("offset");
+                const auto total_size_text = parser.getParameter<std::string>("totalSize");
+                const auto offset = offset_text.empty() ? 0ULL : std::stoull(offset_text);
+                const auto total_size = total_size_text.empty()
+                                            ? static_cast<std::uint64_t>(file.fileLength())
+                                            : std::stoull(total_size_text);
+                auto content = std::string(file.fileData(), file.fileLength());
+                const auto uploaded_size = content.size();
+                response_callback = std::make_shared<std::function<void(const drogon::HttpResponsePtr&)>>(std::move(callback));
+                sftp_service_.StartUploadChunk(
+                    upload_id,
+                    host_id,
+                    destination,
+                    offset,
+                    total_size,
+                    std::move(content),
+                    [response_callback, offset, total_size, uploaded_size](const std::string& error) {
+                        if (!error.empty())
+                        {
+                            (*response_callback)(JsonResponse({{"ok", false}, {"message", error}}, drogon::k400BadRequest));
+                            return;
+                        }
+                        (*response_callback)(JsonResponse({{"ok", true},
+                                                          {"uploadedBytes", offset + uploaded_size},
+                                                          {"totalBytes", total_size}}));
+                    });
             }
             catch (const std::exception& error)
             {
-                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+                auto response = JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest);
+                if (response_callback) (*response_callback)(response);
+                else callback(response);
             }
         },
         {drogon::Post});
@@ -932,19 +959,38 @@ void HttpServer::RegisterRoutes()
         "/api/tools/ssh/sftp/download",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             if (!RequireSecureRequest(req, callback)) return;
-            try
+            const auto host_id = req->getParameter("hostId");
+            const auto path = req->getParameter("path");
+            if (host_id.empty() || path.empty())
             {
-                auto download = sftp_service_.Download(req->getParameter("hostId"), req->getParameter("path"));
-                auto response = drogon::HttpResponse::newHttpResponse();
-                response->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
-                response->addHeader("Content-Disposition", "attachment; filename=\"" + SanitizeFileName(download.filename) + "\"");
-                response->setBody(std::move(download.content));
-                callback(response);
+                callback(JsonResponse({{"ok", false}, {"message", "缺少 SFTP 主机或文件路径。"}},
+                                      drogon::k400BadRequest));
+                return;
             }
-            catch (const std::exception& error)
-            {
-                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
-            }
+            auto response = drogon::HttpResponse::newAsyncStreamResponse(
+                [this, host_id, path](drogon::ResponseStreamPtr stream) {
+                    auto shared_stream = std::shared_ptr<drogon::ResponseStream>(stream.release());
+                    sftp_service_.StartDownload(
+                        host_id,
+                        path,
+                        [shared_stream](std::string_view chunk) {
+                            return shared_stream->send(std::string(chunk));
+                        },
+                        [shared_stream, path](const std::string& error) {
+                            if (!error.empty())
+                            {
+                                const auto log_message = "SFTP download failed for " + path + ": " + error;
+                                logE(log_message.c_str());
+                            }
+                            shared_stream->close();
+                        });
+                },
+                true);
+            response->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+            response->addHeader("Content-Disposition",
+                                "attachment; filename=\"" +
+                                    SanitizeFileName(std::filesystem::path(path).filename().string()) + "\"");
+            callback(response);
         },
         {drogon::Get});
 

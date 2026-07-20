@@ -484,19 +484,49 @@ export async function renameSftpItem(hostId: string, from: string, to: string): 
   await api.put("/tools/ssh/sftp/rename", { hostId, from, to }, { timeout: 30000 });
 }
 
-export async function uploadSftpFiles(hostId: string, path: string, files: FileList | File[]): Promise<void> {
-  const formData = new FormData();
-  formData.append("hostId", hostId);
-  formData.append("path", path);
-  Array.from(files).forEach((file) => formData.append("files", file));
-  await api.post("/tools/ssh/sftp/upload", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-    timeout: 300000,
-  });
+export async function uploadSftpFile(
+  hostId: string,
+  path: string,
+  file: File,
+  onProgress?: (loaded: number) => void,
+): Promise<void> {
+  const maximumFileSize = 2 * 1024 * 1024 * 1024;
+  const chunkSize = 8 * 1024 * 1024;
+  if (file.size > maximumFileSize) throw new Error(`“${file.name}”超过 2 GiB 上传限制`);
+  const uploadId = crypto.randomUUID();
+  let offset = 0;
+  do {
+    const end = Math.min(file.size, offset + chunkSize);
+    const chunk = file.slice(offset, end);
+    const formData = new FormData();
+    formData.append("uploadId", uploadId);
+    formData.append("hostId", hostId);
+    formData.append("path", path);
+    formData.append("offset", String(offset));
+    formData.append("totalSize", String(file.size));
+    formData.append("files", chunk, file.name);
+    const chunkStart = offset;
+    await api.post("/tools/ssh/sftp/upload", formData, {
+      timeout: 300000,
+      onUploadProgress: (event) => onProgress?.(Math.min(file.size, chunkStart + Math.min(chunk.size, event.loaded))),
+    });
+    offset = end;
+    onProgress?.(offset);
+  } while (offset < file.size);
 }
 
-export function sftpDownloadUrl(hostId: string, path: string): string {
-  return `/api/tools/ssh/sftp/download?${new URLSearchParams({ hostId, path }).toString()}`;
+export async function downloadSftpFile(
+  hostId: string,
+  path: string,
+  onProgress?: (loaded: number) => void,
+): Promise<Blob> {
+  const { data } = await api.get<Blob>("/tools/ssh/sftp/download", {
+    params: { hostId, path },
+    responseType: "blob",
+    timeout: 0,
+    onDownloadProgress: (event) => onProgress?.(event.loaded),
+  });
+  return data;
 }
 
 export async function fetchSshPortForwards(): Promise<{ forwards: SshPortForward[] }> {

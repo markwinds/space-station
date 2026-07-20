@@ -1,4 +1,5 @@
 #include "ssh/ssh_websocket.hpp"
+#include "logging/logger.hpp"
 
 #include <algorithm>
 
@@ -25,6 +26,8 @@ void SshWebSocketController::handleNewConnection(const drogon::HttpRequestPtr& r
         return;
     }
     connection->setPingMessage("space-station", std::chrono::seconds(20));
+    const auto message = "SSH WebSocket opened: peer=" + request->peerAddr().toIpPort();
+    logI(message.c_str());
     connection->send(nlohmann::json({{"type", "ready"}}).dump());
 }
 
@@ -87,6 +90,7 @@ void SshWebSocketController::handleNewMessage(const drogon::WebSocketConnectionP
 
 void SshWebSocketController::handleConnectionClosed(const drogon::WebSocketConnectionPtr& connection)
 {
+    logI("SSH WebSocket closed; stopping attached terminal session");
     if (const auto session = connection->getContext<SshSession>())
     {
         session->Stop();
