@@ -14,7 +14,7 @@
       </nav>
       <n-button quaternary size="small" :loading="loading" @click="refresh">刷新</n-button>
       <n-button size="small" :disabled="!canAuthenticate || busy" @click="openCreateFolder">新建文件夹</n-button>
-      <n-button type="primary" size="small" :disabled="!canAuthenticate || busy || activeUploads.length > 0" @click="chooseFiles">上传</n-button>
+      <n-button type="primary" size="small" :disabled="!canAuthenticate || busy || hasPendingUploads" @click="chooseFiles">上传</n-button>
       <input ref="fileInput" class="sftp-file-input" type="file" multiple @change="uploadSelectedFiles" />
     </div>
 
@@ -24,16 +24,19 @@
     </n-alert>
 
     <div v-if="activeUploads.length" class="sftp-uploads">
-      <div v-for="upload in activeUploads" :key="upload.path" class="sftp-upload-progress">
+      <div class="sftp-transfer-header"><strong>上传任务</strong><span>{{ activeUploads.length }} 个</span></div>
+      <div v-for="upload in activeUploads" :key="upload.path" class="sftp-upload-progress" :class="`is-${upload.status}`">
         <div class="sftp-download-summary">
-          <strong>正在上传：{{ upload.name }}</strong>
+          <strong>{{ transferStatusLabel(upload.status, "上传") }}：{{ upload.name }}</strong>
           <span class="sftp-download-size">{{ formatSize(upload.loaded) }} / {{ formatSize(upload.total) }}</span>
           <span class="sftp-upload-percent">{{ transferPercentage(upload) }}%</span>
+          <button v-if="isFinished(upload.status)" class="sftp-transfer-close" type="button" aria-label="移除上传记录" @click="dismissUpload(upload.path)">×</button>
         </div>
+        <div v-if="upload.error" class="sftp-transfer-error">{{ upload.error }}</div>
         <n-progress
           type="line"
           :percentage="transferPercentage(upload)"
-          :processing="transferPercentage(upload) < 100"
+          :processing="upload.status === 'uploading'"
           :show-indicator="false"
           :height="10"
           :border-radius="5"
@@ -42,16 +45,19 @@
     </div>
 
     <div v-if="activeDownloads.length" class="sftp-downloads">
-      <div v-for="download in activeDownloads" :key="download.path" class="sftp-download-progress">
+      <div class="sftp-transfer-header"><strong>下载任务</strong><span>{{ activeDownloads.length }} 个</span></div>
+      <div v-for="download in activeDownloads" :key="download.path" class="sftp-download-progress" :class="`is-${download.status}`">
         <div class="sftp-download-summary">
-          <strong>正在下载：{{ download.name }}</strong>
+          <strong>{{ transferStatusLabel(download.status, "下载") }}：{{ download.name }}</strong>
           <span class="sftp-download-size">{{ formatSize(download.loaded) }} / {{ download.total > 0 ? formatSize(download.total) : '未知大小' }}</span>
           <span class="sftp-download-percent">{{ downloadPercentage(download) }}%</span>
+          <button v-if="isFinished(download.status)" class="sftp-transfer-close" type="button" aria-label="移除下载记录" @click="dismissDownload(download)">×</button>
         </div>
+        <div v-if="download.error" class="sftp-transfer-error">{{ download.error }}</div>
         <n-progress
           type="line"
           :percentage="downloadPercentage(download)"
-          :processing="downloadPercentage(download) < 100"
+          :processing="download.status === 'downloading'"
           :show-indicator="false"
           :height="10"
           :border-radius="5"
@@ -91,7 +97,7 @@
             type="button"
             :disabled="Boolean(downloadStateFor(item.path))"
             @click="downloadItem(item)"
-          >{{ downloadStateFor(item.path) ? `${downloadPercentage(downloadStateFor(item.path)!)}%` : '下载' }}</button>
+          >{{ downloadActionLabel(downloadStateFor(item.path)) }}</button>
           <button class="sftp-action" type="button" @click="openRename(item)">重命名</button>
           <button class="sftp-action sftp-action--danger" type="button" @click="remove(item)">删除</button>
         </span>
@@ -115,13 +121,15 @@
 <script setup lang="ts">
 import axios from "axios";
 import { NAlert, NButton, NFormItem, NInput, NModal, NProgress, useMessage } from "naive-ui";
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   createSftpFolder,
   deleteSftpItem,
-  downloadSftpFile,
+  dismissSftpDownload,
+  fetchSftpDownloadStatus,
   listSftp,
   renameSftpItem,
+  sftpDownloadUrl,
   uploadSftpFile,
   type SftpItem,
   type SshHost,
@@ -143,27 +151,51 @@ const showNameDialog = ref(false);
 const dialogMode = ref<"folder" | "rename">("folder");
 const nameDraft = ref("");
 const editingItem = ref<SftpItem | null>(null);
-type UploadState = { path: string; name: string; loaded: number; total: number };
-type DownloadState = { path: string; name: string; loaded: number; total: number };
+type TransferStatus = "queued" | "uploading" | "downloading" | "success" | "error";
+type UploadState = { path: string; name: string; loaded: number; total: number; status: TransferStatus; error: string };
+type DownloadState = { id: string; path: string; name: string; loaded: number; total: number; status: TransferStatus; error: string; missingPolls: number };
 const maximumConcurrentUploads = 2;
-const maximumConcurrentDownloads = 4;
+const maximumConcurrentDownloads = 2;
 const uploadStates = reactive(new Map<string, UploadState>());
 const downloadStates = reactive(new Map<string, DownloadState>());
 const activeUploads = computed(() => Array.from(uploadStates.values()));
 const activeDownloads = computed(() => Array.from(downloadStates.values()));
+const hasPendingUploads = computed(() => activeUploads.value.some((upload) => !isFinished(upload.status)));
+let downloadPollTimer: number | undefined;
 const breadcrumbTrail = ref<Array<{ label: string; path: string }>>([{ label: "/", path: "/" }]);
 function downloadPercentage(state: DownloadState) {
+  if (state.status === "success") return 100;
   if (state.total <= 0) return 0;
   return Math.min(100, Math.round((state.loaded / state.total) * 100));
 }
 
 function transferPercentage(state: UploadState) {
+  if (state.status === "success") return 100;
   if (state.total <= 0) return 100;
   return Math.min(100, Math.round((state.loaded / state.total) * 100));
 }
 
 function downloadStateFor(path: string) {
   return downloadStates.get(path);
+}
+
+function isFinished(status: TransferStatus) {
+  return status === "success" || status === "error";
+}
+
+function transferStatusLabel(status: TransferStatus, action: "上传" | "下载") {
+  if (status === "queued") return "等待";
+  if (status === "success") return "已完成";
+  if (status === "error") return "失败";
+  return `正在${action}`;
+}
+
+function downloadActionLabel(state?: DownloadState) {
+  if (!state) return "下载";
+  if (state.status === "queued") return "等待中";
+  if (state.status === "success") return "已完成";
+  if (state.status === "error") return "失败";
+  return `${downloadPercentage(state)}%`;
 }
 const breadcrumbs = computed(() => breadcrumbTrail.value);
 const currentBreadcrumbIndex = computed(() => {
@@ -191,6 +223,9 @@ function rememberPath(path: string) {
 
 onMounted(() => {
   if (canAuthenticate.value) void refresh();
+});
+onBeforeUnmount(() => {
+  if (downloadPollTimer) window.clearInterval(downloadPollTimer);
 });
 watch(() => props.host.id, () => {
   currentPath.value = "/";
@@ -296,11 +331,13 @@ async function uploadSelectedFiles(event: Event) {
       continue;
     }
     const destination = joinPath(targetDirectory, file.name);
-    if (uploadStates.has(destination)) {
+    const existing = uploadStates.get(destination);
+    if (existing && !isFinished(existing.status)) {
       message.warning(`“${file.name}”正在上传中`);
       continue;
     }
-    uploadStates.set(destination, { path: destination, name: file.name, loaded: 0, total: file.size });
+    if (existing) uploadStates.delete(destination);
+    uploadStates.set(destination, { path: destination, name: file.name, loaded: 0, total: file.size, status: "queued", error: "" });
     accepted.push({ file, path: destination });
   }
   let nextUpload = 0;
@@ -318,49 +355,118 @@ async function uploadSelectedFiles(event: Event) {
 }
 
 async function uploadOneFile(file: File, destination: string, targetDirectory: string) {
+  const transfer = uploadStates.get(destination);
+  if (transfer) transfer.status = "uploading";
   try {
     await uploadSftpFile(props.host.id, targetDirectory, file, (loaded) => {
       const state = uploadStates.get(destination);
       if (state) state.loaded = loaded;
     });
+    if (transfer) {
+      transfer.loaded = file.size;
+      transfer.status = "success";
+    }
     message.success(`已上传 ${file.name}`);
   } catch (error) {
-    message.error(`${file.name}：${errorText(error, "上传失败")}`);
-  } finally {
-    uploadStates.delete(destination);
+    const detail = errorText(error, "上传失败");
+    if (transfer) {
+      transfer.status = "error";
+      transfer.error = detail;
+    }
+    message.error(`${file.name}：${detail}`);
   }
 }
 
-async function downloadItem(item: SftpItem) {
+function dismissUpload(path: string) {
+  const state = uploadStates.get(path);
+  if (state && isFinished(state.status)) uploadStates.delete(path);
+}
+
+function downloadItem(item: SftpItem) {
   if (downloadStates.has(item.path)) return;
-  if (downloadStates.size >= maximumConcurrentDownloads) {
-    message.warning(`最多同时下载 ${maximumConcurrentDownloads} 个文件`);
-    return;
-  }
-  const state: DownloadState = { path: item.path, name: item.name, loaded: 0, total: item.type === "file" ? item.size : 0 };
+  const state: DownloadState = {
+    id: crypto.randomUUID(),
+    path: item.path,
+    name: item.name,
+    loaded: 0,
+    total: item.type === "file" ? item.size : 0,
+    status: "queued",
+    error: "",
+    missingPolls: 0,
+  };
   downloadStates.set(item.path, state);
-  try {
-    const blob = await downloadSftpFile(props.host.id, item.path, (loaded) => {
-      const current = downloadStates.get(item.path);
-      if (current) current.loaded = loaded;
-    });
-    if (item.type === "file" && item.size > 0 && blob.size !== item.size) {
-      throw new Error(`下载不完整：应为 ${formatSize(item.size)}，实际收到 ${formatSize(blob.size)}`);
-    }
-    const url = URL.createObjectURL(blob);
+  pumpDownloadQueue();
+}
+
+function pumpDownloadQueue() {
+  let running = activeDownloads.value.filter((download) => download.status === "downloading").length;
+  for (const download of activeDownloads.value) {
+    if (running >= maximumConcurrentDownloads || download.status !== "queued") continue;
+    download.status = "downloading";
     const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = item.name;
+    anchor.href = sftpDownloadUrl(props.host.id, download.path, download.id);
+    anchor.download = download.name;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
-    message.success(`已下载 ${item.name}`);
-  } catch (error) {
-    message.error(errorText(error, "下载失败"));
-  } finally {
-    downloadStates.delete(item.path);
+    running += 1;
   }
+  ensureDownloadPolling();
+}
+
+function ensureDownloadPolling() {
+  if (downloadPollTimer || !activeDownloads.value.some((download) => !isFinished(download.status))) return;
+  downloadPollTimer = window.setInterval(() => void pollDownloads(), 500);
+  void pollDownloads();
+}
+
+async function pollDownloads() {
+  const running = activeDownloads.value.filter((download) => download.status === "downloading");
+  await Promise.all(running.map(async (download) => {
+    try {
+      const result = await fetchSftpDownloadStatus(download.id);
+      if (!result.found) {
+        download.missingPolls += 1;
+        if (download.missingPolls >= 20) finishDownload(download, "error", "浏览器未启动下载，请检查多文件下载权限");
+        return;
+      }
+      download.missingPolls = 0;
+      download.loaded = result.downloadedBytes ?? download.loaded;
+      download.total = result.totalBytes || download.total;
+      if (result.status === "success") finishDownload(download, "success", "");
+      else if (result.status === "error") finishDownload(download, "error", result.message || "下载失败");
+    } catch {
+      download.missingPolls += 1;
+      if (download.missingPolls >= 20) finishDownload(download, "error", "无法读取下载进度，请检查连接状态");
+    }
+  }));
+  pumpDownloadQueue();
+  if (!activeDownloads.value.some((download) => !isFinished(download.status)) && downloadPollTimer) {
+    window.clearInterval(downloadPollTimer);
+    downloadPollTimer = undefined;
+  }
+}
+
+function finishDownload(download: DownloadState, status: "success" | "error", detail: string) {
+  if (isFinished(download.status)) return;
+  download.status = status;
+  download.error = detail;
+  if (status === "success") {
+    download.loaded = download.total;
+    message.success(`已下载 ${download.name}`);
+  } else {
+    message.error(`${download.name}：${detail}`);
+  }
+}
+
+async function dismissDownload(download: DownloadState) {
+  if (!isFinished(download.status)) return;
+  try {
+    await dismissSftpDownload(download.id);
+  } catch {
+    // 后端可能已清理状态；本地历史仍允许用户主动移除。
+  }
+  downloadStates.delete(download.path);
 }
 
 function joinPath(parent: string, name: string) {
@@ -401,19 +507,29 @@ function errorText(error: unknown, fallback: string) {
 .sftp-breadcrumb-separator { color: #5f6e79; }
 .sftp-file-input { display: none; }
 .sftp-alert { margin: 12px; }
-.sftp-uploads { max-height: 210px; overflow-y: auto; border-bottom: 1px solid #41515b; background: #20272f; }
+.sftp-uploads { max-height: min(360px, 42vh); overflow-y: auto; border-bottom: 1px solid #41515b; background: #20272f; scrollbar-width: thin; scrollbar-color: #527c7a #171e24; }
+.sftp-uploads::-webkit-scrollbar, .sftp-downloads::-webkit-scrollbar { width: 7px; }
+.sftp-uploads::-webkit-scrollbar-track, .sftp-downloads::-webkit-scrollbar-track { background: #171e24; }
+.sftp-uploads::-webkit-scrollbar-thumb, .sftp-downloads::-webkit-scrollbar-thumb { border-radius: 999px; background: #527c7a; }
+.sftp-uploads::-webkit-scrollbar-thumb:hover, .sftp-downloads::-webkit-scrollbar-thumb:hover { background: #83b3af; }
+.sftp-transfer-header { position: sticky; top: 0; z-index: 1; padding: 7px 14px; display: flex; justify-content: space-between; border-bottom: 1px solid #41515b; background: #192128; color: #b9c7cf; font-size: 12px; }
 .sftp-upload-progress { padding: 11px 14px 12px; border-bottom: 1px solid #34434c; }
 .sftp-upload-progress:last-child { border-bottom: 0; }
 .sftp-upload-percent { min-width: 52px; padding: 3px 8px; border: 1px solid #8fb7d4; border-radius: 999px; background: #9bc5e2; color: #101719; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; }
 .sftp-upload-progress :deep(.n-progress-graph-line-rail) { background: #0d1215; }
 .sftp-upload-progress :deep(.n-progress-graph-line-fill) { background: #9bc5e2; box-shadow: 0 0 8px rgb(155 197 226 / 45%); }
-.sftp-downloads { max-height: 210px; overflow-y: auto; border-bottom: 1px solid #41515b; background: #202a31; }
+.sftp-downloads { max-height: min(360px, 42vh); overflow-y: auto; border-bottom: 1px solid #41515b; background: #202a31; scrollbar-width: thin; scrollbar-color: #527c7a #171e24; }
 .sftp-download-progress { padding: 11px 14px 12px; border-bottom: 1px solid #34434c; }
 .sftp-download-progress:last-child { border-bottom: 0; }
-.sftp-download-summary { margin-bottom: 9px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 14px; font-size: 13px; }
+.sftp-download-summary { margin-bottom: 9px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto 24px; align-items: center; gap: 12px; font-size: 13px; }
 .sftp-download-summary strong { min-width: 0; overflow: hidden; color: #f0f5f6; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .sftp-download-size { color: #d2dde2; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sftp-download-percent { min-width: 52px; padding: 3px 8px; border: 1px solid #91c5c1; border-radius: 999px; background: #9fd0cc; color: #101719; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; }
+.sftp-transfer-close { width: 24px; height: 24px; padding: 0; border: 1px solid #60717c; border-radius: 50%; background: #26323a; color: #d8e1e6; font: 18px/20px sans-serif; cursor: pointer; }
+.sftp-transfer-close:hover { border-color: #a9c6c3; background: #34454e; color: #fff; }
+.sftp-transfer-error { margin: -3px 0 8px; color: #f0a5aa; font-size: 12px; }
+.sftp-upload-progress.is-error, .sftp-download-progress.is-error { background: rgb(113 39 47 / 18%); }
+.sftp-upload-progress.is-success, .sftp-download-progress.is-success { background: rgb(43 105 75 / 14%); }
 .sftp-download-progress :deep(.n-progress-graph-line-rail) { background: #0d1215; }
 .sftp-download-progress :deep(.n-progress-graph-line-fill) { background: #9fd0cc; box-shadow: 0 0 8px rgb(159 208 204 / 45%); }
 .sftp-list-header, .sftp-row { display: grid; grid-template-columns: minmax(220px, 1fr) 110px 170px 190px; align-items: center; }
@@ -438,9 +554,10 @@ function errorText(error: unknown, fallback: string) {
 @media (max-width: 720px) {
   .sftp-toolbar { padding: 7px; flex-wrap: wrap; }
   .sftp-breadcrumb { order: -1; flex-basis: 100%; }
-  .sftp-download-summary { grid-template-columns: minmax(0, 1fr) auto; gap: 7px 10px; }
+  .sftp-download-summary { grid-template-columns: minmax(0, 1fr) auto 24px; gap: 7px 10px; }
   .sftp-download-size { grid-column: 1 / -1; grid-row: 2; }
   .sftp-download-percent { grid-column: 2; grid-row: 1; }
+  .sftp-transfer-close { grid-column: 3; grid-row: 1; }
   .sftp-alert { margin: 8px; }
   :global(.sftp-dialog) { width: 100vw; max-width: 100vw; margin: 0; border-radius: 0; }
 }

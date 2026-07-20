@@ -49,7 +49,15 @@ struct SftpService::Forward
 
 struct SftpService::DownloadWorker
 {
+    std::string id;
+    std::string host_id;
+    std::string path;
+    std::atomic<std::uint64_t> downloaded{0};
+    std::atomic<std::uint64_t> total{0};
     std::atomic<bool> finished{false};
+    mutable std::mutex state_mutex;
+    std::string status = "queued";
+    std::string error;
     std::jthread thread;
 };
 
@@ -76,7 +84,7 @@ struct SftpService::UploadWorker
 
 namespace
 {
-constexpr std::uint64_t kMaximumSftpDownloadSize = 256ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kMaximumSftpDownloadSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t kMaximumSftpUploadSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kMaximumSftpUploadChunkSize = 8ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kMaximumConcurrentUploadsPerHost = 2;
@@ -572,13 +580,13 @@ SftpService::~SftpService()
     for (auto& [_, forward] : forwards)
         if (forward->worker.joinable()) forward->worker.join();
 
-    std::vector<std::shared_ptr<DownloadWorker>> downloads;
+    std::unordered_map<std::string, std::shared_ptr<DownloadWorker>> downloads;
     {
         std::lock_guard lock(downloads_mutex_);
         downloads.swap(downloads_);
     }
-    for (auto& download : downloads) download->thread.request_stop();
-    for (auto& download : downloads)
+    for (auto& [_, download] : downloads) download->thread.request_stop();
+    for (auto& [_, download] : downloads)
         if (download->thread.joinable()) download->thread.join();
 
     std::unordered_map<std::string, std::shared_ptr<UploadWorker>> uploads;
@@ -761,8 +769,17 @@ void SftpService::StartUploadChunk(const std::string& upload_id,
                             chunk_offset += static_cast<std::size_t>(written);
                         }
                         if (stop_token.stop_requested()) throw std::runtime_error("上传已取消。");
+                        const auto completed = chunk.offset + chunk.content.size() == worker_ptr->total_size;
+                        if (completed)
+                        {
+                            LIBSSH2_SFTP_ATTRIBUTES attributes{};
+                            if (libssh2_sftp_fstat(file.get(), &attributes) != 0 ||
+                                (attributes.flags & LIBSSH2_SFTP_ATTR_SIZE) == 0 ||
+                                attributes.filesize != worker_ptr->total_size)
+                                throw std::runtime_error("上传完成后远端文件大小校验失败。");
+                        }
                         chunk.on_complete("");
-                        if (chunk.offset + chunk.content.size() == worker_ptr->total_size) break;
+                        if (completed) break;
                     }
                     catch (const std::exception& error)
                     {
@@ -793,12 +810,22 @@ void SftpService::StartUploadChunk(const std::string& upload_id,
     worker->condition.notify_one();
 }
 
-void SftpService::StartDownload(const std::string& host_id,
+void SftpService::StartDownload(const std::string& download_id,
+                                const std::string& host_id,
                                 const std::string& path,
                                 std::function<bool(std::string_view)> on_chunk,
                                 std::function<void(const std::string&)> on_complete)
 {
+    if (download_id.empty() || download_id.size() > 128) throw std::runtime_error("SFTP 下载任务标识无效。");
     auto worker = std::make_shared<DownloadWorker>();
+    worker->id = download_id;
+    worker->host_id = host_id;
+    worker->path = path;
+    {
+        std::lock_guard lock(downloads_mutex_);
+        if (downloads_.contains(download_id)) throw std::runtime_error("SFTP 下载任务已经存在。");
+        downloads_.emplace(download_id, worker);
+    }
     auto* const worker_ptr = worker.get();
     worker->thread = std::jthread(
         [this, worker_ptr, host_id, path, on_chunk = std::move(on_chunk),
@@ -806,10 +833,21 @@ void SftpService::StartDownload(const std::string& host_id,
             std::string error_message;
             try
             {
+                {
+                    std::lock_guard lock(worker_ptr->state_mutex);
+                    worker_ptr->status = "downloading";
+                }
                 auto connection = OpenConnection(config_store_, host_id, true, stop_token);
                 const auto normalized = NormalizePath(path);
                 SftpHandlePtr file(libssh2_sftp_open(connection.sftp.get(), normalized.c_str(), LIBSSH2_FXF_READ, 0));
                 if (!file) throw SftpError(connection.sftp.get(), "远程文件打开失败");
+                LIBSSH2_SFTP_ATTRIBUTES attributes{};
+                if (libssh2_sftp_fstat(file.get(), &attributes) != 0 ||
+                    (attributes.flags & LIBSSH2_SFTP_ATTR_SIZE) == 0)
+                    throw std::runtime_error("无法读取远程文件大小。");
+                worker_ptr->total = attributes.filesize;
+                if (attributes.filesize > kMaximumSftpDownloadSize)
+                    throw std::runtime_error("SFTP 下载文件不能超过 2 GiB。");
                 std::size_t downloaded = 0;
                 std::array<char, 65536> buffer{};
                 while (!stop_token.stop_requested())
@@ -818,10 +856,12 @@ void SftpService::StartDownload(const std::string& host_id,
                     if (count == 0) break;
                     if (count < 0) throw SftpError(connection.sftp.get(), "远程文件读取失败");
                     downloaded += static_cast<std::size_t>(count);
-                    if (downloaded > kMaximumSftpDownloadSize)
-                        throw std::runtime_error("SFTP 下载文件不能超过 256 MiB。");
-                    if (!on_chunk({buffer.data(), static_cast<std::size_t>(count)})) break;
+                    if (!on_chunk({buffer.data(), static_cast<std::size_t>(count)}))
+                        throw std::runtime_error("浏览器已关闭下载连接。");
+                    worker_ptr->downloaded = downloaded;
                 }
+                if (!stop_token.stop_requested() && downloaded != attributes.filesize)
+                    throw std::runtime_error("下载不完整：远端文件大小与已发送字节数不一致。");
                 if (stop_token.stop_requested()) error_message = "下载已取消。";
             }
             catch (const std::exception& error)
@@ -829,12 +869,49 @@ void SftpService::StartDownload(const std::string& host_id,
                 error_message = error.what();
             }
             on_complete(error_message);
+            {
+                std::lock_guard lock(worker_ptr->state_mutex);
+                worker_ptr->error = error_message;
+                worker_ptr->status = error_message.empty() ? "success" : "error";
+            }
             worker_ptr->finished = true;
         });
+}
 
-    std::lock_guard lock(downloads_mutex_);
-    std::erase_if(downloads_, [](const auto& download) { return download->finished.load(); });
-    downloads_.push_back(std::move(worker));
+nlohmann::json SftpService::DownloadState(const std::string& download_id) const
+{
+    std::shared_ptr<DownloadWorker> worker;
+    {
+        std::lock_guard lock(downloads_mutex_);
+        const auto found = downloads_.find(download_id);
+        if (found == downloads_.end()) return {{"found", false}};
+        worker = found->second;
+    }
+    std::lock_guard lock(worker->state_mutex);
+    return {{"found", true},
+            {"id", worker->id},
+            {"status", worker->status},
+            {"downloadedBytes", worker->downloaded.load()},
+            {"totalBytes", worker->total.load()},
+            {"message", worker->error}};
+}
+
+void SftpService::RemoveDownload(const std::string& download_id)
+{
+    std::shared_ptr<DownloadWorker> worker;
+    {
+        std::lock_guard lock(downloads_mutex_);
+        const auto found = downloads_.find(download_id);
+        if (found == downloads_.end()) return;
+        {
+            std::lock_guard state_lock(found->second->state_mutex);
+            if (found->second->status != "success" && found->second->status != "error")
+                throw std::runtime_error("下载任务仍在进行中。");
+        }
+        worker = std::move(found->second);
+        downloads_.erase(found);
+    }
+    if (worker->thread.joinable()) worker->thread.join();
 }
 
 nlohmann::json SftpService::StartForward(const std::string& host_id, int local_port,

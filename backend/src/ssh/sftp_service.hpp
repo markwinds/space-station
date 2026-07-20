@@ -32,10 +32,13 @@ class SftpService
                           std::uint64_t total_size,
                           std::string content,
                           std::function<void(const std::string&)> on_complete);
-    void StartDownload(const std::string& host_id,
+    void StartDownload(const std::string& download_id,
+                       const std::string& host_id,
                        const std::string& path,
                        std::function<bool(std::string_view)> on_chunk,
                        std::function<void(const std::string&)> on_complete);
+    nlohmann::json DownloadState(const std::string& download_id) const;
+    void RemoveDownload(const std::string& download_id);
     nlohmann::json StartForward(const std::string& host_id, int local_port,
                                 const std::string& remote_host, int remote_port);
     void StopForward(const std::string& id);
@@ -48,8 +51,8 @@ class SftpService
     ConfigStore& config_store_;
     mutable std::mutex forwards_mutex_;
     std::unordered_map<std::string, std::shared_ptr<Forward>> forwards_;
-    std::mutex downloads_mutex_;
-    std::vector<std::shared_ptr<DownloadWorker>> downloads_;
+    mutable std::mutex downloads_mutex_;
+    std::unordered_map<std::string, std::shared_ptr<DownloadWorker>> downloads_;
     std::mutex uploads_mutex_;
     std::unordered_map<std::string, std::shared_ptr<UploadWorker>> uploads_;
 };

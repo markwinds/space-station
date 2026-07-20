@@ -515,18 +515,30 @@ export async function uploadSftpFile(
   } while (offset < file.size);
 }
 
-export async function downloadSftpFile(
-  hostId: string,
-  path: string,
-  onProgress?: (loaded: number) => void,
-): Promise<Blob> {
-  const { data } = await api.get<Blob>("/tools/ssh/sftp/download", {
-    params: { hostId, path },
-    responseType: "blob",
-    timeout: 0,
-    onDownloadProgress: (event) => onProgress?.(event.loaded),
+export interface SftpDownloadStatus {
+  found: boolean;
+  id?: string;
+  status?: "queued" | "downloading" | "success" | "error";
+  downloadedBytes?: number;
+  totalBytes?: number;
+  message?: string;
+}
+
+export function sftpDownloadUrl(hostId: string, path: string, downloadId: string): string {
+  const query = new URLSearchParams({ hostId, path, downloadId });
+  return `/api/tools/ssh/sftp/download?${query.toString()}`;
+}
+
+export async function fetchSftpDownloadStatus(downloadId: string): Promise<SftpDownloadStatus> {
+  const { data } = await api.get<SftpDownloadStatus>("/tools/ssh/sftp/download/status", {
+    params: { downloadId },
+    timeout: 30000,
   });
   return data;
+}
+
+export async function dismissSftpDownload(downloadId: string): Promise<void> {
+  await api.delete("/tools/ssh/sftp/download/status", { params: { downloadId }, timeout: 30000 });
 }
 
 export async function fetchSshPortForwards(): Promise<{ forwards: SshPortForward[] }> {

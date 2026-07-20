@@ -961,29 +961,40 @@ void HttpServer::RegisterRoutes()
             if (!RequireSecureRequest(req, callback)) return;
             const auto host_id = req->getParameter("hostId");
             const auto path = req->getParameter("path");
-            if (host_id.empty() || path.empty())
+            const auto download_id = req->getParameter("downloadId");
+            if (download_id.empty() || host_id.empty() || path.empty())
             {
                 callback(JsonResponse({{"ok", false}, {"message", "缺少 SFTP 主机或文件路径。"}},
                                       drogon::k400BadRequest));
                 return;
             }
             auto response = drogon::HttpResponse::newAsyncStreamResponse(
-                [this, host_id, path](drogon::ResponseStreamPtr stream) {
+                [this, download_id, host_id, path](drogon::ResponseStreamPtr stream) {
                     auto shared_stream = std::shared_ptr<drogon::ResponseStream>(stream.release());
-                    sftp_service_.StartDownload(
-                        host_id,
-                        path,
-                        [shared_stream](std::string_view chunk) {
-                            return shared_stream->send(std::string(chunk));
-                        },
-                        [shared_stream, path](const std::string& error) {
-                            if (!error.empty())
-                            {
-                                const auto log_message = "SFTP download failed for " + path + ": " + error;
-                                logE(log_message.c_str());
-                            }
-                            shared_stream->close();
-                        });
+                    try
+                    {
+                        sftp_service_.StartDownload(
+                            download_id,
+                            host_id,
+                            path,
+                            [shared_stream](std::string_view chunk) {
+                                return shared_stream->send(std::string(chunk));
+                            },
+                            [shared_stream, path](const std::string& error) {
+                                if (!error.empty())
+                                {
+                                    const auto log_message = "SFTP download failed for " + path + ": " + error;
+                                    logE(log_message.c_str());
+                                }
+                                shared_stream->close();
+                            });
+                    }
+                    catch (const std::exception& error)
+                    {
+                        const auto log_message = "SFTP download could not start for " + path + ": " + error.what();
+                        logE(log_message.c_str());
+                        shared_stream->close();
+                    }
                 },
                 true);
             response->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
@@ -993,6 +1004,30 @@ void HttpServer::RegisterRoutes()
             callback(response);
         },
         {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/download/status",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            callback(JsonResponse(sftp_service_.DownloadState(req->getParameter("downloadId"))));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/ssh/sftp/download/status",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                sftp_service_.RemoveDownload(req->getParameter("downloadId"));
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Delete});
 
     drogon::app().registerHandler(
         "/api/tools/ssh/forwards",
