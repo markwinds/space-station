@@ -1,4 +1,5 @@
 #include "ssh/sftp_service.hpp"
+#include "ssh/network_utils.hpp"
 
 #include <libssh2.h>
 #include <libssh2_sftp.h>
@@ -46,6 +47,20 @@ struct SftpService::Forward
 namespace
 {
 constexpr std::size_t kMaximumSftpFileSize = 256ULL * 1024ULL * 1024ULL;
+using namespace std::chrono_literals;
+using Deadline = std::chrono::steady_clock::time_point;
+constexpr auto kConnectionTimeout = 15s;
+
+Deadline NewDeadline()
+{
+    return std::chrono::steady_clock::now() + kConnectionTimeout;
+}
+
+void CheckConnectionDeadline(std::stop_token stop_token, Deadline deadline, const char* timeout_message)
+{
+    if (stop_token.stop_requested()) throw std::runtime_error("SSH 连接已取消。");
+    if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error(timeout_message);
+}
 
 struct SocketHandle
 {
@@ -164,39 +179,107 @@ void EnsureLibssh2Initialized()
     if (initialized != 0) throw std::runtime_error("SSH 库初始化失败。");
 }
 
-SocketHandle ConnectSocket(const std::string& host, int port)
+void SetSocketBlocking(libssh2_socket_t socket_value, bool blocking)
 {
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    addrinfo* raw = nullptr;
-    const auto service = std::to_string(port);
-    if (getaddrinfo(host.c_str(), service.c_str(), &hints, &raw) != 0)
+#ifdef _WIN32
+    u_long enabled = blocking ? 0 : 1;
+    ioctlsocket(socket_value, FIONBIO, &enabled);
+#else
+    const auto flags = fcntl(socket_value, F_GETFL, 0);
+    if (flags >= 0)
     {
-        throw std::runtime_error("无法解析 SFTP 主机地址。");
+        const auto updated = blocking ? flags & ~O_NONBLOCK : flags | O_NONBLOCK;
+        fcntl(socket_value, F_SETFL, updated);
     }
-    std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(raw, freeaddrinfo);
-    for (auto* address = addresses.get(); address; address = address->ai_next)
+#endif
+}
+
+bool ConnectInProgress()
+{
+#ifdef _WIN32
+    const auto error = WSAGetLastError();
+    return error == WSAEWOULDBLOCK || error == WSAEINPROGRESS || error == WSAEALREADY;
+#else
+    return errno == EINPROGRESS || errno == EWOULDBLOCK || errno == EALREADY;
+#endif
+}
+
+bool WaitForSocketConnection(libssh2_socket_t socket_value, std::stop_token stop_token,
+                             Deadline deadline, const char* timeout_message)
+{
+    while (true)
+    {
+        CheckConnectionDeadline(stop_token, deadline, timeout_message);
+        fd_set writes;
+        fd_set errors;
+        FD_ZERO(&writes);
+        FD_ZERO(&errors);
+        FD_SET(socket_value, &writes);
+        FD_SET(socket_value, &errors);
+        timeval timeout{0, 100000};
+        const auto selected = select(static_cast<int>(socket_value + 1), nullptr, &writes, &errors, &timeout);
+        if (selected == 0) continue;
+        if (selected < 0) return false;
+        int socket_error = 0;
+#ifdef _WIN32
+        int error_length = sizeof(socket_error);
+#else
+        socklen_t error_length = sizeof(socket_error);
+#endif
+        if (getsockopt(socket_value, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&socket_error), &error_length) != 0)
+            return false;
+        return socket_error == 0;
+    }
+}
+
+SocketHandle ConnectSocket(const std::string& host, int port, std::stop_token stop_token, Deadline deadline)
+{
+    const auto addresses = network::Resolve(host, port, stop_token, deadline, "SSH 连接已取消。",
+                                            "SSH DNS 解析超时。", "无法解析 SFTP 主机地址。");
+    for (const auto& address : addresses)
     {
         SocketHandle socket_handle;
-        socket_handle.value = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        socket_handle.value = socket(address.family, address.socket_type, address.protocol);
         if (socket_handle.value == LIBSSH2_INVALID_SOCKET) continue;
-#ifdef _WIN32
-        DWORD timeout = 15000;
-        setsockopt(socket_handle.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-        setsockopt(socket_handle.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-#else
-        timeval timeout{15, 0};
-        setsockopt(socket_handle.value, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        setsockopt(socket_handle.value, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-#endif
-        if (connect(socket_handle.value, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0)
+        SetSocketBlocking(socket_handle.value, false);
+        if (connect(socket_handle.value, reinterpret_cast<const sockaddr*>(&address.address),
+                    static_cast<int>(address.length)) == 0)
         {
             return socket_handle;
         }
+        if (ConnectInProgress() && WaitForSocketConnection(socket_handle.value, stop_token, deadline, "SSH TCP 连接超时。"))
+            return socket_handle;
+        CheckConnectionDeadline(stop_token, deadline, "SSH TCP 连接超时。");
     }
     throw std::runtime_error("无法连接 SFTP 主机。");
+}
+
+void WaitSocket(libssh2_socket_t socket_value, LIBSSH2_SESSION* session)
+{
+    fd_set reads;
+    fd_set writes;
+    FD_ZERO(&reads);
+    FD_ZERO(&writes);
+    const auto directions = libssh2_session_block_directions(session);
+    if ((directions & LIBSSH2_SESSION_BLOCK_INBOUND) != 0) FD_SET(socket_value, &reads);
+    if ((directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0) FD_SET(socket_value, &writes);
+    timeval timeout{0, 100000};
+    select(static_cast<int>(socket_value + 1), &reads, &writes, nullptr, &timeout);
+}
+
+template <typename Operation>
+int RetryConnection(libssh2_socket_t socket_value, LIBSSH2_SESSION* session, std::stop_token stop_token,
+                    Deadline deadline, const char* timeout_message, Operation&& operation)
+{
+    int result = LIBSSH2_ERROR_EAGAIN;
+    while (result == LIBSSH2_ERROR_EAGAIN)
+    {
+        CheckConnectionDeadline(stop_token, deadline, timeout_message);
+        result = operation();
+        if (result == LIBSSH2_ERROR_EAGAIN) WaitSocket(socket_value, session);
+    }
+    CheckConnectionDeadline(stop_token, deadline, timeout_message);
+    return result;
 }
 
 std::string SessionError(LIBSSH2_SESSION* session, const char* fallback)
@@ -238,23 +321,31 @@ nlohmann::json FindHost(ConfigStore& store, const std::string& host_id)
     throw std::runtime_error("找不到 SFTP 主机。");
 }
 
-void AuthenticateBlocking(LIBSSH2_SESSION* session,
-                          const std::string& username,
-                          const std::optional<nlohmann::json>& credential,
-                          bool use_agent,
-                          const char* fallback)
+void AuthenticateConnection(LIBSSH2_SESSION* session,
+                            libssh2_socket_t socket_value,
+                            std::stop_token stop_token,
+                            Deadline deadline,
+                            const std::string& username,
+                            const std::optional<nlohmann::json>& credential,
+                            bool use_agent,
+                            const char* fallback)
 {
     int result = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
     if (use_agent)
     {
         AgentPtr agent(libssh2_agent_init(session));
-        if (!agent || libssh2_agent_connect(agent.get()) != 0 || libssh2_agent_list_identities(agent.get()) != 0)
+        if (!agent ||
+            RetryConnection(socket_value, session, stop_token, deadline, "SSH Agent 连接超时。",
+                            [&] { return libssh2_agent_connect(agent.get()); }) != 0 ||
+            RetryConnection(socket_value, session, stop_token, deadline, "SSH Agent 身份读取超时。",
+                            [&] { return libssh2_agent_list_identities(agent.get()); }) != 0)
             throw std::runtime_error("无法连接 SSH Agent，请检查 SSH_AUTH_SOCK。");
         libssh2_agent_publickey* identity = nullptr;
         libssh2_agent_publickey* previous = nullptr;
         while (libssh2_agent_get_identity(agent.get(), &identity, previous) == 0)
         {
-            result = libssh2_agent_userauth(agent.get(), username.c_str(), identity);
+            result = RetryConnection(socket_value, session, stop_token, deadline, "SSH Agent 认证超时。",
+                                     [&] { return libssh2_agent_userauth(agent.get(), username.c_str(), identity); });
             if (result == 0) break;
             previous = identity;
         }
@@ -263,22 +354,28 @@ void AuthenticateBlocking(LIBSSH2_SESSION* session,
     {
         const auto private_key = credential->value("privateKey", "");
         const auto passphrase = credential->value("passphrase", "");
-        result = libssh2_userauth_publickey_frommemory(session, username.c_str(), username.size(), nullptr, 0,
-                                                       private_key.data(), private_key.size(),
-                                                       passphrase.empty() ? nullptr : passphrase.c_str());
+        result = RetryConnection(socket_value, session, stop_token, deadline, "SSH 私钥认证超时。", [&] {
+            return libssh2_userauth_publickey_frommemory(session, username.c_str(), username.size(), nullptr, 0,
+                                                         private_key.data(), private_key.size(),
+                                                         passphrase.empty() ? nullptr : passphrase.c_str());
+        });
     }
     else if (credential)
     {
         const auto password = credential->value("password", "");
-        result = libssh2_userauth_password_ex(session, username.c_str(), username.size(), password.c_str(),
-                                              password.size(), nullptr);
+        result = RetryConnection(socket_value, session, stop_token, deadline, "SSH 密码认证超时。", [&] {
+            return libssh2_userauth_password_ex(session, username.c_str(), username.size(), password.c_str(),
+                                                password.size(), nullptr);
+        });
     }
     if (result != 0) throw std::runtime_error(SessionError(session, fallback));
 }
 
-Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool initialize_sftp = true)
+Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool initialize_sftp = true,
+                          std::stop_token stop_token = {})
 {
     EnsureLibssh2Initialized();
+    const auto deadline = NewDeadline();
     const auto host = FindHost(store, host_id);
     const auto credential = store.LoadSshCredential(host_id);
     const auto use_agent = host.value("useAgent", false);
@@ -293,32 +390,44 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
         const auto jump_credential = store.LoadSshCredential(jump_host_id);
         const auto jump_use_agent = jump_host.value("useAgent", false);
         if (!jump_credential && !jump_use_agent) throw std::runtime_error("请先保存跳板机凭据或启用 SSH Agent。");
-        connection.socket = ConnectSocket(jump_host.value("host", ""), std::clamp(jump_host.value("port", 22), 1, 65535));
+        connection.socket = ConnectSocket(jump_host.value("host", ""), std::clamp(jump_host.value("port", 22), 1, 65535),
+                                          stop_token, deadline);
         connection.jump_session.reset(libssh2_session_init());
         if (!connection.jump_session) throw std::runtime_error("无法创建跳板机 SSH 会话。");
-        libssh2_session_set_blocking(connection.jump_session.get(), 1);
-        libssh2_session_set_timeout(connection.jump_session.get(), 15000);
-        if (libssh2_session_handshake(connection.jump_session.get(), connection.socket.value) != 0)
+        libssh2_session_set_blocking(connection.jump_session.get(), 0);
+        if (RetryConnection(connection.socket.value, connection.jump_session.get(), stop_token, deadline,
+                            "跳板机 SSH 握手超时。",
+                            [&] { return libssh2_session_handshake(connection.jump_session.get(), connection.socket.value); }) != 0)
             throw std::runtime_error(SessionError(connection.jump_session.get(), "跳板机 SSH 握手失败。"));
         if (Fingerprint(connection.jump_session.get()) != jump_fingerprint)
             throw std::runtime_error("跳板机主机指纹已经变化，连接已中止。");
-        AuthenticateBlocking(connection.jump_session.get(), jump_host.value("username", ""), jump_credential,
-                             jump_use_agent, "跳板机认证失败。");
-        connection.jump_channel.reset(libssh2_channel_direct_tcpip(connection.jump_session.get(),
-                                                                    host.value("host", "").c_str(),
-                                                                    std::clamp(host.value("port", 22), 1, 65535)));
+        AuthenticateConnection(connection.jump_session.get(), connection.socket.value, stop_token, deadline,
+                               jump_host.value("username", ""), jump_credential, jump_use_agent, "跳板机认证失败。");
+        LIBSSH2_CHANNEL* raw_jump_channel = nullptr;
+        while (!raw_jump_channel)
+        {
+            CheckConnectionDeadline(stop_token, deadline, "跳板机打开目标连接超时。");
+            raw_jump_channel = libssh2_channel_direct_tcpip(connection.jump_session.get(),
+                                                            host.value("host", "").c_str(),
+                                                            std::clamp(host.value("port", 22), 1, 65535));
+            if (!raw_jump_channel && libssh2_session_last_errno(connection.jump_session.get()) == LIBSSH2_ERROR_EAGAIN)
+                WaitSocket(connection.socket.value, connection.jump_session.get());
+            else
+                break;
+        }
+        connection.jump_channel.reset(raw_jump_channel);
         if (!connection.jump_channel) throw std::runtime_error(SessionError(connection.jump_session.get(), "跳板机无法打开目标连接。"));
     }
     else
     {
-        connection.socket = ConnectSocket(host.value("host", ""), std::clamp(host.value("port", 22), 1, 65535));
+        connection.socket = ConnectSocket(host.value("host", ""), std::clamp(host.value("port", 22), 1, 65535),
+                                          stop_token, deadline);
     }
     connection.session.reset(jump_host_id.empty()
                                  ? libssh2_session_init()
                                  : libssh2_session_init_ex(nullptr, nullptr, nullptr, connection.jump_channel.get()));
     if (!connection.session) throw std::runtime_error("无法创建 SFTP SSH 会话。");
-    libssh2_session_set_blocking(connection.session.get(), 1);
-    libssh2_session_set_timeout(connection.session.get(), 15000);
+    libssh2_session_set_blocking(connection.session.get(), 0);
     if (connection.jump_channel)
     {
         libssh2_session_callback_set2(connection.session.get(), LIBSSH2_CALLBACK_RECV,
@@ -326,7 +435,8 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
         libssh2_session_callback_set2(connection.session.get(), LIBSSH2_CALLBACK_SEND,
                                       reinterpret_cast<libssh2_cb_generic*>(ChannelSend));
     }
-    if (libssh2_session_handshake(connection.session.get(), connection.socket.value) != 0)
+    if (RetryConnection(connection.socket.value, connection.session.get(), stop_token, deadline, "SFTP SSH 握手超时。",
+                        [&] { return libssh2_session_handshake(connection.session.get(), connection.socket.value); }) != 0)
     {
         throw std::runtime_error(SessionError(connection.session.get(), "SFTP SSH 握手失败。"));
     }
@@ -335,13 +445,31 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
     {
         throw std::runtime_error("SFTP 主机指纹未确认或已经变化。");
     }
-    AuthenticateBlocking(connection.session.get(), host.value("username", ""), credential, use_agent,
-                         "SFTP SSH 认证失败。");
+    AuthenticateConnection(connection.session.get(), connection.socket.value, stop_token, deadline,
+                           host.value("username", ""), credential, use_agent, "SFTP SSH 认证失败。");
     if (initialize_sftp)
     {
-        connection.sftp.reset(libssh2_sftp_init(connection.session.get()));
+        LIBSSH2_SFTP* raw_sftp = nullptr;
+        while (!raw_sftp)
+        {
+            CheckConnectionDeadline(stop_token, deadline, "SFTP 子系统启动超时。");
+            raw_sftp = libssh2_sftp_init(connection.session.get());
+            if (!raw_sftp && libssh2_session_last_errno(connection.session.get()) == LIBSSH2_ERROR_EAGAIN)
+                WaitSocket(connection.socket.value, connection.session.get());
+            else
+                break;
+        }
+        connection.sftp.reset(raw_sftp);
         if (!connection.sftp) throw std::runtime_error(SessionError(connection.session.get(), "SFTP 子系统启动失败。"));
     }
+    SetSocketBlocking(connection.socket.value, true);
+    if (connection.jump_session)
+    {
+        libssh2_session_set_blocking(connection.jump_session.get(), 1);
+        libssh2_session_set_timeout(connection.jump_session.get(), 15000);
+    }
+    libssh2_session_set_blocking(connection.session.get(), 1);
+    libssh2_session_set_timeout(connection.session.get(), 15000);
     return connection;
 }
 
@@ -352,23 +480,29 @@ std::runtime_error SftpError(LIBSSH2_SFTP* sftp, const char* action)
 
 void SetNonBlocking(libssh2_socket_t socket_value)
 {
-#ifdef _WIN32
-    u_long enabled = 1;
-    ioctlsocket(socket_value, FIONBIO, &enabled);
-#else
-    const auto flags = fcntl(socket_value, F_GETFL, 0);
-    if (flags >= 0) fcntl(socket_value, F_SETFL, flags | O_NONBLOCK);
-#endif
+    SetSocketBlocking(socket_value, false);
 }
 
 void RelayForward(ConfigStore& store, const std::string& host_id, const std::string& remote_host,
                   int remote_port, libssh2_socket_t client, std::stop_token token)
 {
-    auto connection = OpenConnection(store, host_id, false);
-    LIBSSH2_CHANNEL* raw_channel = libssh2_channel_direct_tcpip(connection.session.get(), remote_host.c_str(), remote_port);
+    auto connection = OpenConnection(store, host_id, false, token);
+    SetNonBlocking(connection.socket.value);
+    if (connection.jump_session) libssh2_session_set_blocking(connection.jump_session.get(), 0);
+    libssh2_session_set_blocking(connection.session.get(), 0);
+    LIBSSH2_CHANNEL* raw_channel = nullptr;
+    const auto channel_deadline = NewDeadline();
+    while (!raw_channel)
+    {
+        CheckConnectionDeadline(token, channel_deadline, "端口转发通道创建超时。");
+        raw_channel = libssh2_channel_direct_tcpip(connection.session.get(), remote_host.c_str(), remote_port);
+        if (!raw_channel && libssh2_session_last_errno(connection.session.get()) == LIBSSH2_ERROR_EAGAIN)
+            WaitSocket(connection.socket.value, connection.session.get());
+        else
+            break;
+    }
     ChannelPtr channel(raw_channel);
     if (!channel) throw std::runtime_error(SessionError(connection.session.get(), "端口转发通道创建失败。"));
-    libssh2_session_set_blocking(connection.session.get(), 0);
     SetNonBlocking(client);
     std::array<char, 32768> local_buffer{};
     std::array<char, 32768> remote_buffer{};

@@ -1,4 +1,5 @@
 #include "ssh/ssh_session.hpp"
+#include "ssh/network_utils.hpp"
 
 #include "logging/logger.hpp"
 
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -17,6 +19,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
+#include <fcntl.h>
 #include <netdb.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -28,6 +31,19 @@ namespace spacestation::ssh
 namespace
 {
 using namespace std::chrono_literals;
+using Deadline = std::chrono::steady_clock::time_point;
+constexpr auto kConnectionTimeout = 15s;
+
+Deadline NewDeadline()
+{
+    return std::chrono::steady_clock::now() + kConnectionTimeout;
+}
+
+void CheckConnectionDeadline(std::stop_token stop_token, Deadline deadline, const char* timeout_message)
+{
+    if (stop_token.stop_requested()) throw std::runtime_error("SSH 连接已取消。");
+    if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error(timeout_message);
+}
 
 struct SocketHandle
 {
@@ -118,32 +134,76 @@ void EnsureLibssh2Initialized()
     }
 }
 
-SocketHandle ConnectSocket(const std::string& host, int port)
+void SetSocketNonBlocking(libssh2_socket_t socket_value)
 {
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    addrinfo* raw_addresses = nullptr;
-    const auto service = std::to_string(port);
-    const auto resolve_result = getaddrinfo(host.c_str(), service.c_str(), &hints, &raw_addresses);
-    if (resolve_result != 0)
+#ifdef _WIN32
+    u_long enabled = 1;
+    ioctlsocket(socket_value, FIONBIO, &enabled);
+#else
+    const auto flags = fcntl(socket_value, F_GETFL, 0);
+    if (flags >= 0) fcntl(socket_value, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+bool ConnectInProgress()
+{
+#ifdef _WIN32
+    const auto error = WSAGetLastError();
+    return error == WSAEWOULDBLOCK || error == WSAEINPROGRESS || error == WSAEALREADY;
+#else
+    return errno == EINPROGRESS || errno == EWOULDBLOCK || errno == EALREADY;
+#endif
+}
+
+bool WaitForSocketConnection(libssh2_socket_t socket_value, std::stop_token stop_token,
+                             Deadline deadline, const char* timeout_message)
+{
+    while (true)
     {
-        throw std::runtime_error("无法解析 SSH 主机地址。");
+        CheckConnectionDeadline(stop_token, deadline, timeout_message);
+        fd_set writes;
+        fd_set errors;
+        FD_ZERO(&writes);
+        FD_ZERO(&errors);
+        FD_SET(socket_value, &writes);
+        FD_SET(socket_value, &errors);
+        timeval timeout{0, 100000};
+        const auto selected = select(static_cast<int>(socket_value + 1), nullptr, &writes, &errors, &timeout);
+        if (selected == 0) continue;
+        if (selected < 0) return false;
+        int socket_error = 0;
+#ifdef _WIN32
+        int error_length = sizeof(socket_error);
+#else
+        socklen_t error_length = sizeof(socket_error);
+#endif
+        if (getsockopt(socket_value, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&socket_error), &error_length) != 0)
+            return false;
+        return socket_error == 0;
     }
-    std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(raw_addresses, freeaddrinfo);
-    for (auto* address = addresses.get(); address; address = address->ai_next)
+}
+
+SocketHandle ConnectSocket(const std::string& host, int port, std::stop_token stop_token, Deadline deadline)
+{
+    const auto addresses = network::Resolve(host, port, stop_token, deadline, "SSH 连接已取消。",
+                                            "SSH DNS 解析超时。", "无法解析 SSH 主机地址。");
+    for (const auto& address : addresses)
     {
         SocketHandle socket_handle;
-        socket_handle.value = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        socket_handle.value = socket(address.family, address.socket_type, address.protocol);
         if (socket_handle.value == LIBSSH2_INVALID_SOCKET)
         {
             continue;
         }
-        if (connect(socket_handle.value, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0)
+        SetSocketNonBlocking(socket_handle.value);
+        if (connect(socket_handle.value, reinterpret_cast<const sockaddr*>(&address.address),
+                    static_cast<int>(address.length)) == 0)
         {
             return socket_handle;
         }
+        if (ConnectInProgress() && WaitForSocketConnection(socket_handle.value, stop_token, deadline, "SSH TCP 连接超时。"))
+            return socket_handle;
+        CheckConnectionDeadline(stop_token, deadline, "SSH TCP 连接超时。");
     }
     throw std::runtime_error("无法连接 SSH 主机。");
 }
@@ -170,17 +230,20 @@ void WaitSocket(libssh2_socket_t socket, LIBSSH2_SESSION* session)
 }
 
 template <typename Operation>
-int Retry(libssh2_socket_t socket, LIBSSH2_SESSION* session, std::stop_token stop_token, Operation&& operation)
+int Retry(libssh2_socket_t socket, LIBSSH2_SESSION* session, std::stop_token stop_token,
+          Deadline deadline, const char* timeout_message, Operation&& operation)
 {
     int result = LIBSSH2_ERROR_EAGAIN;
     while (!stop_token.stop_requested() && result == LIBSSH2_ERROR_EAGAIN)
     {
+        CheckConnectionDeadline(stop_token, deadline, timeout_message);
         result = operation();
         if (result == LIBSSH2_ERROR_EAGAIN)
         {
             WaitSocket(socket, session);
         }
     }
+    CheckConnectionDeadline(stop_token, deadline, timeout_message);
     return result;
 }
 
@@ -253,19 +316,26 @@ int Authenticate(LIBSSH2_SESSION* session,
                  const std::string& password,
                  const std::string& private_key,
                  const std::string& passphrase,
-                 bool use_agent)
+                 bool use_agent,
+                 Deadline deadline)
 {
     if (use_agent)
     {
         AgentPtr agent(libssh2_agent_init(session));
-        if (!agent || libssh2_agent_connect(agent.get()) != 0 || libssh2_agent_list_identities(agent.get()) != 0)
+        if (!agent ||
+            Retry(socket, session, stop_token, deadline, "SSH Agent 连接超时。",
+                  [&] { return libssh2_agent_connect(agent.get()); }) != 0 ||
+            Retry(socket, session, stop_token, deadline, "SSH Agent 身份读取超时。",
+                  [&] { return libssh2_agent_list_identities(agent.get()); }) != 0)
             throw std::runtime_error("无法连接 SSH Agent，请检查 SSH_AUTH_SOCK。");
         libssh2_agent_publickey* identity = nullptr;
         libssh2_agent_publickey* previous = nullptr;
         int result = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
         while (libssh2_agent_get_identity(agent.get(), &identity, previous) == 0)
         {
-            result = libssh2_agent_userauth(agent.get(), username.c_str(), identity);
+            CheckConnectionDeadline(stop_token, deadline, "SSH Agent 认证超时。");
+            result = Retry(socket, session, stop_token, deadline, "SSH Agent 认证超时。",
+                           [&] { return libssh2_agent_userauth(agent.get(), username.c_str(), identity); });
             if (result == 0) break;
             previous = identity;
         }
@@ -273,13 +343,13 @@ int Authenticate(LIBSSH2_SESSION* session,
     }
     if (!private_key.empty())
     {
-        return Retry(socket, session, stop_token, [&] {
+        return Retry(socket, session, stop_token, deadline, "SSH 私钥认证超时。", [&] {
             return libssh2_userauth_publickey_frommemory(
                 session, username.c_str(), username.size(), nullptr, 0, private_key.data(), private_key.size(),
                 passphrase.empty() ? nullptr : passphrase.c_str());
         });
     }
-    return Retry(socket, session, stop_token, [&] {
+    return Retry(socket, session, stop_token, deadline, "SSH 密码认证超时。", [&] {
         return libssh2_userauth_password_ex(session, username.c_str(), static_cast<unsigned int>(username.size()),
                                             password.c_str(), static_cast<unsigned int>(password.size()), nullptr);
     });
@@ -371,11 +441,13 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             const auto jump_credential = config_store_.LoadSshCredential(options.jump_host_id);
             const auto jump_use_agent = jump_host.value("useAgent", false);
             if (!jump_credential && !jump_use_agent) throw std::runtime_error("请先保存跳板机凭据或启用 SSH Agent。");
-            socket = ConnectSocket(jump_host.value("host", ""), std::clamp(jump_host.value("port", 22), 1, 65535));
+            socket = ConnectSocket(jump_host.value("host", ""), std::clamp(jump_host.value("port", 22), 1, 65535),
+                                   stop_token, NewDeadline());
             jump_session.reset(libssh2_session_init());
             if (!jump_session) throw std::runtime_error("无法创建跳板机 SSH 会话。");
             libssh2_session_set_blocking(jump_session.get(), 0);
-            if (Retry(socket.value, jump_session.get(), stop_token, [&] { return libssh2_session_handshake(jump_session.get(), socket.value); }) != 0)
+            if (Retry(socket.value, jump_session.get(), stop_token, NewDeadline(), "跳板机 SSH 握手超时。",
+                      [&] { return libssh2_session_handshake(jump_session.get(), socket.value); }) != 0)
                 throw std::runtime_error(LastSessionError(jump_session.get(), "跳板机 SSH 握手失败。"));
             if (HostFingerprint(jump_session.get()) != jump_fingerprint)
                 throw std::runtime_error("跳板机主机指纹已经变化，连接已中止。");
@@ -384,11 +456,13 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
                              jump_credential ? jump_credential->value("password", "") : "",
                              jump_credential ? jump_credential->value("privateKey", "") : "",
                              jump_credential ? jump_credential->value("passphrase", "") : "",
-                             jump_use_agent) != 0)
+                             jump_use_agent, NewDeadline()) != 0)
                 throw std::runtime_error(LastSessionError(jump_session.get(), "跳板机认证失败。"));
             LIBSSH2_CHANNEL* raw_jump_channel = nullptr;
+            const auto jump_channel_deadline = NewDeadline();
             while (!stop_token.stop_requested() && !raw_jump_channel)
             {
+                CheckConnectionDeadline(stop_token, jump_channel_deadline, "跳板机打开目标连接超时。");
                 raw_jump_channel = libssh2_channel_direct_tcpip(jump_session.get(), options.host.c_str(), options.port);
                 if (!raw_jump_channel && libssh2_session_last_errno(jump_session.get()) == LIBSSH2_ERROR_EAGAIN)
                 {
@@ -402,7 +476,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         }
         else
         {
-            socket = ConnectSocket(options.host, options.port);
+            socket = ConnectSocket(options.host, options.port, stop_token, NewDeadline());
         }
         SessionPtr session(options.jump_host_id.empty()
                                ? libssh2_session_init()
@@ -420,7 +494,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             libssh2_session_callback_set2(session.get(), LIBSSH2_CALLBACK_SEND,
                                           reinterpret_cast<libssh2_cb_generic*>(ChannelSend));
         }
-        if (Retry(socket.value, session.get(), stop_token, [&] {
+        if (Retry(socket.value, session.get(), stop_token, NewDeadline(), "SSH 握手超时。", [&] {
                 return libssh2_session_handshake(session.get(), socket.value);
             }) != 0)
         {
@@ -460,7 +534,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         SendEvent({{"type", "status"}, {"status", "authenticating"}, {"message", "正在认证…"}});
         const auto auth_result = Authenticate(session.get(), socket.value, stop_token, options.username,
                                               options.password, options.private_key, options.passphrase,
-                                              options.use_agent);
+                                              options.use_agent, NewDeadline());
         if (auth_result != 0)
         {
             std::fill(options.password.begin(), options.password.end(), '\0');
@@ -491,8 +565,10 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         std::fill(options.passphrase.begin(), options.passphrase.end(), '\0');
 
         LIBSSH2_CHANNEL* raw_channel = nullptr;
+        const auto channel_deadline = NewDeadline();
         while (!stop_token.stop_requested() && !raw_channel)
         {
+            CheckConnectionDeadline(stop_token, channel_deadline, "打开 SSH Channel 超时。");
             raw_channel = libssh2_channel_open_session(session.get());
             if (!raw_channel && libssh2_session_last_errno(session.get()) == LIBSSH2_ERROR_EAGAIN)
             {
@@ -508,11 +584,12 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         }
         options.columns = ClampTerminalSize(options.columns, 100);
         options.rows = ClampTerminalSize(options.rows, 30);
-        if (Retry(socket.value, session.get(), stop_token, [&] {
+        if (Retry(socket.value, session.get(), stop_token, NewDeadline(), "请求 SSH PTY 超时。", [&] {
                 return libssh2_channel_request_pty_ex(channel.get(), "xterm-256color", 14, nullptr, 0,
                                                       options.columns, options.rows, 0, 0);
             }) != 0 ||
-            Retry(socket.value, session.get(), stop_token, [&] { return libssh2_channel_shell(channel.get()); }) != 0)
+            Retry(socket.value, session.get(), stop_token, NewDeadline(), "启动远程 Shell 超时。",
+                  [&] { return libssh2_channel_shell(channel.get()); }) != 0)
         {
             throw std::runtime_error(LastSessionError(session.get(), "无法启动远程 Shell。"));
         }
@@ -581,8 +658,10 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             if (std::chrono::steady_clock::now() - last_keepalive >= 20s)
             {
                 int seconds_to_next = 0;
-                libssh2_keepalive_send(session.get(), &seconds_to_next);
-                last_keepalive = std::chrono::steady_clock::now();
+                const auto keepalive_result = libssh2_keepalive_send(session.get(), &seconds_to_next);
+                if (keepalive_result < 0 && keepalive_result != LIBSSH2_ERROR_EAGAIN)
+                    throw std::runtime_error(LastSessionError(session.get(), "SSH 保活失败，连接已断开。"));
+                if (keepalive_result != LIBSSH2_ERROR_EAGAIN) last_keepalive = std::chrono::steady_clock::now();
             }
             if (!received)
             {

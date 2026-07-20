@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Drogon CONFIG REQUIRED)
+find_package(c-ares CONFIG REQUIRED)
 find_package(libssh2 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -64,6 +65,7 @@ add_executable(space-station
         src/http/http_server.cpp
         src/logging/logger.cpp
         src/ssh/ssh_session.cpp
+        src/ssh/network_utils.cpp
         src/ssh/sftp_service.cpp
         src/ssh/ssh_websocket.cpp
         src/transfer/transfer_manager.cpp
@@ -77,6 +79,7 @@ target_include_directories(space-station
 target_link_libraries(space-station
         PRIVATE
         Drogon::Drogon
+        c-ares::cares
         nlohmann_json::nlohmann_json
         unofficial::sqlite3::sqlite3
         OpenSSL::Crypto
@@ -113,6 +116,13 @@ if (BUILD_TESTING)
             unofficial::sqlite3::sqlite3
             OpenSSL::Crypto)
     add_test(NAME config-store-vault-test COMMAND config-store-vault-test)
+
+    add_executable(ssh-network-utils-test
+            tests/ssh_network_utils_test.cpp
+            src/ssh/network_utils.cpp)
+    target_include_directories(ssh-network-utils-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(ssh-network-utils-test PRIVATE c-ares::cares)
+    add_test(NAME ssh-network-utils-test COMMAND ssh-network-utils-test)
 endif ()
 
 if (WIN32)

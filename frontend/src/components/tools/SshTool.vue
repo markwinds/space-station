@@ -23,30 +23,32 @@
         <input ref="configurationInput" type="file" accept="application/json,.json" @change="importConfiguration" />
       </div>
 
-      <div class="ssh-host-list">
-        <div v-if="loading" class="ssh-empty">正在载入主机…</div>
-        <div v-else-if="filteredHosts.length === 0" class="ssh-empty">
-          暂无主机
-          <n-button text type="primary" @click="openHostEditor()">添加第一台</n-button>
+      <n-scrollbar class="ssh-host-scroll" trigger="none" :theme-overrides="hostScrollbarTheme">
+        <div class="ssh-host-list">
+          <div v-if="loading" class="ssh-empty">正在载入主机…</div>
+          <div v-else-if="filteredHosts.length === 0" class="ssh-empty">
+            暂无主机
+            <n-button text type="primary" @click="openHostEditor()">添加第一台</n-button>
+          </div>
+          <button
+            v-for="host in filteredHosts"
+            :key="host.id"
+            class="ssh-host"
+            type="button"
+            @click="openCredentials(host)"
+            @contextmenu.prevent="openHostEditor(host)"
+          >
+            <span class="ssh-host-icon">{{ host.name.slice(0, 1).toUpperCase() }}</span>
+            <span class="ssh-host-copy">
+              <strong>{{ host.name }}</strong>
+              <small>{{ host.username }}@{{ host.host }}:{{ host.port }}</small>
+            </span>
+            <n-button class="ssh-edit-button" secondary circle size="small" aria-label="编辑主机" @click.stop="openHostEditor(host)">
+              <template #icon><n-icon><CreateOutline /></n-icon></template>
+            </n-button>
+          </button>
         </div>
-        <button
-          v-for="host in filteredHosts"
-          :key="host.id"
-          class="ssh-host"
-          type="button"
-          @click="openCredentials(host)"
-          @contextmenu.prevent="openHostEditor(host)"
-        >
-          <span class="ssh-host-icon">{{ host.name.slice(0, 1).toUpperCase() }}</span>
-          <span class="ssh-host-copy">
-            <strong>{{ host.name }}</strong>
-            <small>{{ host.username }}@{{ host.host }}:{{ host.port }}</small>
-          </span>
-          <n-button class="ssh-edit-button" secondary circle size="small" aria-label="编辑主机" @click.stop="openHostEditor(host)">
-            <template #icon><n-icon><CreateOutline /></n-icon></template>
-          </n-button>
-        </button>
-      </div>
+      </n-scrollbar>
     </aside>
 
     <main class="ssh-workspace">
@@ -324,6 +326,17 @@
           <n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" />
         </n-form-item>
         <p class="ssh-field-hint">录制内容仅保存在当前浏览器标签内；达到上限后会停止追加并提示。</p>
+        <n-form-item class="ssh-settings-recording" label="剪贴板操作">
+          <div class="ssh-settings-switches">
+            <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
+            <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+            <div class="ssh-clipboard-permission">
+              <span>读取权限：{{ clipboardPermissionLabel }}</span>
+              <n-button size="small" secondary :loading="clipboardPermissionState === 'checking'" @click="requestClipboardAccess">检测/授权</n-button>
+            </div>
+          </div>
+        </n-form-item>
+        <p class="ssh-field-hint">已授权时右键自动粘贴；无权限时保留浏览器原生右键菜单。不会额外发送回车，但多行内容仍可能被远程 Shell 执行。</p>
       </n-form>
       <template #footer>
         <div class="ssh-dialog-actions ssh-dialog-actions--end">
@@ -354,6 +367,7 @@ import {
   NInput,
   NInputNumber,
   NModal,
+  NScrollbar,
   NSelect,
   NTabPane,
   NTabs,
@@ -363,6 +377,7 @@ import {
   type UploadFileInfo,
 } from "naive-ui";
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { writeClipboard } from "@/utils/clipboard";
 import {
   deleteSshCredential,
   fetchSshHosts,
@@ -411,11 +426,17 @@ interface TerminalTab {
   searchCountTimer?: number;
   searchMatches: Array<Array<{ row: number; column: number; width: number }>>;
   searchOverlay?: HTMLElement;
+  clipboardCleanup?: () => void;
 }
 
 interface CommandSnippet { id: string; name: string; command: string; pinned?: boolean }
 
-interface TerminalSettings { scrollbackLines: number; recordingMaxMiB: number }
+interface TerminalSettings {
+  scrollbackLines: number;
+  recordingMaxMiB: number;
+  copyOnSelect: boolean;
+  pasteOnRightClick: boolean;
+}
 
 interface CredentialData {
   method: string;
@@ -430,6 +451,8 @@ interface FingerprintRequest {
   port: number;
   fingerprint: string;
 }
+
+type ClipboardReadState = PermissionState | "checking" | "available" | "unsupported" | "insecure";
 
 const message = useMessage();
 const hosts = ref<SshHost[]>([]);
@@ -459,6 +482,10 @@ const terminalSettingsDraft = reactive<TerminalSettings>({ ...terminalSettings }
 const showTerminalSettings = ref(false);
 const terminalElements = new Map<string, HTMLElement>();
 const credentialCache = new Map<string, CredentialData>();
+let clipboardWarningShown = false;
+let clipboardFallbackHintShown = false;
+let clipboardPermissionStatus: PermissionStatus | undefined;
+const clipboardPermissionState = ref<ClipboardReadState>("checking");
 const keyword = ref("");
 const loading = ref(true);
 const saving = ref(false);
@@ -478,6 +505,13 @@ const credentialDraft = reactive({
   persist: false,
 });
 const dialogStyle = { width: "var(--ssh-dialog-width)" };
+const hostScrollbarTheme = {
+  width: "7px",
+  borderRadius: "999px",
+  color: "#527c7a",
+  colorHover: "#83b3af",
+  railColor: "#151b20",
+};
 const terminalSearchOptions = {
   caseSensitive: false,
 };
@@ -493,6 +527,15 @@ const jumpHostOptions = computed(() => hosts.value
   .map((host) => ({ label: `${host.name} (${host.username}@${host.host})`, value: host.id })));
 const hostOptions = computed(() => hosts.value.map((host) => ({ label: host.name, value: host.id })));
 const pinnedSnippets = computed(() => snippets.value.filter((snippet) => snippet.pinned !== false));
+const clipboardPermissionLabel = computed(() => ({
+  checking: "检测中",
+  granted: "已允许",
+  available: "当前会话可用",
+  prompt: "等待授权",
+  denied: "已拒绝",
+  unsupported: "浏览器按次确认",
+  insecure: "当前页面不安全",
+})[clipboardPermissionState.value]);
 
 watch(searchQuery, (value) => {
   if (!showSearch.value) return;
@@ -506,9 +549,11 @@ watch(searchQuery, (value) => {
 
 onMounted(() => {
   void loadHosts();
+  void refreshClipboardPermission();
   window.addEventListener("keydown", handleGlobalShortcut);
 });
 onBeforeUnmount(() => {
+  if (clipboardPermissionStatus) clipboardPermissionStatus.onchange = null;
   window.removeEventListener("keydown", handleGlobalShortcut);
   tabs.value.forEach(disposeTab);
 });
@@ -760,6 +805,7 @@ function initializeTerminal(tab: TerminalTab) {
   terminal.onData((data) => {
     if (tab.socket.readyState === WebSocket.OPEN) tab.socket.send(new TextEncoder().encode(data));
   });
+  setupTerminalClipboard(tab, terminal, element);
   terminal.onScroll(() => renderSearchOverlay(tab));
   const resizeObserver = new ResizeObserver(() => {
     fitAddon.fit();
@@ -773,6 +819,114 @@ function initializeTerminal(tab: TerminalTab) {
   tab.serializeAddon = serializeAddon;
   tab.webglAddon = webglAddon;
   tab.resizeObserver = resizeObserver;
+}
+
+function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: HTMLElement) {
+  const copySelection = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    if (!terminalSettings.copyOnSelect || !terminal.hasSelection()) return;
+    const selection = terminal.getSelection();
+    if (!selection) return;
+    void writeClipboard(selection).then((success) => {
+      if (!success) warnClipboardAccess("浏览器不允许自动写入剪贴板，请检查站点权限");
+    });
+  };
+  const pasteClipboard = (event: MouseEvent) => {
+    if (!terminalSettings.pasteOnRightClick) return;
+    if (tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") {
+      message.warning("SSH 尚未连接，无法粘贴");
+      return;
+    }
+    if (!["granted", "available"].includes(clipboardPermissionState.value) || !navigator.clipboard?.readText) {
+      terminal.focus();
+      if (!clipboardFallbackHintShown) {
+        clipboardFallbackHintShown = true;
+        message.info("剪贴板读取尚未授权，已保留原生右键菜单，请选择“粘贴”或使用粘贴快捷键");
+      }
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void navigator.clipboard.readText()
+      .then((text) => {
+        if (text) terminal.paste(text);
+        if (clipboardPermissionState.value !== "granted") clipboardPermissionState.value = "available";
+        terminal.focus();
+      })
+      .catch((error: unknown) => {
+        clipboardPermissionState.value = "prompt";
+        message.error(`${describeClipboardError(error)}；下次右键将使用浏览器原生粘贴菜单`);
+      });
+  };
+  element.addEventListener("pointerup", copySelection);
+  element.addEventListener("contextmenu", pasteClipboard, true);
+  tab.clipboardCleanup = () => {
+    element.removeEventListener("pointerup", copySelection);
+    element.removeEventListener("contextmenu", pasteClipboard, true);
+  };
+}
+
+function warnClipboardAccess(content: string) {
+  if (clipboardWarningShown) return;
+  clipboardWarningShown = true;
+  message.warning(content);
+}
+
+function describeClipboardError(error: unknown) {
+  if (error instanceof DOMException) return `剪贴板读取失败（${error.name}: ${error.message}）`;
+  if (error instanceof Error) return `剪贴板读取失败（${error.message}）`;
+  return "浏览器不允许读取剪贴板";
+}
+
+async function refreshClipboardPermission() {
+  if (clipboardPermissionStatus) clipboardPermissionStatus.onchange = null;
+  clipboardPermissionStatus = undefined;
+  if (!window.isSecureContext) {
+    clipboardPermissionState.value = "insecure";
+    return;
+  }
+  if (!navigator.clipboard?.readText || !navigator.permissions?.query) {
+    clipboardPermissionState.value = "unsupported";
+    return;
+  }
+  clipboardPermissionState.value = "checking";
+  try {
+    const status = await navigator.permissions.query({ name: "clipboard-read" as PermissionName });
+    clipboardPermissionStatus = status;
+    clipboardPermissionState.value = status.state;
+    status.onchange = () => {
+      clipboardPermissionState.value = status.state;
+      if (status.state === "granted") clipboardFallbackHintShown = false;
+    };
+  } catch {
+    clipboardPermissionState.value = "unsupported";
+  }
+}
+
+async function requestClipboardAccess() {
+  if (!window.isSecureContext) {
+    message.error("当前页面不是浏览器认可的安全上下文，请使用受信任的 HTTPS 地址");
+    return;
+  }
+  if (!navigator.clipboard?.readText) {
+    message.error("当前浏览器不支持读取剪贴板，请使用原生粘贴菜单或快捷键");
+    return;
+  }
+  try {
+    await navigator.clipboard.readText();
+    await refreshClipboardPermission();
+    if (clipboardPermissionState.value === "granted") {
+      clipboardFallbackHintShown = false;
+      message.success("剪贴板读取权限已允许，右键可以自动粘贴");
+    } else {
+      clipboardPermissionState.value = "available";
+      clipboardFallbackHintShown = false;
+      message.success("剪贴板读取成功，当前页面会话中将优先尝试右键自动粘贴");
+    }
+  } catch (error) {
+    await refreshClipboardPermission();
+    message.error(describeClipboardError(error));
+  }
 }
 
 function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
@@ -1180,12 +1334,14 @@ function normalizeRecordingText(value: string) {
 }
 
 function loadTerminalSettings(): TerminalSettings {
-  const defaults: TerminalSettings = { scrollbackLines: 50000, recordingMaxMiB: 50 };
+  const defaults: TerminalSettings = { scrollbackLines: 50000, recordingMaxMiB: 50, copyOnSelect: false, pasteOnRightClick: false };
   try {
     const saved = JSON.parse(localStorage.getItem("ssh-terminal-settings") || "{}") as Partial<TerminalSettings>;
     return {
       scrollbackLines: clampNumber(saved.scrollbackLines, 1000, 500000, defaults.scrollbackLines),
       recordingMaxMiB: clampNumber(saved.recordingMaxMiB, 1, 500, defaults.recordingMaxMiB),
+      copyOnSelect: saved.copyOnSelect === true,
+      pasteOnRightClick: saved.pasteOnRightClick === true,
     };
   } catch {
     return defaults;
@@ -1200,11 +1356,14 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 function openTerminalSettings() {
   Object.assign(terminalSettingsDraft, terminalSettings);
   showTerminalSettings.value = true;
+  void refreshClipboardPermission();
 }
 
 function saveTerminalSettings() {
   terminalSettings.scrollbackLines = clampNumber(terminalSettingsDraft.scrollbackLines, 1000, 500000, 50000);
   terminalSettings.recordingMaxMiB = clampNumber(terminalSettingsDraft.recordingMaxMiB, 1, 500, 50);
+  terminalSettings.copyOnSelect = terminalSettingsDraft.copyOnSelect === true;
+  terminalSettings.pasteOnRightClick = terminalSettingsDraft.pasteOnRightClick === true;
   Object.assign(terminalSettingsDraft, terminalSettings);
   localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
   showTerminalSettings.value = false;
@@ -1306,6 +1465,8 @@ async function importConfiguration(event: Event) {
     if (data.terminalSettings) {
       terminalSettings.scrollbackLines = clampNumber(data.terminalSettings.scrollbackLines, 1000, 500000, terminalSettings.scrollbackLines);
       terminalSettings.recordingMaxMiB = clampNumber(data.terminalSettings.recordingMaxMiB, 1, 500, terminalSettings.recordingMaxMiB);
+      if (typeof data.terminalSettings.copyOnSelect === "boolean") terminalSettings.copyOnSelect = data.terminalSettings.copyOnSelect;
+      if (typeof data.terminalSettings.pasteOnRightClick === "boolean") terminalSettings.pasteOnRightClick = data.terminalSettings.pasteOnRightClick;
       localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
     }
     persistSnippets();
@@ -1375,6 +1536,7 @@ function closeTab(id: string) {
 
 function disposeTab(tab: TerminalTab) {
   if (tab.searchCountTimer) window.clearTimeout(tab.searchCountTimer);
+  tab.clipboardCleanup?.();
   tab.searchOverlay?.remove();
   tab.resizeObserver?.disconnect();
   tab.webglAddon?.dispose();
@@ -1390,14 +1552,15 @@ function disposeTab(tab: TerminalTab) {
 </script>
 
 <style scoped>
-.ssh-app { height: 100dvh; display: grid; grid-template-columns: 280px minmax(0, 1fr); background: #101418; color: #d8dee9; }
-.ssh-sidebar { min-width: 0; padding: 14px; display: flex; flex-direction: column; gap: 14px; border-right: 1px solid #27313a; background: #171d22; }
+.ssh-app { height: 100dvh; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); overflow: hidden; background: #101418; color: #d8dee9; }
+.ssh-sidebar { box-sizing: border-box; min-width: 0; min-height: 0; height: 100%; padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; border-right: 1px solid #27313a; background: #171d22; }
 .ssh-brand-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .ssh-brand-row strong, .ssh-brand-row small { display: block; }
 .ssh-brand-row small { margin-top: 2px; color: #7f8d99; font-size: 11px; }
 .ssh-home { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: #79a8a5; color: #101418; font-weight: 900; text-decoration: none; }
-.ssh-host-list { min-height: 0; display: flex; flex-direction: column; gap: 5px; overflow: auto; }
-.ssh-host { width: 100%; padding: 9px; display: grid; grid-template-columns: 34px minmax(0, 1fr) 30px; align-items: center; gap: 9px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.ssh-host-scroll { min-height: 0; flex: 1 1 0; }
+.ssh-host-list { min-height: 100%; padding-right: 9px; display: flex; flex-direction: column; gap: 5px; }
+.ssh-host { width: 100%; flex: 0 0 auto; padding: 9px; display: grid; grid-template-columns: 34px minmax(0, 1fr) 30px; align-items: center; gap: 9px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .ssh-host:hover { background: #222b32; }
 .ssh-host-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; background: #293740; color: #9fc4c2; font-weight: 800; }
 .ssh-host-copy { min-width: 0; }
@@ -1489,6 +1652,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-recording-options { display: grid; gap: 12px; }
 .ssh-recording-options p { margin: 4px 0 0; color: #687783; font-size: 12px; }
 .ssh-settings-recording { margin-top: 18px; }
+.ssh-settings-switches { display: grid; gap: 10px; }
+.ssh-clipboard-permission { padding-top: 2px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #687783; font-size: 12px; }
 .ssh-fingerprint { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 10px; margin: 18px 0 0; }
 .ssh-fingerprint dt { color: #637382; }
 .ssh-fingerprint dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
