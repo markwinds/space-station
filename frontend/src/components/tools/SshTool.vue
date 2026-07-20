@@ -51,39 +51,47 @@
 
     <main class="ssh-workspace">
       <div class="ssh-tabs">
-        <n-button class="ssh-mobile-hosts" quaternary size="small" @click="activeTabId = ''">
-          <template #icon><n-icon><MenuOutline /></n-icon></template>
-          主机
-        </n-button>
-        <button
-          v-for="tab in tabs"
-          :key="tab.id"
-          type="button"
-          class="ssh-tab"
-          :class="{ active: tab.id === activeTabId }"
-          @click="activateTab(tab.id)"
-        >
-          <span class="ssh-status-dot" :class="tab.status" />
-          <span>{{ tab.host.name }}</span>
-          <n-icon class="ssh-tab-close" size="14" @click.stop="closeTab(tab.id)"><CloseOutline /></n-icon>
-        </button>
-        <span class="ssh-tabs-spacer" />
-        <div v-if="activeTab" class="ssh-pane-switch">
-          <button type="button" :class="{ active: activePane === 'terminal' }" @click="showTerminalPane">终端</button>
-          <button type="button" :class="{ active: activePane === 'sftp' }" @click="activePane = 'sftp'">文件</button>
+        <div class="ssh-tab-list" @wheel="handleTabListWheel" @dragover.prevent="handleTabListDragOver">
+          <n-button class="ssh-mobile-hosts" quaternary size="small" @click="activeTabId = ''">
+            <template #icon><n-icon><MenuOutline /></n-icon></template>
+            主机
+          </n-button>
+          <button
+            v-for="tab in tabs"
+            :key="tab.id"
+            type="button"
+            class="ssh-tab"
+            :class="{ active: tab.id === activeTabId, dragging: draggedTabId === tab.id }"
+            draggable="true"
+            @click="activateTab(tab.id)"
+            @dragstart="handleTabDragStart($event, tab.id)"
+            @dragover.prevent
+            @drop.prevent="handleTabDrop($event, tab.id)"
+            @dragend="draggedTabId = ''"
+          >
+            <span class="ssh-status-dot" :class="tab.status" />
+            <span>{{ tab.host.name }}</span>
+            <n-icon class="ssh-tab-close" size="14" @click.stop="closeTab(tab.id)"><CloseOutline /></n-icon>
+          </button>
         </div>
-        <n-button v-if="activeTab && (activeTab.status === 'closed' || activeTab.status === 'error')" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
-        <n-button v-if="activeTab && activePane === 'terminal'" secondary size="tiny" @click="openSearch">搜索</n-button>
-        <n-button v-if="activeTab && activePane === 'terminal'" secondary size="tiny" @click="openSnippets">片段</n-button>
-        <n-button
-          v-if="activeTab && activePane === 'terminal'"
-          secondary
-          size="tiny"
-          :type="activeTab.recording ? 'error' : 'default'"
-          @click="toggleRecording(activeTab)"
-        >{{ activeTab.recording ? '停止录制' : '录制' }}</n-button>
-        <span v-if="activeTab" class="ssh-status-text">{{ activeTab.message }}</span>
-        <span v-if="activeTab && activePane === 'terminal'" class="ssh-renderer" :class="activeTab.renderer">{{ activeTab.renderer === 'webgl' ? 'GPU' : 'Canvas' }}</span>
+        <div v-if="activeTab" class="ssh-tab-actions">
+          <div class="ssh-pane-switch">
+            <button type="button" :class="{ active: activePane === 'terminal' }" @click="showTerminalPane">终端</button>
+            <button type="button" :class="{ active: activePane === 'sftp' }" @click="activePane = 'sftp'">文件</button>
+          </div>
+          <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
+          <n-button v-if="activePane === 'terminal'" secondary size="tiny" @click="openSearch">搜索</n-button>
+          <n-button v-if="activePane === 'terminal'" secondary size="tiny" @click="openSnippets">片段</n-button>
+          <n-button
+            v-if="activePane === 'terminal'"
+            secondary
+            size="tiny"
+            :type="activeTab.recording ? 'error' : 'default'"
+            @click="toggleRecording(activeTab)"
+          >{{ activeTab.recording ? '停止录制' : '录制' }}</n-button>
+          <span v-if="activePane === 'terminal'" class="ssh-renderer" :class="activeTab.renderer">{{ activeTab.renderer === 'webgl' ? 'GPU' : 'Canvas' }}</span>
+          <span class="ssh-status-text" :class="activeTab.status">{{ activeTab.message }}</span>
+        </div>
       </div>
 
       <div v-if="activeTab && activePane === 'terminal' && showSearch" class="ssh-search-bar">
@@ -427,6 +435,7 @@ const message = useMessage();
 const hosts = ref<SshHost[]>([]);
 const tabs = ref<TerminalTab[]>([]);
 const activeTabId = ref("");
+const draggedTabId = ref("");
 const activePane = ref<"terminal" | "sftp">("terminal");
 const showSearch = ref(false);
 const searchQuery = ref("");
@@ -860,6 +869,44 @@ function activateTab(id: string) {
   });
 }
 
+function handleTabDragStart(event: DragEvent, id: string) {
+  draggedTabId.value = id;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", id);
+  }
+}
+
+function handleTabListWheel(event: WheelEvent) {
+  const element = event.currentTarget as HTMLElement;
+  if (element.scrollWidth <= element.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+  event.preventDefault();
+  element.scrollLeft += event.deltaY;
+}
+
+function handleTabListDragOver(event: DragEvent) {
+  const element = event.currentTarget as HTMLElement;
+  const bounds = element.getBoundingClientRect();
+  const edgeSize = Math.min(48, bounds.width / 4);
+  if (event.clientX < bounds.left + edgeSize) element.scrollLeft -= 18;
+  else if (event.clientX > bounds.right - edgeSize) element.scrollLeft += 18;
+}
+
+function handleTabDrop(event: DragEvent, targetId: string) {
+  const sourceId = draggedTabId.value || event.dataTransfer?.getData("text/plain") || "";
+  if (!sourceId || sourceId === targetId) return;
+  const sourceIndex = tabs.value.findIndex((tab) => tab.id === sourceId);
+  if (sourceIndex < 0) return;
+  const targetElement = event.currentTarget as HTMLElement;
+  const targetBounds = targetElement.getBoundingClientRect();
+  const insertAfter = event.clientX > targetBounds.left + targetBounds.width / 2;
+  const [sourceTab] = tabs.value.splice(sourceIndex, 1);
+  let targetIndex = tabs.value.findIndex((tab) => tab.id === targetId);
+  if (insertAfter) targetIndex += 1;
+  tabs.value.splice(Math.max(0, targetIndex), 0, sourceTab);
+  draggedTabId.value = "";
+}
+
 function showTerminalPane() {
   activePane.value = "terminal";
   nextTick(() => {
@@ -1060,7 +1107,8 @@ function toggleRecording(tab: TerminalTab) {
     : normalizeRecordingText(tab.recordingStripAnsi ? stripAnsi(tab.recordingContent) : tab.recordingContent);
   const startedAt = tab.recordingStartedAt ? formatRecordingTime(new Date(tab.recordingStartedAt)) : "";
   const content = `# ${tab.host.name} ${startedAt}\n${body}`;
-  downloadText(`${safeFilename(tab.host.name)}-${Date.now()}.log`, content, "text/plain");
+  const filenameTime = formatFilenameTimestamp(tab.recordingStartedAt ? new Date(tab.recordingStartedAt) : new Date());
+  downloadText(`${safeFilename(tab.host.name)}-${filenameTime}.log`, content, "text/plain");
   tab.recordingContent = "";
   tab.recordingEntries = [];
   tab.recordingDecoder = undefined;
@@ -1116,6 +1164,15 @@ function formatTimestampedRecording(entries: Array<{ at: Date; data: string }>, 
 function formatRecordingTime(value: Date) {
   const pad = (part: number, length = 2) => String(part).padStart(length, "0");
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}.${pad(value.getMilliseconds(), 3)}`;
+}
+
+function formatFilenameTimestamp(value: Date) {
+  const pad = (part: number, length = 2) => String(part).padStart(length, "0");
+  const offsetMinutes = -value.getTimezoneOffset();
+  const offsetSign = offsetMinutes >= 0 ? "+" : "-";
+  const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60);
+  const offsetRemainder = Math.abs(offsetMinutes) % 60;
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}-${pad(value.getMinutes())}-${pad(value.getSeconds())}.${pad(value.getMilliseconds(), 3)}${offsetSign}${pad(offsetHours)}-${pad(offsetRemainder)}`;
 }
 
 function normalizeRecordingText(value: string) {
@@ -1350,19 +1407,22 @@ function disposeTab(tab: TerminalTab) {
 .ssh-edit-button:hover { color: #101418; background: #9bc7c4; }
 .ssh-empty { padding: 28px 8px; display: grid; justify-items: center; gap: 8px; color: #7f8d99; font-size: 13px; }
 .ssh-workspace { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); }
-.ssh-tabs { min-width: 0; display: flex; align-items: stretch; border-bottom: 1px solid #27313a; background: #151a1f; overflow-x: auto; }
+.ssh-tabs { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid #27313a; background: #151a1f; overflow: hidden; }
 .ssh-tabs :deep(.n-button--secondary) { color: #e4edf2; background: #34434e; border-color: #536570; }
 .ssh-tabs :deep(.n-button--secondary:hover) { color: #101418; background: #9bc7c4; }
+.ssh-tab-list { min-width: 0; display: flex; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.ssh-tab-list::-webkit-scrollbar, .ssh-tab-actions::-webkit-scrollbar { display: none; }
+.ssh-tab-actions { max-width: 70vw; padding: 0 4px; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; background: #151a1f; box-shadow: -8px 0 12px #101418aa; }
 .ssh-mobile-hosts { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
 .ssh-tab.active { border-bottom-color: #79a8a5; background: #101418; color: #e5e9ef; }
+.ssh-tab.dragging { opacity: .45; }
 .ssh-tab span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ssh-tab-close { margin-left: auto; flex: 0 0 auto; }
 .ssh-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #87909a; }
 .ssh-status-dot.connecting, .ssh-status-dot.authenticating { background: #e4b860; }
 .ssh-status-dot.connected { background: #66bd83; }
 .ssh-status-dot.error { background: #e06c75; }
-.ssh-tabs-spacer { flex: 1 0 20px; }
 .ssh-pane-switch { align-self: center; margin: 0 4px; padding: 2px; display: flex; border: 1px solid #2b3740; border-radius: 6px; background: #101418; }
 .ssh-pane-switch button { padding: 3px 9px; border: 0; border-radius: 4px; background: transparent; color: #7f8d99; font-size: 12px; cursor: pointer; }
 .ssh-pane-switch button.active { background: #2b3a42; color: #dce4e9; }
@@ -1376,9 +1436,13 @@ function disposeTab(tab: TerminalTab) {
 .ssh-config-actions :deep(.n-button) { color: #d5dfe5; background: #26323a; border-color: #41515d; }
 .ssh-config-actions :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
 .ssh-config-actions input { display: none; }
-.ssh-renderer { align-self: center; padding: 2px 6px; border: 1px solid #3c4851; border-radius: 4px; color: #8c9aa4; font: 10px/1.4 monospace; }
+.ssh-renderer, .ssh-status-text { align-self: center; padding: 2px 6px; border: 1px solid #3c4851; border-radius: 4px; color: #8c9aa4; font: 10px/1.4 monospace; white-space: nowrap; }
 .ssh-renderer.webgl { border-color: #3b7256; color: #76cf96; background: #193124; }
-.ssh-status-text { align-self: center; padding: 0 14px; color: #7f8d99; font-size: 12px; white-space: nowrap; }
+.ssh-status-text { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.ssh-status-text.connected { border-color: #3b7256; color: #76cf96; background: #193124; }
+.ssh-status-text.connecting, .ssh-status-text.authenticating { border-color: #816b35; color: #e4c36e; background: #382e18; }
+.ssh-status-text.error { border-color: #814751; color: #f08a95; background: #381d22; }
+.ssh-status-text.closed { border-color: #56616a; color: #a8b2ba; background: #252c31; }
 .ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
 .ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; padding: 8px 8px 12px; overflow: hidden; background: #101418; }
 .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport) { height: 100%; }
@@ -1435,6 +1499,8 @@ function disposeTab(tab: TerminalTab) {
   .ssh-app:not(.ssh-app--terminal-open) .ssh-workspace { display: none; }
   .ssh-app--terminal-open .ssh-sidebar { display: none; }
   .ssh-workspace { width: 100%; }
+  .ssh-tabs { grid-template-columns: minmax(74px, 1fr) auto; }
+  .ssh-tab-actions { max-width: calc(100vw - 74px); }
   .ssh-mobile-hosts { display: inline-flex; flex: 0 0 auto; margin: 4px; }
   .ssh-status-text { display: none; }
   .ssh-form-grid, .ssh-form-grid--connection { grid-template-columns: 1fr; gap: 0; }
