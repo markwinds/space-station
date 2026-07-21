@@ -910,8 +910,23 @@ void ConfigStore::SaveSshHosts(const nlohmann::json& json)
                 {"username", username},
                 {"group", item.value("group", "")},
                 {"hostKeySha256", item.value("hostKeySha256", "")},
+                {"useAgent", item.value("useAgent", false)},
+                {"jumpHostId", item.value("jumpHostId", "")},
             });
         }
+    }
+    for (const auto& host : hosts)
+    {
+        const auto id = host.value("id", "");
+        const auto jump_host_id = host.value("jumpHostId", "");
+        if (jump_host_id.empty()) continue;
+        if (jump_host_id == id) throw std::runtime_error("SSH 主机不能将自己设置为跳板机。");
+        if (!ids.contains(jump_host_id)) throw std::runtime_error("SSH 主机引用的跳板机不存在。");
+        const auto jump_host = std::find_if(hosts.begin(), hosts.end(), [&](const auto& candidate) {
+            return candidate.value("id", "") == jump_host_id;
+        });
+        if (jump_host != hosts.end() && !jump_host->value("jumpHostId", "").empty())
+            throw std::runtime_error("当前只支持单层跳板，跳板机自身不能再配置跳板机。");
     }
     SaveBusinessJsonUnlocked("sshHosts", hosts);
     auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());

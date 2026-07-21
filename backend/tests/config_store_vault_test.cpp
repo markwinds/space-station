@@ -14,6 +14,20 @@ void Expect(bool condition, const char* message)
         throw std::runtime_error(message);
     }
 }
+
+template <typename Action>
+void ExpectThrows(Action&& action, const char* message)
+{
+    try
+    {
+        action();
+    }
+    catch (const std::exception&)
+    {
+        return;
+    }
+    throw std::runtime_error(message);
+}
 } // namespace
 
 int main()
@@ -40,6 +54,60 @@ int main()
         Expect(std::filesystem::file_size(key) == 32, "vault key has the wrong size");
         store.DeleteSshCredential("host-1");
         Expect(!store.HasSshCredential("host-1"), "credential was not deleted");
+
+        store.SaveSshHosts(nlohmann::json::array({
+            {
+                {"id", "jump-1"},
+                {"name", "Jump"},
+                {"host", "192.0.2.10"},
+                {"port", 22},
+                {"username", "jump-user"},
+                {"useAgent", true},
+            },
+            {
+                {"id", "target-1"},
+                {"name", "Target"},
+                {"host", "192.0.2.20"},
+                {"port", 22},
+                {"username", "target-user"},
+                {"jumpHostId", "jump-1"},
+            },
+        }));
+        const auto hosts = store.LoadSshHosts();
+        Expect(hosts.size() == 2, "SSH hosts were not saved");
+        Expect(hosts[0].value("useAgent", false), "SSH agent setting was not persisted");
+        Expect(hosts[1].value("jumpHostId", "") == "jump-1", "jump host setting was not persisted");
+
+        ExpectThrows([&] {
+            store.SaveSshHosts(nlohmann::json::array({{
+                {"id", "self"},
+                {"name", "Self"},
+                {"host", "192.0.2.30"},
+                {"port", 22},
+                {"username", "root"},
+                {"jumpHostId", "self"},
+            }}));
+        }, "self-referencing jump host was accepted");
+        ExpectThrows([&] {
+            store.SaveSshHosts(nlohmann::json::array({
+                {
+                    {"id", "first"},
+                    {"name", "First"},
+                    {"host", "192.0.2.40"},
+                    {"port", 22},
+                    {"username", "root"},
+                    {"jumpHostId", "second"},
+                },
+                {
+                    {"id", "second"},
+                    {"name", "Second"},
+                    {"host", "192.0.2.50"},
+                    {"port", 22},
+                    {"username", "root"},
+                    {"jumpHostId", "first"},
+                },
+            }));
+        }, "nested jump hosts were accepted");
         std::filesystem::remove_all(root);
         return 0;
     }

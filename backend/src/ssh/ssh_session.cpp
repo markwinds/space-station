@@ -289,10 +289,9 @@ LIBSSH2_RECV_FUNC(ChannelReceive)
 {
     const auto channel = static_cast<LIBSSH2_CHANNEL*>(*abstract);
     const auto result = libssh2_channel_read(channel, static_cast<char*>(buffer), length);
-    if (result == LIBSSH2_ERROR_EAGAIN)
+    if (result == LIBSSH2_ERROR_EAGAIN || result == LIBSSH2_ERROR_TIMEOUT)
     {
-        errno = EAGAIN;
-        return -1;
+        return -EAGAIN;
     }
     return result;
 }
@@ -301,10 +300,9 @@ LIBSSH2_SEND_FUNC(ChannelSend)
 {
     const auto channel = static_cast<LIBSSH2_CHANNEL*>(*abstract);
     const auto result = libssh2_channel_write(channel, static_cast<const char*>(buffer), length);
-    if (result == LIBSSH2_ERROR_EAGAIN)
+    if (result == LIBSSH2_ERROR_EAGAIN || result == LIBSSH2_ERROR_TIMEOUT)
     {
-        errno = EAGAIN;
-        return -1;
+        return -EAGAIN;
     }
     return result;
 }
@@ -430,12 +428,18 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         SocketHandle socket;
         SessionPtr jump_session;
         ChannelPtr jump_channel;
+        std::string jump_host_name;
         if (!options.jump_host_id.empty())
         {
             nlohmann::json jump_host;
             for (const auto& candidate : config_store_.LoadSshHosts())
                 if (candidate.value("id", "") == options.jump_host_id) { jump_host = candidate; break; }
             if (!jump_host.is_object()) throw std::runtime_error("找不到配置的跳板机。");
+            jump_host_name = jump_host.value("name", jump_host.value("host", options.jump_host_id));
+            SendEvent({{"type", "status"}, {"status", "connecting"},
+                       {"message", "正在连接跳板机 " + jump_host_name + "…"}});
+            const auto route_message = "SSH route: target=" + options.host_id + " via=" + options.jump_host_id;
+            logI(route_message.c_str());
             const auto jump_fingerprint = jump_host.value("hostKeySha256", "");
             if (jump_fingerprint.empty()) throw std::runtime_error("请先直接连接并信任跳板机主机指纹。");
             const auto jump_credential = config_store_.LoadSshCredential(options.jump_host_id);
@@ -473,9 +477,19 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             }
             jump_channel.reset(raw_jump_channel);
             if (!jump_channel) throw std::runtime_error(LastSessionError(jump_session.get(), "跳板机无法打开目标连接。"));
+            // The inner libssh2 session uses this channel as its transport. Keep the
+            // outer transport blocking while the inner handshake is being built;
+            // otherwise an outer-channel EAGAIN can be interpreted by the inner
+            // banner reader as an early EOF/socket failure.
+            libssh2_session_set_timeout(jump_session.get(), 15000);
+            libssh2_session_set_blocking(jump_session.get(), 1);
+            SendEvent({{"type", "status"}, {"status", "connecting"},
+                       {"message", "正在通过 " + jump_host_name + " 连接目标主机…"}});
         }
         else
         {
+            const auto route_message = "SSH route: target=" + options.host_id + " direct";
+            logI(route_message.c_str());
             socket = ConnectSocket(options.host, options.port, stop_token, NewDeadline());
         }
         SessionPtr session(options.jump_host_id.empty()
@@ -485,7 +499,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         {
             throw std::runtime_error("无法创建 SSH 会话。");
         }
-        libssh2_session_set_blocking(session.get(), 0);
+        libssh2_session_set_blocking(session.get(), jump_channel ? 1 : 0);
         libssh2_session_set_timeout(session.get(), 15000);
         if (jump_channel)
         {
@@ -593,8 +607,14 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         {
             throw std::runtime_error(LastSessionError(session.get(), "无法启动远程 Shell。"));
         }
+        // Both nested sessions can now use non-blocking I/O. The custom transport
+        // callbacks return the callback API's required -EAGAIN value when the
+        // outer channel would block.
+        libssh2_session_set_blocking(session.get(), 0);
+        if (jump_session) libssh2_session_set_blocking(jump_session.get(), 0);
         libssh2_keepalive_config(session.get(), 1, 20);
-        SendEvent({{"type", "status"}, {"status", "connected"}, {"message", "已连接"}});
+        SendEvent({{"type", "status"}, {"status", "connected"},
+                   {"message", jump_host_name.empty() ? "已连接" : "已通过 " + jump_host_name + " 连接"}});
 
         std::string pending_input;
         std::size_t pending_offset = 0;

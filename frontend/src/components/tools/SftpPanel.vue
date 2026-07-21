@@ -129,7 +129,7 @@ import {
   fetchSftpDownloadStatus,
   listSftp,
   renameSftpItem,
-  sftpDownloadUrl,
+  streamSftpDownload,
   uploadSftpFile,
   type SftpItem,
   type SshHost,
@@ -403,15 +403,20 @@ function pumpDownloadQueue() {
   for (const download of activeDownloads.value) {
     if (running >= maximumConcurrentDownloads || download.status !== "queued") continue;
     download.status = "downloading";
-    const anchor = document.createElement("a");
-    anchor.href = sftpDownloadUrl(props.host.id, download.path, download.id);
-    anchor.download = download.name;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
+    void runDownload(download);
     running += 1;
   }
   ensureDownloadPolling();
+}
+
+async function runDownload(download: DownloadState) {
+  try {
+    await streamSftpDownload(props.host.id, download.path, download.id, download.name, (loaded) => {
+      if (!isFinished(download.status)) download.loaded = loaded;
+    });
+  } catch (error) {
+    finishDownload(download, "error", errorText(error, "下载失败"));
+  }
 }
 
 function ensureDownloadPolling() {

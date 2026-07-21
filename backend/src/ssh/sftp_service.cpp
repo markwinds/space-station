@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -186,27 +187,62 @@ using ChannelPtr = std::unique_ptr<LIBSSH2_CHANNEL, ChannelDeleter>;
 using SftpHandlePtr = std::unique_ptr<LIBSSH2_SFTP_HANDLE, SftpHandleDeleter>;
 using AgentPtr = std::unique_ptr<LIBSSH2_AGENT, AgentDeleter>;
 
+struct JumpTransport
+{
+    LIBSSH2_CHANNEL* channel = nullptr;
+    std::vector<char> pending_input;
+    std::size_t pending_offset = 0;
+};
+
 struct Connection
 {
     SocketHandle socket;
     SessionPtr jump_session;
     ChannelPtr jump_channel;
+    std::unique_ptr<JumpTransport> jump_transport;
     SessionPtr session;
     SftpPtr sftp;
 };
 
 LIBSSH2_RECV_FUNC(ChannelReceive)
 {
-    const auto result = libssh2_channel_read(static_cast<LIBSSH2_CHANNEL*>(*abstract), static_cast<char*>(buffer), length);
-    if (result == LIBSSH2_ERROR_EAGAIN) { errno = EAGAIN; return -1; }
+    const auto transport = static_cast<JumpTransport*>(*abstract);
+    if (transport->pending_offset < transport->pending_input.size())
+    {
+        const auto available = transport->pending_input.size() - transport->pending_offset;
+        const auto copied = std::min(length, available);
+        std::memcpy(buffer, transport->pending_input.data() + transport->pending_offset, copied);
+        transport->pending_offset += copied;
+        if (transport->pending_offset == transport->pending_input.size())
+        {
+            transport->pending_input.clear();
+            transport->pending_offset = 0;
+        }
+        return static_cast<ssize_t>(copied);
+    }
+    const auto result = libssh2_channel_read(transport->channel, static_cast<char*>(buffer), length);
+    if (result == LIBSSH2_ERROR_EAGAIN) return -EAGAIN;
     return result;
 }
 
 LIBSSH2_SEND_FUNC(ChannelSend)
 {
-    const auto result = libssh2_channel_write(static_cast<LIBSSH2_CHANNEL*>(*abstract), static_cast<const char*>(buffer), length);
-    if (result == LIBSSH2_ERROR_EAGAIN) { errno = EAGAIN; return -1; }
-    return result;
+    const auto transport = static_cast<JumpTransport*>(*abstract);
+    auto result = libssh2_channel_write(transport->channel, static_cast<const char*>(buffer), length);
+    if (result != LIBSSH2_ERROR_EAGAIN) return result;
+
+    // A direct-tcpip channel can be write-blocked until the outer SSH session
+    // receives a window-adjust/control packet. Pump it here and retain any
+    // tunneled target payload for the inner receive callback.
+    std::array<char, 32768> incoming{};
+    const auto received = libssh2_channel_read(transport->channel, incoming.data(), incoming.size());
+    if (received > 0)
+    {
+        transport->pending_input.insert(transport->pending_input.end(), incoming.data(), incoming.data() + received);
+        result = libssh2_channel_write(transport->channel, static_cast<const char*>(buffer), length);
+        if (result != LIBSSH2_ERROR_EAGAIN) return result;
+    }
+    return -EAGAIN;
 }
 
 void EnsureLibssh2Initialized()
@@ -415,6 +451,8 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
     if (!jump_host_id.empty())
     {
         const auto jump_host = FindHost(store, jump_host_id);
+        const auto route_message = "SFTP route: target=" + host_id + " via=" + jump_host_id;
+        logI(route_message.c_str());
         const auto jump_fingerprint = jump_host.value("hostKeySha256", "");
         if (jump_fingerprint.empty()) throw std::runtime_error("请先直接连接并信任跳板机主机指纹。");
         const auto jump_credential = store.LoadSshCredential(jump_host_id);
@@ -437,16 +475,20 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
                                                                     host.value("host", "").c_str(),
                                                                     std::clamp(host.value("port", 22), 1, 65535)));
         if (!connection.jump_channel) throw std::runtime_error(SessionError(connection.jump_session.get(), "跳板机无法打开目标连接。"));
+        connection.jump_transport = std::make_unique<JumpTransport>();
+        connection.jump_transport->channel = connection.jump_channel.get();
     }
     else
     {
+        const auto route_message = "SFTP route: target=" + host_id + " direct";
+        logI(route_message.c_str());
         connection.socket = ConnectSocket(host.value("host", ""), std::clamp(host.value("port", 22), 1, 65535),
                                           stop_token, deadline);
         SetSocketBlocking(connection.socket.value, true);
     }
     connection.session.reset(jump_host_id.empty()
                                  ? libssh2_session_init()
-                                 : libssh2_session_init_ex(nullptr, nullptr, nullptr, connection.jump_channel.get()));
+                                 : libssh2_session_init_ex(nullptr, nullptr, nullptr, connection.jump_transport.get()));
     if (!connection.session) throw std::runtime_error("无法创建 SFTP SSH 会话。");
     libssh2_session_set_blocking(connection.session.get(), 1);
     libssh2_session_set_timeout(connection.session.get(), 15000);
@@ -470,8 +512,14 @@ Connection OpenConnection(ConfigStore& store, const std::string& host_id, bool i
                          "SFTP SSH 认证失败。");
     if (initialize_sftp)
     {
+        if (connection.jump_channel)
+        {
+            SetSocketBlocking(connection.socket.value, false);
+            libssh2_session_set_blocking(connection.jump_session.get(), 0);
+        }
         connection.sftp.reset(libssh2_sftp_init(connection.session.get()));
-        if (!connection.sftp) throw std::runtime_error(SessionError(connection.session.get(), "SFTP 子系统启动失败。"));
+        if (!connection.sftp)
+            throw std::runtime_error(SessionError(connection.session.get(), "SFTP 子系统启动失败。"));
     }
     return connection;
 }

@@ -57,7 +57,10 @@
             <span class="ssh-host-icon">{{ host.name.slice(0, 1).toUpperCase() }}</span>
             <span class="ssh-host-copy">
               <strong>{{ host.name }}</strong>
-              <small>{{ host.username }}@{{ host.host }}:{{ host.port }}</small>
+              <small>
+                {{ host.username }}@{{ host.host }}:{{ host.port }}
+                <template v-if="jumpHostName(host)"> · 经 {{ jumpHostName(host) }}</template>
+              </small>
             </span>
             <n-button class="ssh-edit-button" secondary circle size="small" aria-label="编辑主机" @click.stop="openHostEditor(host)">
               <template #icon><n-icon><CreateOutline /></n-icon></template>
@@ -625,6 +628,11 @@ function emptyHost(): SshHost {
   return { id: "", name: "", host: "", port: 22, username: "root", group: "", hostKeySha256: "", useAgent: false, jumpHostId: "" };
 }
 
+function jumpHostName(host: SshHost) {
+  if (!host.jumpHostId) return "";
+  return hosts.value.find((candidate) => candidate.id === host.jumpHostId)?.name || "未知跳板机";
+}
+
 async function loadHosts() {
   try {
     hosts.value = (await fetchSshHosts()).hosts;
@@ -656,8 +664,19 @@ async function saveHost() {
       username: hostDraft.username.trim(),
       group: hostDraft.group.trim(),
       port: Math.max(1, Math.min(65535, Number(hostDraft.port) || 22)),
+      useAgent: Boolean(hostDraft.useAgent),
+      jumpHostId: hostDraft.jumpHostId || "",
     };
     const next = editingId.value ? hosts.value.map((host) => (host.id === editingId.value ? value : host)) : [...hosts.value, value];
+    if (value.jumpHostId === value.id) {
+      message.warning("不能将当前主机设置为自己的跳板机");
+      return;
+    }
+    const jumpHost = next.find((host) => host.id === value.jumpHostId);
+    if (jumpHost?.jumpHostId) {
+      message.warning("当前只支持单层跳板，所选跳板机自身不能再配置跳板机");
+      return;
+    }
     await saveSshHosts(next);
     hosts.value = next;
     showHostEditor.value = false;

@@ -801,8 +801,15 @@ void HttpServer::RegisterRoutes()
                                       drogon::k400BadRequest));
                 return;
             }
-            config_store_.SaveSshHosts(hosts);
-            callback(JsonResponse({{"ok", true}}));
+            try
+            {
+                config_store_.SaveSshHosts(hosts);
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
         },
         {drogon::Put});
 

@@ -529,6 +529,82 @@ export function sftpDownloadUrl(hostId: string, path: string, downloadId: string
   return `/api/tools/ssh/sftp/download?${query.toString()}`;
 }
 
+export async function streamSftpDownload(
+  hostId: string,
+  path: string,
+  downloadId: string,
+  filename: string,
+  onProgress?: (loaded: number) => void,
+): Promise<void> {
+  const response = await fetch(sftpDownloadUrl(hostId, path, downloadId), {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    let detail = `下载请求失败（HTTP ${response.status}）`;
+    try {
+      const body = await response.json() as { message?: string };
+      if (body.message) detail = body.message;
+    } catch {
+      // Keep the HTTP error when the server did not return JSON.
+    }
+    throw new Error(detail);
+  }
+  if (!response.body) throw new Error("浏览器不支持流式下载响应");
+
+  const temporaryName = `space-station-download-${downloadId}`;
+  const storage = navigator.storage as StorageManager & {
+    getDirectory?: () => Promise<FileSystemDirectoryHandle>;
+  };
+  let directory: FileSystemDirectoryHandle | undefined;
+  let temporaryFile: FileSystemFileHandle | undefined;
+  let writer: FileSystemWritableFileStream | undefined;
+  try {
+    directory = await storage.getDirectory?.();
+    if (directory) {
+      temporaryFile = await directory.getFileHandle(temporaryName, { create: true });
+      writer = await temporaryFile.createWritable();
+    }
+  } catch {
+    directory = undefined;
+    temporaryFile = undefined;
+    writer = undefined;
+  }
+
+  const chunks: BlobPart[] = [];
+  const reader = response.body.getReader();
+  let loaded = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (writer) await writer.write(new Blob([value]));
+      else chunks.push(value.slice().buffer);
+      loaded += value.byteLength;
+      onProgress?.(loaded);
+    }
+    if (writer) await writer.close();
+  } catch (error) {
+    await writer?.abort().catch(() => undefined);
+    if (directory) await directory.removeEntry(temporaryName).catch(() => undefined);
+    throw error;
+  }
+
+  const blob = temporaryFile ? await temporaryFile.getFile() : new Blob(chunks, { type: "application/octet-stream" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+    if (directory) void directory.removeEntry(temporaryName).catch(() => undefined);
+  }, 60_000);
+}
+
 export async function fetchSftpDownloadStatus(downloadId: string): Promise<SftpDownloadStatus> {
   const { data } = await api.get<SftpDownloadStatus>("/tools/ssh/sftp/download/status", {
     params: { downloadId },
