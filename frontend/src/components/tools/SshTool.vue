@@ -610,7 +610,7 @@ onMounted(() => {
   document.body.classList.add("ssh-page-lock");
   void loadHosts();
   void refreshClipboardPermission();
-  window.addEventListener("keydown", handleGlobalShortcut);
+  window.addEventListener("keydown", handleGlobalShortcut, true);
 });
 onBeforeUnmount(() => {
   const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
@@ -620,7 +620,7 @@ onBeforeUnmount(() => {
   document.documentElement.classList.remove("ssh-page-lock");
   document.body.classList.remove("ssh-page-lock");
   if (clipboardPermissionStatus) clipboardPermissionStatus.onchange = null;
-  window.removeEventListener("keydown", handleGlobalShortcut);
+  window.removeEventListener("keydown", handleGlobalShortcut, true);
   tabs.value.forEach(disposeTab);
 });
 
@@ -934,6 +934,26 @@ function initializeTerminal(tab: TerminalTab) {
     }
     if (tab.socket.readyState === WebSocket.OPEN) tab.socket.send(new TextEncoder().encode(data));
   });
+  terminal.attachCustomKeyEventHandler((event) => {
+    if (event.type !== "keydown" || (!event.ctrlKey && !event.metaKey)) return true;
+    const key = event.key.toLowerCase();
+    if (key === "f") {
+      if (!event.defaultPrevented) toggleSearch();
+      event.preventDefault();
+      return false;
+    }
+    if (key === "c" && terminal.hasSelection()) {
+      event.preventDefault();
+      const selection = terminal.getSelection();
+      if (selection) {
+        void writeClipboard(selection).then((success) => {
+          if (!success) warnClipboardAccess("浏览器不允许复制终端选区，请检查站点剪贴板权限");
+        });
+      }
+      return false;
+    }
+    return true;
+  });
   setupTerminalClipboard(tab, terminal, element);
   setupTerminalTouchScrolling(tab, terminal, element);
   terminal.onScroll(() => renderSearchOverlay(tab));
@@ -992,10 +1012,14 @@ function setupTerminalTouchScrolling(tab: TerminalTab, terminal: Terminal, eleme
 }
 
 function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: HTMLElement) {
+  let latestSelection = "";
+  const selectionDisposable = terminal.onSelectionChange(() => {
+    latestSelection = terminal.getSelection();
+  });
   const copySelection = (event: PointerEvent) => {
     if (event.button !== 0) return;
-    if (!terminalSettings.copyOnSelect || !terminal.hasSelection()) return;
-    const selection = terminal.getSelection();
+    if (!terminalSettings.copyOnSelect) return;
+    const selection = terminal.getSelection() || latestSelection;
     if (!selection) return;
     void writeClipboard(selection).then((success) => {
       if (!success) warnClipboardAccess("浏览器不允许自动写入剪贴板，请检查站点权限");
@@ -1031,6 +1055,7 @@ function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: H
   element.addEventListener("pointerup", copySelection);
   element.addEventListener("contextmenu", pasteClipboard, true);
   tab.clipboardCleanup = () => {
+    selectionDisposable.dispose();
     element.removeEventListener("pointerup", copySelection);
     element.removeEventListener("contextmenu", pasteClipboard, true);
   };
@@ -1313,6 +1338,11 @@ function closeSearch() {
   activeTab.value?.terminal?.focus();
 }
 
+function toggleSearch() {
+  if (showSearch.value) closeSearch();
+  else openSearch();
+}
+
 function resetSearchResults(tab?: TerminalTab) {
   if (!tab) return;
   tab.searchResultIndex = 0;
@@ -1426,7 +1456,7 @@ function scheduleSearchCount(tab: TerminalTab) {
 function handleGlobalShortcut(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && activeTab.value && activePane.value === "terminal") {
     event.preventDefault();
-    openSearch();
+    toggleSearch();
   }
 }
 

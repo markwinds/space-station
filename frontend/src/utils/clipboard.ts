@@ -1,4 +1,9 @@
 export async function writeClipboard(text: string): Promise<boolean> {
+  // Try the synchronous path first while a click/pointer event still carries
+  // transient user activation. This makes the first copy reliable in browsers
+  // that reject the initial async Clipboard API request.
+  if (fallbackWriteClipboard(text)) return true;
+
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -8,7 +13,7 @@ export async function writeClipboard(text: string): Promise<boolean> {
     // Some mobile browsers expose clipboard but reject it outside secure contexts.
   }
 
-  return fallbackWriteClipboard(text);
+  return false;
 }
 
 function fallbackWriteClipboard(text: string): boolean {
