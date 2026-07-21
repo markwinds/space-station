@@ -23,6 +23,22 @@
         <input ref="configurationInput" type="file" accept="application/json,.json" @change="importConfiguration" />
       </div>
 
+      <section v-if="tabs.length" class="ssh-mobile-sessions" aria-label="已打开会话">
+        <div class="ssh-mobile-sessions-title">
+          <strong>已打开会话</strong>
+          <span>{{ tabs.length }}</span>
+        </div>
+        <div class="ssh-mobile-session-list">
+          <div v-for="tab in tabs" :key="`mobile-${tab.id}`" class="ssh-mobile-session">
+            <button type="button" @click="resumeMobileSession(tab)">
+              <span class="ssh-status-dot" :class="tab.status" />
+              <span>{{ tab.host.name }}</span>
+            </button>
+            <button type="button" aria-label="关闭会话" @click="closeTab(tab.id)">×</button>
+          </div>
+        </div>
+      </section>
+
       <n-scrollbar class="ssh-host-scroll" trigger="none" :theme-overrides="hostScrollbarTheme">
         <div class="ssh-host-list">
           <div v-if="loading" class="ssh-empty">正在载入主机…</div>
@@ -81,18 +97,22 @@
             <button type="button" :class="{ active: activePane === 'terminal' }" @click="showTerminalPane">终端</button>
             <button type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
           </div>
-          <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
-          <n-button v-if="activePane === 'terminal'" secondary size="tiny" @click="openSearch">搜索</n-button>
-          <n-button v-if="activePane === 'terminal'" secondary size="tiny" @click="openSnippets">片段</n-button>
+          <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" class="ssh-desktop-action" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
+          <n-button v-if="activePane === 'terminal'" class="ssh-desktop-action" secondary size="tiny" @click="openSearch">搜索</n-button>
+          <n-button v-if="activePane === 'terminal'" class="ssh-desktop-action" secondary size="tiny" @click="openSnippets">片段</n-button>
           <n-button
             v-if="activePane === 'terminal'"
+            class="ssh-desktop-action"
             secondary
             size="tiny"
             :type="activeTab.recording ? 'error' : 'default'"
             @click="toggleRecording(activeTab)"
           >{{ activeTab.recording ? '停止录制' : '录制' }}</n-button>
-          <span v-if="activePane === 'terminal'" class="ssh-renderer" :class="activeTab.renderer">{{ activeTab.renderer === 'webgl' ? 'GPU' : 'Canvas' }}</span>
+          <span v-if="activePane === 'terminal'" class="ssh-renderer ssh-desktop-action" :class="activeTab.renderer">{{ activeTab.renderer === 'webgl' ? 'GPU' : 'Canvas' }}</span>
           <span class="ssh-status-text" :class="activeTab.status">{{ activeTab.message }}</span>
+          <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
+            <n-button class="ssh-mobile-more" secondary size="tiny">更多</n-button>
+          </n-dropdown>
         </div>
       </div>
 
@@ -159,6 +179,7 @@
               type="textarea"
               :autosize="{ minRows: 1, maxRows: 4 }"
               placeholder="输入要发送的命令，Ctrl/⌘ + Enter 发送"
+              enterkeyhint="send"
               @keydown="handleCommandKeydown"
             />
             <n-button type="primary" :disabled="!commandDraft.trim()" @click="sendCommand">发送</n-button>
@@ -363,6 +384,7 @@ import {
   NAlert,
   NButton,
   NCheckbox,
+  NDropdown,
   NForm,
   NFormItem,
   NIcon,
@@ -429,6 +451,7 @@ interface TerminalTab {
   searchMatches: Array<Array<{ row: number; column: number; width: number }>>;
   searchOverlay?: HTMLElement;
   clipboardCleanup?: () => void;
+  terminalTouchCleanup?: () => void;
   reconnectHintShown: boolean;
 }
 
@@ -490,6 +513,8 @@ const credentialCache = new Map<string, CredentialData>();
 let clipboardWarningShown = false;
 let clipboardFallbackHintShown = false;
 let clipboardPermissionStatus: PermissionStatus | undefined;
+let originalViewportContent: string | null = null;
+let originalThemeColor: string | null = null;
 const clipboardPermissionState = ref<ClipboardReadState>("checking");
 const keyword = ref("");
 const loading = ref(true);
@@ -532,6 +557,21 @@ const jumpHostOptions = computed(() => hosts.value
   .map((host) => ({ label: `${host.name} (${host.username}@${host.host})`, value: host.id })));
 const hostOptions = computed(() => hosts.value.map((host) => ({ label: host.name, value: host.id })));
 const pinnedSnippets = computed(() => snippets.value.filter((snippet) => snippet.pinned !== false));
+const mobileActionOptions = computed(() => {
+  const tab = activeTab.value;
+  if (!tab) return [];
+  const options: Array<{ label: string; key: string; disabled?: boolean }> = [];
+  if (tab.status === "closed" || tab.status === "error") options.push({ label: "重新连接", key: "reconnect" });
+  if (activePane.value === "terminal") {
+    options.push(
+      { label: "搜索终端", key: "search" },
+      { label: "命令片段", key: "snippets" },
+      { label: tab.recording ? "停止录制" : "开始录制", key: "recording" },
+      { label: `渲染：${tab.renderer === "webgl" ? "GPU" : "Canvas"}`, key: "renderer", disabled: true },
+    );
+  }
+  return options;
+});
 const clipboardPermissionLabel = computed(() => ({
   checking: "检测中",
   granted: "已允许",
@@ -553,11 +593,29 @@ watch(searchQuery, (value) => {
 });
 
 onMounted(() => {
+  const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (viewport) {
+    originalViewportContent = viewport.content;
+    if (!viewport.content.includes("viewport-fit=cover")) viewport.content += ", viewport-fit=cover";
+  }
+  const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (themeColor) {
+    originalThemeColor = themeColor.content;
+    themeColor.content = "#101418";
+  }
+  document.documentElement.classList.add("ssh-page-lock");
+  document.body.classList.add("ssh-page-lock");
   void loadHosts();
   void refreshClipboardPermission();
   window.addEventListener("keydown", handleGlobalShortcut);
 });
 onBeforeUnmount(() => {
+  const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (viewport && originalViewportContent !== null) viewport.content = originalViewportContent;
+  const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (themeColor && originalThemeColor !== null) themeColor.content = originalThemeColor;
+  document.documentElement.classList.remove("ssh-page-lock");
+  document.body.classList.remove("ssh-page-lock");
   if (clipboardPermissionStatus) clipboardPermissionStatus.onchange = null;
   window.removeEventListener("keydown", handleGlobalShortcut);
   tabs.value.forEach(disposeTab);
@@ -656,6 +714,24 @@ function openCredentials(host: SshHost) {
     persist: false,
   });
   showCredentials.value = true;
+}
+
+function resumeMobileSession(tab: TerminalTab) {
+  activeTabId.value = tab.id;
+  activePane.value = "terminal";
+  void nextTick(() => {
+    tab.fitAddon?.fit();
+    sendResize(tab);
+  });
+}
+
+function handleMobileAction(key: string) {
+  const tab = activeTab.value;
+  if (!tab) return;
+  if (key === "reconnect") reconnectTab(tab);
+  else if (key === "search") openSearch();
+  else if (key === "snippets") openSnippets();
+  else if (key === "recording") toggleRecording(tab);
 }
 
 function requestPersistentCredentials(host: SshHost) {
@@ -840,6 +916,7 @@ function initializeTerminal(tab: TerminalTab) {
     if (tab.socket.readyState === WebSocket.OPEN) tab.socket.send(new TextEncoder().encode(data));
   });
   setupTerminalClipboard(tab, terminal, element);
+  setupTerminalTouchScrolling(tab, terminal, element);
   terminal.onScroll(() => renderSearchOverlay(tab));
   const resizeObserver = new ResizeObserver(() => {
     fitAddon.fit();
@@ -853,6 +930,46 @@ function initializeTerminal(tab: TerminalTab) {
   tab.serializeAddon = serializeAddon;
   tab.webglAddon = webglAddon;
   tab.resizeObserver = resizeObserver;
+}
+
+function setupTerminalTouchScrolling(tab: TerminalTab, terminal: Terminal, element: HTMLElement) {
+  let lastY: number | null = null;
+  let remainder = 0;
+  const touchStart = (event: TouchEvent) => {
+    if (event.touches.length !== 1) {
+      lastY = null;
+      return;
+    }
+    lastY = event.touches[0].clientY;
+    remainder = 0;
+  };
+  const touchMove = (event: TouchEvent) => {
+    if (lastY === null || event.touches.length !== 1) return;
+    const currentY = event.touches[0].clientY;
+    remainder += lastY - currentY;
+    lastY = currentY;
+    const lineHeight = Math.max(12, element.clientHeight / Math.max(1, terminal.rows));
+    const lines = Math.trunc(remainder / lineHeight);
+    if (lines !== 0) {
+      terminal.scrollLines(lines);
+      remainder -= lines * lineHeight;
+    }
+    event.preventDefault();
+  };
+  const touchEnd = () => {
+    lastY = null;
+    remainder = 0;
+  };
+  element.addEventListener("touchstart", touchStart, { passive: true, capture: true });
+  element.addEventListener("touchmove", touchMove, { passive: false, capture: true });
+  element.addEventListener("touchend", touchEnd, { passive: true, capture: true });
+  element.addEventListener("touchcancel", touchEnd, { passive: true, capture: true });
+  tab.terminalTouchCleanup = () => {
+    element.removeEventListener("touchstart", touchStart, true);
+    element.removeEventListener("touchmove", touchMove, true);
+    element.removeEventListener("touchend", touchEnd, true);
+    element.removeEventListener("touchcancel", touchEnd, true);
+  };
 }
 
 function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: HTMLElement) {
@@ -1599,6 +1716,7 @@ function closeTab(id: string) {
 function disposeTab(tab: TerminalTab) {
   if (tab.searchCountTimer) window.clearTimeout(tab.searchCountTimer);
   tab.clipboardCleanup?.();
+  tab.terminalTouchCleanup?.();
   tab.searchOverlay?.remove();
   tab.resizeObserver?.disconnect();
   tab.webglAddon?.dispose();
@@ -1614,6 +1732,10 @@ function disposeTab(tab: TerminalTab) {
 </script>
 
 <style scoped>
+:global(html.ssh-page-lock),
+:global(body.ssh-page-lock),
+:global(body.ssh-page-lock #app),
+:global(body.ssh-page-lock .app-shell) { margin: 0; overflow: hidden; background: #101418; }
 .ssh-app { height: 100dvh; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); overflow: hidden; background: #101418; color: #d8dee9; }
 .ssh-sidebar { box-sizing: border-box; min-width: 0; min-height: 0; height: 100%; padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; border-right: 1px solid #27313a; background: #171d22; }
 .ssh-brand-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
@@ -1639,6 +1761,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-tab-list::-webkit-scrollbar, .ssh-tab-actions::-webkit-scrollbar { display: none; }
 .ssh-tab-actions { max-width: 70vw; padding: 0 4px; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; background: #151a1f; box-shadow: -8px 0 12px #101418aa; }
 .ssh-mobile-hosts { display: none; }
+.ssh-mobile-more { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
 .ssh-tab.active { border-bottom-color: #79a8a5; background: #101418; color: #e5e9ef; }
 .ssh-tab.dragging { opacity: .45; }
@@ -1661,6 +1784,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-config-actions :deep(.n-button) { color: #d5dfe5; background: #26323a; border-color: #41515d; }
 .ssh-config-actions :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
 .ssh-config-actions input { display: none; }
+.ssh-mobile-sessions { display: none; }
 .ssh-renderer, .ssh-status-text { align-self: center; padding: 2px 6px; border: 1px solid #3c4851; border-radius: 4px; color: #8c9aa4; font: 10px/1.4 monospace; white-space: nowrap; }
 .ssh-renderer.webgl { border-color: #3b7256; color: #76cf96; background: #193124; }
 .ssh-status-text { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
@@ -1671,6 +1795,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
 .ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; padding: 8px 8px 12px; overflow: hidden; background: #101418; }
 .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport) { height: 100%; }
+.ssh-terminal :deep(.xterm) { touch-action: pan-y; }
+.ssh-terminal :deep(.xterm-viewport) { overflow-y: auto !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .ssh-terminal :deep(.ssh-search-overlay) { position: absolute; z-index: 30; inset: 0; overflow: hidden; pointer-events: none; }
 .ssh-terminal :deep(.ssh-search-match) { position: absolute; box-sizing: border-box; border: 1px solid #e1ca4d; background: rgb(167 145 25 / 62%); }
 .ssh-terminal :deep(.ssh-search-match.active) { border: 2px solid #ffe39a; background: rgb(224 92 17 / 78%); }
@@ -1721,15 +1847,39 @@ function disposeTab(tab: TerminalTab) {
 .ssh-fingerprint dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
 :global(.ssh-dialog) { --ssh-dialog-width: min(560px, calc(100vw - 32px)); }
 @media (max-width: 720px) {
-  .ssh-app { width: 100vw; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
-  .ssh-sidebar { width: 100%; padding: 10px; border-right: 0; }
+  .ssh-app { width: 100%; max-width: 100%; height: 100dvh; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+  .ssh-sidebar {
+    width: 100%;
+    padding:
+      calc(10px + env(safe-area-inset-top, 0px))
+      calc(10px + env(safe-area-inset-right, 0px))
+      calc(10px + env(safe-area-inset-bottom, 0px))
+      calc(10px + env(safe-area-inset-left, 0px));
+    border-right: 0;
+  }
   .ssh-app:not(.ssh-app--terminal-open) .ssh-workspace { display: none; }
   .ssh-app--terminal-open .ssh-sidebar { display: none; }
-  .ssh-workspace { width: 100%; }
-  .ssh-tabs { grid-template-columns: minmax(74px, 1fr) auto; }
-  .ssh-tab-actions { max-width: calc(100vw - 74px); }
+  .ssh-workspace { box-sizing: border-box; width: 100%; height: 100dvh; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .ssh-tabs { grid-template-columns: minmax(0, 1fr) auto; }
+  .ssh-tab-list .ssh-tab:not(.active) { display: none; }
+  .ssh-tab-list .ssh-tab.active { min-width: 0; max-width: none; flex: 1; }
+  .ssh-tab-actions { max-width: none; padding-right: max(4px, env(safe-area-inset-right, 0px)); box-shadow: none; }
   .ssh-mobile-hosts { display: inline-flex; flex: 0 0 auto; margin: 4px; }
+  .ssh-mobile-more { display: inline-flex; }
+  .ssh-desktop-action { display: none !important; }
   .ssh-status-text { display: none; }
+  .ssh-mobile-sessions { padding: 9px; display: grid; gap: 8px; border: 1px solid #34434d; border-radius: 8px; background: #1d262c; }
+  .ssh-mobile-sessions-title { display: flex; align-items: center; justify-content: space-between; color: #b9c7cf; font-size: 12px; }
+  .ssh-mobile-sessions-title span { min-width: 24px; padding: 1px 7px; border-radius: 999px; background: #30404a; color: #dce6eb; text-align: center; }
+  .ssh-mobile-session-list { display: flex; gap: 7px; overflow-x: auto; scrollbar-width: none; }
+  .ssh-mobile-session-list::-webkit-scrollbar { display: none; }
+  .ssh-mobile-session { flex: 0 0 auto; display: flex; align-items: stretch; overflow: hidden; border: 1px solid #42535e; border-radius: 7px; background: #27343c; }
+  .ssh-mobile-session > button { min-height: 34px; padding: 0 9px; display: flex; align-items: center; gap: 7px; border: 0; background: transparent; color: #e0e8ed; }
+  .ssh-mobile-session > button:first-child { max-width: 150px; }
+  .ssh-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ssh-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
+  .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport), .ssh-terminal :deep(.xterm-screen) { touch-action: none; }
+  .ssh-command-panel { display: none; }
   .ssh-form-grid, .ssh-form-grid--connection { grid-template-columns: 1fr; gap: 0; }
   .ssh-persist-credential { display: flex; margin: 10px 0 0; }
   .ssh-forward-form { grid-template-columns: 1fr; }

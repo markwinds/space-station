@@ -36,7 +36,7 @@
         <n-progress
           type="line"
           :percentage="transferPercentage(upload)"
-          :processing="upload.status === 'uploading'"
+          :processing="false"
           :show-indicator="false"
           :height="10"
           :border-radius="5"
@@ -57,7 +57,7 @@
         <n-progress
           type="line"
           :percentage="downloadPercentage(download)"
-          :processing="download.status === 'downloading'"
+          :processing="false"
           :show-indicator="false"
           :height="10"
           :border-radius="5"
