@@ -65,6 +65,7 @@ let serializeAddon: SerializeAddon | undefined;
 let webglAddon: WebglAddon | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let resizeFrame = 0;
+let appearanceFrame = 0;
 let touchCleanup: (() => void) | undefined;
 let searchWorker: Worker | undefined;
 let searchCountTimer = 0;
@@ -325,7 +326,14 @@ function setAppearance(options: { fontSize?: number; lineHeight?: number; letter
   if (options.fontSize !== undefined) terminal.options.fontSize = options.fontSize;
   if (options.lineHeight !== undefined) terminal.options.lineHeight = options.lineHeight;
   if (options.letterSpacing !== undefined) terminal.options.letterSpacing = options.letterSpacing;
-  fit();
+  // xterm recalculates character metrics asynchronously. Fitting in the same
+  // frame can retain the old row height and leave the final row half clipped.
+  window.cancelAnimationFrame(appearanceFrame);
+  appearanceFrame = window.requestAnimationFrame(() => {
+    terminal?.refresh(0, Math.max(0, terminal.rows - 1));
+    fit();
+    appearanceFrame = window.requestAnimationFrame(fit);
+  });
 }
 
 function getTerminal() {
@@ -500,6 +508,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(resizeFrame);
+  window.cancelAnimationFrame(appearanceFrame);
   window.clearTimeout(searchCountTimer);
   searchCountRequestId += 1;
   searchWorker?.terminate();
@@ -516,8 +525,7 @@ defineExpose(terminalHandle);
 
 <style scoped>
 .web-terminal__mount { width: 100%; height: 100%; min-width: 0; min-height: 0; }
-.web-terminal__mount :deep(.xterm),
-.web-terminal__mount :deep(.xterm-viewport) { height: 100%; }
+.web-terminal__mount :deep(.xterm) { height: 100%; }
 .web-terminal__mount :deep(.xterm) { touch-action: pan-y; }
 .web-terminal__mount :deep(.xterm-viewport) {
   overflow-y: auto !important;

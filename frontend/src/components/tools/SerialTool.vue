@@ -68,12 +68,37 @@
           </button>
         </div>
         <div v-if="activeSession" class="serial-tab-actions">
+          <terminal-action-bar
+            class="serial-desktop-actions"
+            :recording="Boolean(activeView?.recording)"
+            :renderer="activeView?.renderer"
+            settings
+            @search="openSearch"
+            @snippets="showSnippets = true"
+            @recording="activeView && toggleRecording(activeView)"
+            @settings="openTerminalSettings"
+          />
           <n-button size="tiny" secondary @click="duplicateActiveView">新视图</n-button>
           <n-button v-if="activeSession.status === 'error' || activeSession.status === 'closed'" size="tiny" secondary @click="reconnectActive">重连</n-button>
           <span class="serial-location">{{ activeSession.location === 'browser' ? '浏览器' : '服务器' }}</span>
           <span class="serial-status-label" :class="activeSession.status">{{ statusText(activeSession) }}</span>
         </div>
       </header>
+
+      <terminal-search-bar
+        v-if="activeView && showSearch"
+        ref="searchInput"
+        v-model:query="searchQuery"
+        v-model:target-index="searchTargetIndex"
+        class="serial-search-bar"
+        :result-count="activeView.searchResultCount"
+        :count-text="searchCountText(activeView)"
+        @index-focus="searchIndexEditing = $event"
+        @jump="jumpToSearchIndex"
+        @previous="searchTerminal(true)"
+        @next="searchTerminal(false)"
+        @close="closeSearch"
+      />
 
       <section v-if="views.length === 0" class="serial-empty">
         <div>›_</div>
@@ -86,17 +111,32 @@
         <section v-show="view.id === activeViewId" class="serial-terminal-section">
           <web-terminal
             class="serial-terminal"
-            :scrollback="10000"
-            :font-size="terminalFontSize"
+            :scrollback="terminalSettings.scrollbackLines"
+            :font-size="terminalSettings.fontSize"
+            :line-height="terminalSettings.lineHeight"
+            :letter-spacing="terminalSettings.letterSpacing"
             background="#0d1318"
             foreground="#d7e0e7"
             cursor="#8ec5c3"
             selection-background="#315063"
             @ready="handleTerminalReady(view, $event)"
             @data="handleTerminalData(view, $event)"
+            @renderer="view.renderer = $event"
+            @search-results="updateSearchResults(view, $event)"
           />
           <div v-if="sessionFor(view)?.error" class="serial-error">{{ sessionFor(view)?.error }}</div>
-          <div class="serial-composer">
+          <terminal-command-panel
+            :show-quick="showQuickSnippets"
+            :show-composer="terminalSettings.showCommandComposer"
+            :snippets="pinnedSnippets"
+            hide-label="隐藏发送框"
+            show-label="显示发送框"
+            @toggle-quick="showQuickSnippets = !showQuickSnippets"
+            @manage-snippets="showSnippets = true"
+            @toggle-composer="toggleCommandComposer"
+            @send-snippet="sendSnippet(view, $event)"
+          >
+            <template #composer><div class="serial-composer">
             <n-select v-model:value="view.sendMode" class="serial-send-mode" :options="sendModeOptions" size="small" />
             <n-input
               v-model:value="view.command"
@@ -107,19 +147,71 @@
             />
             <n-select v-if="view.sendMode === 'text'" v-model:value="view.lineEnding" class="serial-line-ending" :options="lineEndingOptions" size="small" />
             <n-button type="primary" :disabled="sessionFor(view)?.status !== 'open'" @click="sendFromComposer(view)">发送</n-button>
-          </div>
+            </div></template>
+          </terminal-command-panel>
         </section>
       </template>
     </main>
+
+    <n-modal v-model:show="showSnippets" preset="card" title="串口片段" :style="dialogStyle">
+      <div class="serial-snippet-editor">
+        <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查询版本" />
+        <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="要发送的文本或 HEX" />
+        <n-checkbox v-model:checked="snippetDraft.pinned">显示为快捷按钮</n-checkbox>
+        <n-button type="primary" @click="saveSnippet">{{ editingSnippetId ? '保存修改' : '添加片段' }}</n-button>
+      </div>
+      <div class="serial-snippet-list">
+        <div v-for="snippet in snippets" :key="snippet.id" class="serial-snippet-row">
+          <button type="button" @click="activeView && sendSnippet(activeView, snippet)"><strong>{{ snippet.name }}</strong><code>{{ snippet.command }}</code></button>
+          <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
+          <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
+        </div>
+        <p v-if="snippets.length === 0" class="serial-hint">还没有串口片段。</p>
+      </div>
+    </n-modal>
+
+    <n-modal v-model:show="showRecordingOptions" preset="card" title="开始串口录制" :style="dialogStyle">
+      <div class="serial-recording-options">
+        <n-checkbox v-model:checked="recordingDraft.stripAnsi">过滤 ANSI 颜色和控制字符</n-checkbox>
+        <n-checkbox v-model:checked="recordingDraft.timestamps">为每个数据块添加时间戳</n-checkbox>
+        <p>录制内容只保存在当前浏览器标签，停止后下载日志。</p>
+      </div>
+      <template #footer><div class="serial-dialog-actions"><n-button @click="showRecordingOptions = false">取消</n-button><n-button type="primary" @click="startRecording">开始录制</n-button></div></template>
+    </n-modal>
+
+    <n-modal v-model:show="showTerminalSettings" preset="card" title="终端设置（SSH 与串口共用）" :style="dialogStyle">
+      <n-form label-placement="top">
+        <div class="serial-settings-grid">
+          <n-form-item label="回滚缓冲区（行）"><n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" /></n-form-item>
+          <n-form-item label="字体大小"><n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" /></n-form-item>
+          <n-form-item label="行高"><n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" /></n-form-item>
+          <n-form-item label="字符间距"><n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" /></n-form-item>
+          <n-form-item label="录制缓冲区上限（MiB）"><n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" /></n-form-item>
+        </div>
+        <n-form-item label="公共交互">
+          <div class="serial-setting-switches">
+            <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示底部命令编辑和发送框</n-checkbox>
+            <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">划选后自动复制</n-checkbox>
+            <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">右键自动粘贴（浏览器允许时）</n-checkbox>
+          </div>
+        </n-form-item>
+      </n-form>
+      <template #footer><div class="serial-dialog-actions"><n-button @click="showTerminalSettings = false">取消</n-button><n-button type="primary" @click="saveTerminalSettings">保存</n-button></div></template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { NAlert, NButton, NInput, NSelect, useMessage } from "naive-ui";
+import { NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NModal, NSelect, useMessage } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { fetchBackendSerialPorts, type BackendSerialPort } from "@/api";
 import WebTerminal from "../terminal/WebTerminal.vue";
-import type { WebTerminalHandle, WebTerminalReadyEvent } from "../terminal/WebTerminal.types";
+import TerminalActionBar from "../terminal/TerminalActionBar.vue";
+import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
+import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
+import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
+import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
+import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 
 type Location = "browser" | "server";
 type SessionStatus = "connecting" | "open" | "closed" | "error";
@@ -165,10 +257,26 @@ interface SerialView {
   sendMode: SendMode;
   lineEnding: "none" | "lf" | "crlf";
   terminalView?: WebTerminalHandle;
+  clipboardCleanup?: () => void;
+  renderer: TerminalRenderer;
+  searchResultIndex: number;
+  searchResultCount: number;
+  searchResultLimited: boolean;
+  recording: boolean;
+  recordingStartedAt?: string;
+  recordingContent: string;
+  recordingEntries: Array<{ at: Date; data: string }>;
+  recordingDecoder?: TextDecoder;
+  recordingStripAnsi: boolean;
+  recordingTimestamps: boolean;
+  recordingSizeBytes: number;
+  recordingLimitReached: boolean;
 }
 
+interface CommandSnippet { id: string; name: string; command: string; pinned?: boolean }
+
 const message = useMessage();
-const terminalFontSize = window.innerWidth <= 760 ? 13 : 14;
+const dialogStyle = { width: "min(680px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 32px)" };
 const source = ref<Location>("server");
 const browserSupported = "serial" in navigator;
 const browserPorts = ref<BrowserPortItem[]>([]);
@@ -180,8 +288,27 @@ const sessions = reactive(new Map<string, SerialSession>());
 const views = reactive<SerialView[]>([]);
 const activeViewId = ref("");
 const mobileSetup = ref(false);
+const terminalSettings = reactive<TerminalPreferences>(loadTerminalPreferences());
+const terminalSettingsDraft = reactive<TerminalPreferences>({ ...terminalSettings });
+const showTerminalSettings = ref(false);
+const showSearch = ref(false);
+const searchQuery = ref("");
+const searchTargetIndex = ref<number | null>(null);
+const searchIndexEditing = ref(false);
+const searchInput = ref<{ focus: () => void } | null>(null);
+const showSnippets = ref(false);
+const snippets = ref<CommandSnippet[]>(loadSnippets());
+const snippetDraft = reactive({ name: "", command: "", pinned: true });
+const editingSnippetId = ref("");
+const showQuickSnippets = ref(localStorage.getItem("serial-show-quick-snippets") !== "false");
+const showRecordingOptions = ref(false);
+const recordingTargetId = ref("");
+const recordingDraft = reactive({ stripAnsi: true, timestamps: false });
 const browserIds = new WeakMap<SerialPort, string>();
 let browserSequence = 0;
+let searchInputTimer: number | undefined;
+
+const pinnedSnippets = computed(() => snippets.value.filter((snippet) => snippet.pinned !== false));
 
 const storedSettings = (() => {
   try { return JSON.parse(localStorage.getItem("space-station:serial-settings") || "{}"); }
@@ -357,11 +484,14 @@ function openServerSession(session: SerialSession) {
       } else if (payload.type === "error") failSession(session, payload.message || "服务器串口连接失败");
     } catch { /* Ignore non-protocol text. */ }
   };
-  socket.onerror = () => failSession(session, "串口 WebSocket 连接失败。");
-  socket.onclose = () => {
+  socket.onerror = () => {
+    if (!session.error) failSession(session, "串口 WebSocket 握手失败，请确认后端服务仍在运行并刷新服务器设备列表。");
+  };
+  socket.onclose = (event) => {
     if (!session.closing && session.status !== "error") {
       session.status = "closed";
-      broadcastNotice(session, "\r\n\x1b[33m[服务器串口连接已关闭]\x1b[0m\r\n");
+      const detail = event.reason ? `：${event.reason}` : event.code !== 1000 ? `（代码 ${event.code}）` : "";
+      broadcastNotice(session, `\r\n\x1b[33m[服务器串口连接已关闭${detail}]\x1b[0m\r\n`);
     }
   };
 }
@@ -380,7 +510,10 @@ function receiveData(session: SerialSession, input: Uint8Array) {
     const removed = session.chunks.shift();
     session.bufferedBytes -= removed?.byteLength ?? 0;
   }
-  views.filter((view) => view.sessionKey === session.key).forEach((view) => view.terminalView?.write(data));
+  views.filter((view) => view.sessionKey === session.key).forEach((view) => {
+    view.terminalView?.write(data);
+    appendRecording(view, data);
+  });
 }
 
 function broadcastNotice(session: SerialSession, text: string) {
@@ -415,6 +548,17 @@ async function addView(session: SerialSession) {
     command: "",
     sendMode: "text",
     lineEnding: "none",
+    renderer: "canvas",
+    searchResultIndex: -1,
+    searchResultCount: 0,
+    searchResultLimited: false,
+    recording: false,
+    recordingContent: "",
+    recordingEntries: [],
+    recordingStripAnsi: true,
+    recordingTimestamps: false,
+    recordingSizeBytes: 0,
+    recordingLimitReached: false,
   });
   views.push(view);
   activeViewId.value = view.id;
@@ -426,6 +570,16 @@ function handleTerminalReady(view: SerialView, event: WebTerminalReadyEvent) {
   const session = sessions.get(view.sessionKey);
   if (!session) return;
   view.terminalView = event.handle;
+  view.clipboardCleanup?.();
+  view.clipboardCleanup = attachTerminalClipboard(event.terminal, event.element, {
+    copyOnSelect: () => terminalSettings.copyOnSelect,
+    pasteOnRightClick: () => terminalSettings.pasteOnRightClick,
+    canPaste: () => session.status === "open",
+    canReadClipboard: () => window.isSecureContext && Boolean(navigator.clipboard?.readText),
+    onCopyError: () => message.warning("浏览器不允许自动写入剪贴板，请检查站点权限"),
+    onPasteUnavailable: () => message.info("串口尚未连接或浏览器不允许读取剪贴板，已保留原生右键菜单"),
+    onPasteError: () => message.info("浏览器未授予剪贴板读取权限，请使用系统粘贴快捷键"),
+  });
   session.chunks.forEach((chunk) => event.terminal.write(chunk));
 }
 
@@ -449,6 +603,7 @@ async function closeView(viewId: string) {
   const index = views.findIndex((view) => view.id === viewId);
   if (index < 0) return;
   const [view] = views.splice(index, 1);
+  view.clipboardCleanup?.();
   if (!views.some((candidate) => candidate.sessionKey === view.sessionKey)) {
     const session = sessions.get(view.sessionKey);
     if (session) await closeSession(session);
@@ -513,15 +668,204 @@ function errorMessage(error: unknown) {
   return String(error);
 }
 
+function updateSearchResults(view: SerialView, event: WebTerminalSearchResult) {
+  view.searchResultIndex = event.resultIndex;
+  view.searchResultCount = event.resultCount;
+  view.searchResultLimited = event.limited;
+  if (view.id === activeViewId.value && !searchIndexEditing.value) searchTargetIndex.value = event.resultIndex >= 0 ? event.resultIndex + 1 : null;
+}
+
+function openSearch() {
+  showSearch.value = true;
+  searchTargetIndex.value = activeView.value && activeView.value.searchResultIndex >= 0 ? activeView.value.searchResultIndex + 1 : null;
+  nextTick(() => { searchInput.value?.focus(); if (searchQuery.value) searchTerminal(false, true); });
+}
+
+function closeSearch() {
+  if (searchInputTimer) window.clearTimeout(searchInputTimer);
+  showSearch.value = false;
+  searchQuery.value = "";
+  views.forEach((view) => {
+    view.terminalView?.clearSearch();
+    view.searchResultIndex = -1;
+    view.searchResultCount = 0;
+    view.searchResultLimited = false;
+  });
+  searchTargetIndex.value = null;
+  activeView.value?.terminalView?.focus();
+}
+
+function searchTerminal(previous: boolean, incremental = false) {
+  if (searchInputTimer) { window.clearTimeout(searchInputTimer); searchInputTimer = undefined; }
+  if (!activeView.value || !searchQuery.value) return;
+  activeView.value.terminalView?.search(searchQuery.value, previous, incremental);
+}
+
+function jumpToSearchIndex() {
+  const view = activeView.value;
+  const target = Math.trunc(Number(searchTargetIndex.value));
+  if (!view || !Number.isFinite(target) || target < 1 || target > view.searchResultCount) {
+    message.warning(view?.searchResultCount ? `请输入 1 到 ${view.searchResultCount} 之间的序号` : "当前没有搜索结果");
+    return;
+  }
+  view.terminalView?.jumpToSearchIndex(target - 1);
+}
+
+function searchCountText(view: SerialView) {
+  const current = view.searchResultIndex >= 0 ? view.searchResultIndex + 1 : view.searchResultCount ? "?" : 0;
+  return `${current}/${view.searchResultCount}`;
+}
+
+function handleGlobalShortcut(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f" || !activeView.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (showSearch.value) closeSearch(); else openSearch();
+}
+
+function openTerminalSettings() {
+  Object.assign(terminalSettingsDraft, terminalSettings);
+  showTerminalSettings.value = true;
+}
+
+function saveTerminalSettings() {
+  Object.assign(terminalSettings, saveTerminalPreferences(normalizeTerminalPreferences(terminalSettingsDraft)));
+  views.forEach((view) => view.terminalView?.setAppearance(terminalSettings));
+  showTerminalSettings.value = false;
+  message.success("终端设置已同步应用到 SSH 与串口；回滚行数对新终端生效");
+}
+
+function toggleCommandComposer() {
+  terminalSettings.showCommandComposer = !terminalSettings.showCommandComposer;
+  saveTerminalPreferences(terminalSettings);
+}
+
+function loadSnippets(): CommandSnippet[] {
+  try { return JSON.parse(localStorage.getItem("serial-command-snippets") || "[]") as CommandSnippet[]; }
+  catch { return []; }
+}
+
+function persistSnippets() { localStorage.setItem("serial-command-snippets", JSON.stringify(snippets.value)); }
+
+function resetSnippetDraft() {
+  editingSnippetId.value = "";
+  Object.assign(snippetDraft, { name: "", command: "", pinned: true });
+}
+
+function saveSnippet() {
+  if (!snippetDraft.name.trim() || !snippetDraft.command.trim()) { message.warning("名称和内容不能为空"); return; }
+  const value = { id: editingSnippetId.value || crypto.randomUUID(), name: snippetDraft.name.trim(), command: snippetDraft.command, pinned: snippetDraft.pinned };
+  if (editingSnippetId.value) snippets.value = snippets.value.map((item) => item.id === editingSnippetId.value ? value : item);
+  else snippets.value.push(value);
+  persistSnippets();
+  resetSnippetDraft();
+}
+
+function editSnippet(snippet: CommandSnippet) {
+  editingSnippetId.value = snippet.id;
+  Object.assign(snippetDraft, { name: snippet.name, command: snippet.command, pinned: snippet.pinned !== false });
+}
+
+function deleteSnippet(id: string) {
+  snippets.value = snippets.value.filter((item) => item.id !== id);
+  persistSnippets();
+  if (editingSnippetId.value === id) resetSnippetDraft();
+}
+
+async function sendSnippet(view: SerialView, snippet: CommandSnippet) {
+  view.command = snippet.command;
+  showSnippets.value = false;
+  await sendFromComposer(view);
+}
+
+function appendRecording(view: SerialView, data: Uint8Array) {
+  if (!view.recording) return;
+  const limit = terminalSettings.recordingMaxMiB * 1024 * 1024;
+  if (view.recordingSizeBytes + data.byteLength > limit) {
+    if (!view.recordingLimitReached) message.warning(`录制缓冲区已达到 ${terminalSettings.recordingMaxMiB} MiB 上限`);
+    view.recordingLimitReached = true;
+    return;
+  }
+  const decoded = view.recordingDecoder?.decode(data, { stream: true }) ?? new TextDecoder().decode(data);
+  view.recordingContent += decoded;
+  view.recordingEntries.push({ at: new Date(), data: decoded });
+  view.recordingSizeBytes += data.byteLength;
+}
+
+function toggleRecording(view: SerialView) {
+  if (!view.recording) {
+    recordingTargetId.value = view.id;
+    Object.assign(recordingDraft, { stripAnsi: true, timestamps: false });
+    showRecordingOptions.value = true;
+    return;
+  }
+  stopRecording(view);
+}
+
+function startRecording() {
+  const view = views.find((item) => item.id === recordingTargetId.value);
+  if (!view) return;
+  view.recording = true;
+  view.recordingStartedAt = new Date().toISOString();
+  view.recordingContent = "";
+  view.recordingEntries = [];
+  view.recordingDecoder = new TextDecoder();
+  view.recordingStripAnsi = recordingDraft.stripAnsi;
+  view.recordingTimestamps = recordingDraft.timestamps;
+  view.recordingSizeBytes = 0;
+  view.recordingLimitReached = false;
+  showRecordingOptions.value = false;
+}
+
+function stopRecording(view: SerialView) {
+  view.recording = false;
+  const tail = view.recordingDecoder?.decode() ?? "";
+  if (tail) { view.recordingContent += tail; view.recordingEntries.push({ at: new Date(), data: tail }); }
+  const clean = (value: string) => normalizeRecordingText(view.recordingStripAnsi ? stripAnsi(value) : value);
+  const body = view.recordingTimestamps
+    ? view.recordingEntries.map((entry) => `[${formatLogTime(entry.at)}] ${clean(entry.data)}`).join("")
+    : clean(view.recordingContent);
+  const startedAt = view.recordingStartedAt ? new Date(view.recordingStartedAt) : new Date();
+  downloadText(`${safeFilename(view.title)}-${formatFilenameTime(startedAt)}.log`, body);
+  view.recordingContent = "";
+  view.recordingEntries = [];
+  view.recordingDecoder = undefined;
+  view.recordingSizeBytes = 0;
+}
+
+function stripAnsi(value: string) {
+  return value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
+}
+function normalizeRecordingText(value: string) { return value.replace(/\r\n/g, "\n").replace(/\r/g, ""); }
+function formatLogTime(value: Date) { return value.toISOString(); }
+function formatFilenameTime(value: Date) { return value.toISOString().replace(/:/g, "-"); }
+function safeFilename(value: string) { return value.replace(/[\\/:*?"<>|]/g, "_"); }
+function downloadText(filename: string, content: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 watch(settings, (value) => localStorage.setItem("space-station:serial-settings", JSON.stringify(value)), { deep: true });
 watch(source, (value) => { if (value === "server") void refreshServerPorts(); else void refreshBrowserPorts(); });
+watch(showQuickSnippets, (value) => localStorage.setItem("serial-show-quick-snippets", String(value)));
+watch(searchQuery, (value) => {
+  if (!showSearch.value) return;
+  if (searchInputTimer) window.clearTimeout(searchInputTimer);
+  if (!value) { activeView.value?.terminalView?.clearSearch(); return; }
+  searchInputTimer = window.setTimeout(() => searchTerminal(false, true), 200);
+});
 
 onMounted(() => {
   void refreshServerPorts();
   void refreshBrowserPorts();
+  window.addEventListener("keydown", handleGlobalShortcut, true);
 });
 
 onBeforeUnmount(() => {
+  if (searchInputTimer) window.clearTimeout(searchInputTimer);
+  window.removeEventListener("keydown", handleGlobalShortcut, true);
+  views.forEach((view) => view.clipboardCleanup?.());
   sessions.forEach((session) => void closeSession(session));
 });
 </script>
@@ -540,6 +884,8 @@ onBeforeUnmount(() => {
 .serial-source-switch button { min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: #9caab4; cursor: pointer; }
 .serial-source-switch button.active { background: #283842; color: #e9f0f4; font-weight: 700; }
 .serial-field-heading { display: flex; align-items: center; justify-content: space-between; min-height: 24px; color: #c9d3da; font-size: 13px; font-weight: 700; }
+.serial-field-heading :deep(.n-button), .serial-tab-actions > :deep(.n-button) { color: #e1eaef; background: #2a3a44; border-color: #526671; }
+.serial-field-heading :deep(.n-button:hover), .serial-tab-actions > :deep(.n-button:hover) { color: #102027; background: #91bfbd; border-color: #91bfbd; }
 .serial-hint { margin: -4px 0 0; font-size: 12px; line-height: 1.55; }
 .serial-divider { height: 1px; background: #2a3841; }
 .serial-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -549,7 +895,8 @@ onBeforeUnmount(() => {
 .serial-rules { margin-top: auto; padding: 12px; border: 1px solid #2c3d47; border-radius: 8px; background: #11191f; }
 .serial-rules strong { font-size: 13px; }
 .serial-rules p { margin: 6px 0 0; color: #8fa0ad; font-size: 12px; line-height: 1.55; }
-.serial-workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.serial-workspace { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.serial-search-bar { top: 55px; }
 .serial-tabs { min-height: 48px; display: flex; align-items: stretch; border-bottom: 1px solid #2c3942; background: #151d23; }
 .serial-tab-list { min-width: 0; flex: 1; display: flex; align-items: stretch; overflow-x: auto; }
 .serial-tab { flex: 0 0 auto; min-width: 130px; max-width: 230px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #2b3841; background: #151d23; color: #9eacb6; cursor: pointer; }
@@ -560,7 +907,7 @@ onBeforeUnmount(() => {
 .serial-status-dot.open { background: #4fc583; box-shadow: 0 0 0 3px rgba(79, 197, 131, .12); }
 .serial-status-dot.connecting { background: #e1ad55; }
 .serial-status-dot.error { background: #e26969; }
-.serial-tab-actions { flex: 0 0 auto; padding: 0 12px; display: flex; align-items: center; gap: 8px; }
+.serial-tab-actions { min-width: 0; flex: 0 0 auto; padding: 0 12px; display: flex; align-items: center; gap: 8px; }
 .serial-location, .serial-status-label { padding: 3px 8px; border-radius: 999px; background: #263640; color: #b9c8d1; font-size: 11px; white-space: nowrap; }
 .serial-status-label.open { background: rgba(39, 135, 83, .26); color: #78d7a1; }
 .serial-status-label.error { background: rgba(169, 62, 62, .28); color: #f0a0a0; }
@@ -570,14 +917,28 @@ onBeforeUnmount(() => {
 .serial-empty h1 { margin: 20px 0 8px; font-size: 24px; }
 .serial-empty p { margin: 0; color: #83939e; }
 .serial-empty-mobile { display: none; margin-top: 18px; }
-.serial-terminal-section { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.serial-terminal-section { position: relative; min-height: 0; flex: 1; display: flex; flex-direction: column; }
 .serial-terminal { min-height: 0; flex: 1; padding: 8px 5px 3px 10px; overflow: hidden; background: #0d1318; }
 .serial-terminal :deep(.xterm) { height: 100%; }
 .serial-error { padding: 8px 12px; border-top: 1px solid #653b3b; background: #3a2222; color: #f3b3b3; font-size: 13px; }
+.serial-command-toolbar { padding: 7px 12px; display: flex; align-items: center; gap: 7px; border-top: 1px solid #2c3942; background: #151d23; }
+.serial-command-toolbar :deep(.n-button) { color: #dbe5ea; }
+.serial-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+.serial-quick-snippets > span { align-self: center; color: #83939e; font-size: 12px; }
 .serial-composer { padding: 10px 12px; display: flex; align-items: center; gap: 8px; border-top: 1px solid #2c3942; background: #151d23; }
 .serial-send-mode { width: 84px; flex: 0 0 auto; }
 .serial-command { min-width: 100px; flex: 1; }
 .serial-line-ending { width: 100px; flex: 0 0 auto; }
+.serial-snippet-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.serial-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
+.serial-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
+.serial-snippet-row { padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #dce3e7; border-radius: 7px; }
+.serial-snippet-row > button { min-width: 0; flex: 1; display: grid; gap: 3px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.serial-snippet-row code { overflow: hidden; color: #687783; text-overflow: ellipsis; white-space: nowrap; }
+.serial-recording-options, .serial-setting-switches { display: grid; gap: 12px; }
+.serial-recording-options p { margin: 0; color: #687783; font-size: 12px; }
+.serial-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+.serial-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 760px) {
   .serial-app { grid-template-columns: 1fr; }
@@ -587,7 +948,7 @@ onBeforeUnmount(() => {
   .serial-app--session-open .serial-workspace { display: flex; }
   .serial-mobile-menu { display: inline-flex; }
   .serial-tabs { padding-top: env(safe-area-inset-top); min-height: calc(46px + env(safe-area-inset-top)); }
-  .serial-tab-actions .serial-location, .serial-tab-actions button { display: none; }
+  .serial-tab-actions .serial-location, .serial-tab-actions > button, .serial-desktop-actions { display: none; }
   .serial-tab-actions { padding: 0 7px; }
   .serial-status-label { max-width: 92px; overflow: hidden; text-overflow: ellipsis; }
   .serial-tab { min-width: 112px; max-width: 165px; }
@@ -597,5 +958,8 @@ onBeforeUnmount(() => {
   .serial-command { order: -1; flex-basis: 100%; }
   .serial-send-mode { flex: 1; }
   .serial-line-ending { flex: 1; }
+  .serial-command-toolbar { flex-wrap: wrap; }
+  .serial-quick-snippets { order: 3; flex-basis: 100%; }
+  .serial-settings-grid { grid-template-columns: 1fr; }
 }
 </style>

@@ -50,7 +50,13 @@
       </article>
     </div>
 
-    <n-modal v-model:show="showEditor" preset="card" :title="editingId ? '编辑认证器账号' : '添加认证器账号'" class="authenticator-dialog">
+    <n-modal
+      v-model:show="showEditor"
+      preset="card"
+      :title="editingId ? '编辑认证器账号' : '添加认证器账号'"
+      class="authenticator-dialog"
+      :style="dialogStyle"
+    >
       <n-form label-placement="top">
         <n-form-item v-if="!editingId" label="otpauth URI（可选）">
           <n-input v-model:value="draft.uri" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="粘贴 otpauth://totp/... 可自动填写下面内容" @blur="applyOtpAuthUri" />
@@ -102,6 +108,8 @@ import {
   type AuthenticatorEntryInput,
 } from "@/api";
 import { writeClipboard } from "@/utils/clipboard";
+
+const dialogStyle = { width: "min(680px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 32px)" };
 
 const message = useMessage();
 const entries = ref<AuthenticatorEntry[]>([]);
@@ -321,6 +329,7 @@ function errorMessage(error: unknown, fallback: string) {
 .authenticator-progress-row span { color: #63737e; font: 12px/1 monospace; text-align: right; }
 .authenticator-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
 .authenticator-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }
+:global(.authenticator-dialog .n-card__content) { min-height: 0; overflow: auto; }
 @media (max-width: 700px) {
   .authenticator-toolbar { grid-template-columns: 1fr auto; }
   .authenticator-toolbar > div { grid-column: 1 / -1; }

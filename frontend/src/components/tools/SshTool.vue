@@ -101,17 +101,15 @@
             <button type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
           </div>
           <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" class="ssh-desktop-action" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
-          <n-button v-if="activePane === 'terminal'" class="ssh-desktop-action" secondary size="tiny" @click="openSearch">搜索</n-button>
-          <n-button v-if="activePane === 'terminal'" class="ssh-desktop-action" secondary size="tiny" @click="openSnippets">片段</n-button>
-          <n-button
+          <terminal-action-bar
             v-if="activePane === 'terminal'"
             class="ssh-desktop-action"
-            secondary
-            size="tiny"
-            :type="activeTab.recording ? 'error' : 'default'"
-            @click="toggleRecording(activeTab)"
-          >{{ activeTab.recording ? '停止录制' : '录制' }}</n-button>
-          <span v-if="activePane === 'terminal'" class="ssh-renderer ssh-desktop-action" :class="activeTab.renderer">{{ activeTab.renderer === 'webgl' ? 'GPU' : 'Canvas' }}</span>
+            :recording="activeTab.recording"
+            :renderer="activeTab.renderer"
+            @search="openSearch"
+            @snippets="openSnippets"
+            @recording="toggleRecording(activeTab)"
+          />
           <span class="ssh-status-text" :class="activeTab.status">{{ activeTab.message }}</span>
           <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
             <n-button class="ssh-mobile-more" secondary size="tiny">更多</n-button>
@@ -119,26 +117,20 @@
         </div>
       </div>
 
-      <div v-if="activeTab && activePane === 'terminal' && showSearch" class="ssh-search-bar">
-        <n-input ref="searchInput" v-model:value="searchQuery" size="small" clearable placeholder="输入文字，Enter 查找下一个" @keyup.enter="searchTerminal(false)" />
-        <span class="ssh-search-count">{{ searchCountText(activeTab) }}</span>
-        <n-input-number
-          v-model:value="searchTargetIndex"
-          class="ssh-search-index"
-          size="small"
-          :min="1"
-          :max="Math.max(1, activeTab.searchResultCount)"
-          :show-button="false"
-          placeholder="序号"
-          @focus="searchIndexEditing = true"
-          @blur="searchIndexEditing = false"
-          @keyup.enter="jumpToSearchIndex"
-        />
-        <n-button size="small" @click="jumpToSearchIndex">跳转</n-button>
-        <n-button size="small" @click="searchTerminal(true)">上一个</n-button>
-        <n-button size="small" @click="searchTerminal(false)">下一个</n-button>
-        <n-button size="small" @click="closeSearch">关闭</n-button>
-      </div>
+      <terminal-search-bar
+        v-if="activeTab && activePane === 'terminal' && showSearch"
+        ref="searchInput"
+        v-model:query="searchQuery"
+        v-model:target-index="searchTargetIndex"
+        class="ssh-search-bar"
+        :result-count="activeTab.searchResultCount"
+        :count-text="searchCountText(activeTab)"
+        @index-focus="searchIndexEditing = $event"
+        @jump="jumpToSearchIndex"
+        @previous="searchTerminal(true)"
+        @next="searchTerminal(false)"
+        @close="closeSearch"
+      />
 
       <section v-if="tabs.length === 0" class="ssh-welcome">
         <div class="ssh-welcome-mark">›_</div>
@@ -175,23 +167,16 @@
           @renderer="updateRenderer(tab, $event)"
           @search-results="updateSearchResults(tab, $event)"
         />
-        <div class="ssh-command-panel">
-          <div class="ssh-command-toolbar">
-            <n-button secondary size="tiny" @click="toggleQuickSnippets">
-              {{ showQuickSnippets ? '隐藏快捷片段' : '显示快捷片段' }}
-            </n-button>
-            <div v-if="showQuickSnippets" class="ssh-quick-snippets">
-              <n-button v-for="snippet in pinnedSnippets" :key="snippet.id" secondary size="tiny" @click="sendSnippet(snippet, false)">
-                {{ snippet.name }}
-              </n-button>
-              <span v-if="pinnedSnippets.length === 0">暂无快捷片段</span>
-            </div>
-            <n-button text size="tiny" @click="openSnippets">管理片段</n-button>
-            <n-button text size="tiny" @click="toggleCommandComposer">
-              {{ terminalSettings.showCommandComposer ? '隐藏命令框' : '显示命令框' }}
-            </n-button>
-          </div>
-          <div v-if="terminalSettings.showCommandComposer" class="ssh-command-editor">
+        <terminal-command-panel
+          :show-quick="showQuickSnippets"
+          :show-composer="terminalSettings.showCommandComposer"
+          :snippets="pinnedSnippets"
+          @toggle-quick="toggleQuickSnippets"
+          @manage-snippets="openSnippets"
+          @toggle-composer="toggleCommandComposer"
+          @send-snippet="sendSnippet($event, false)"
+        >
+          <template #composer><div class="ssh-command-editor">
             <n-input
               v-model:value="commandDraft"
               type="textarea"
@@ -201,8 +186,8 @@
               @keydown="handleCommandKeydown"
             />
             <n-button type="primary" :disabled="!commandDraft.trim()" @click="sendCommand">发送</n-button>
-          </div>
-        </div>
+          </div></template>
+        </terminal-command-panel>
       </div>
       <sftp-panel
         v-for="tab in openedSftpTabs"
@@ -422,7 +407,6 @@ import {
   NTabs,
   NUpload,
   useMessage,
-  type InputInst,
   type UploadFileInfo,
 } from "naive-ui";
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
@@ -439,6 +423,18 @@ import {
 } from "@/api";
 import SftpPanel from "./SftpPanel.vue";
 import WebTerminal from "../terminal/WebTerminal.vue";
+import TerminalActionBar from "../terminal/TerminalActionBar.vue";
+import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
+import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
+import { attachTerminalClipboard } from "../terminal/terminalClipboard";
+import {
+  clampTerminalDecimal as clampDecimal,
+  clampTerminalInteger as clampNumber,
+  loadTerminalPreferences,
+  normalizeTerminalPreferences,
+  saveTerminalPreferences,
+  type TerminalPreferences,
+} from "../terminal/terminalPreferences";
 import type {
   TerminalRenderer,
   WebTerminalHandle,
@@ -482,16 +478,7 @@ interface TerminalTab {
 
 interface CommandSnippet { id: string; name: string; command: string; pinned?: boolean }
 
-interface TerminalSettings {
-  scrollbackLines: number;
-  recordingMaxMiB: number;
-  fontSize: number;
-  lineHeight: number;
-  letterSpacing: number;
-  showCommandComposer: boolean;
-  copyOnSelect: boolean;
-  pasteOnRightClick: boolean;
-}
+type TerminalSettings = TerminalPreferences;
 
 interface CredentialData {
   method: string;
@@ -521,7 +508,7 @@ const showSearch = ref(false);
 const searchQuery = ref("");
 const searchTargetIndex = ref<number | null>(null);
 const searchIndexEditing = ref(false);
-const searchInput = ref<InputInst | null>(null);
+const searchInput = ref<{ focus: () => void } | null>(null);
 const showSnippets = ref(false);
 const snippets = ref<CommandSnippet[]>(loadSnippets());
 const snippetDraft = reactive({ name: "", command: "", pinned: true });
@@ -535,7 +522,7 @@ const forwardDraft = reactive({ hostId: "", localPort: 8080, remoteHost: "127.0.
 const showRecordingOptions = ref(false);
 const recordingTargetId = ref("");
 const recordingDraft = reactive({ stripAnsi: true, timestamps: false });
-const terminalSettings = reactive<TerminalSettings>(loadTerminalSettings());
+const terminalSettings = reactive<TerminalSettings>(loadTerminalPreferences());
 const terminalSettingsDraft = reactive<TerminalSettings>({ ...terminalSettings });
 const showTerminalSettings = ref(false);
 const credentialCache = new Map<string, CredentialData>();
@@ -957,53 +944,24 @@ function updateSearchResults(tab: TerminalTab, event: WebTerminalSearchResult) {
 }
 
 function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: HTMLElement) {
-  let latestSelection = "";
-  const selectionDisposable = terminal.onSelectionChange(() => {
-    latestSelection = terminal.getSelection();
-  });
-  const copySelection = (event: PointerEvent) => {
-    if (event.button !== 0) return;
-    if (!terminalSettings.copyOnSelect) return;
-    const selection = terminal.getSelection() || latestSelection;
-    if (!selection) return;
-    void writeClipboard(selection).then((success) => {
-      if (!success) warnClipboardAccess("浏览器不允许自动写入剪贴板，请检查站点权限");
-    });
-  };
-  const pasteClipboard = (event: MouseEvent) => {
-    if (!terminalSettings.pasteOnRightClick) return;
-    if (tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") {
-      message.warning("SSH 尚未连接，无法粘贴");
-      return;
-    }
-    if (!["granted", "available"].includes(clipboardPermissionState.value) || !navigator.clipboard?.readText) {
+  tab.clipboardCleanup = attachTerminalClipboard(terminal, element, {
+    copyOnSelect: () => terminalSettings.copyOnSelect,
+    pasteOnRightClick: () => terminalSettings.pasteOnRightClick,
+    canPaste: () => tab.socket.readyState === WebSocket.OPEN && tab.status === "connected",
+    canReadClipboard: () => ["granted", "available"].includes(clipboardPermissionState.value),
+    onCopyError: () => warnClipboardAccess("浏览器不允许自动写入剪贴板，请检查站点权限"),
+    onPasteUnavailable: () => {
       terminal.focus();
       if (!clipboardFallbackHintShown) {
         clipboardFallbackHintShown = true;
-        message.info("剪贴板读取尚未授权，已保留原生右键菜单，请选择“粘贴”或使用粘贴快捷键");
+        message.info("剪贴板读取尚未授权或终端未连接，已保留原生右键菜单");
       }
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    void navigator.clipboard.readText()
-      .then((text) => {
-        if (text) terminal.paste(text);
-        if (clipboardPermissionState.value !== "granted") clipboardPermissionState.value = "available";
-        terminal.focus();
-      })
-      .catch((error: unknown) => {
-        clipboardPermissionState.value = "prompt";
-        message.error(`${describeClipboardError(error)}；下次右键将使用浏览器原生粘贴菜单`);
-      });
-  };
-  element.addEventListener("pointerup", copySelection);
-  element.addEventListener("contextmenu", pasteClipboard, true);
-  tab.clipboardCleanup = () => {
-    selectionDisposable.dispose();
-    element.removeEventListener("pointerup", copySelection);
-    element.removeEventListener("contextmenu", pasteClipboard, true);
-  };
+    },
+    onPasteError: (error) => {
+      clipboardPermissionState.value = "prompt";
+      message.error(`${describeClipboardError(error)}；下次右键将使用浏览器原生粘贴菜单`);
+    },
+  });
 }
 
 function warnClipboardAccess(content: string) {
@@ -1413,44 +1371,6 @@ function normalizeRecordingText(value: string) {
   return value.replace(/\r\n/g, "\n").replace(/\r/g, "");
 }
 
-function loadTerminalSettings(): TerminalSettings {
-  const defaults: TerminalSettings = {
-    scrollbackLines: 50000,
-    recordingMaxMiB: 50,
-    fontSize: 14,
-    lineHeight: 1.2,
-    letterSpacing: 0,
-    showCommandComposer: true,
-    copyOnSelect: false,
-    pasteOnRightClick: false,
-  };
-  try {
-    const saved = JSON.parse(localStorage.getItem("ssh-terminal-settings") || "{}") as Partial<TerminalSettings>;
-    return {
-      scrollbackLines: clampNumber(saved.scrollbackLines, 1000, 500000, defaults.scrollbackLines),
-      recordingMaxMiB: clampNumber(saved.recordingMaxMiB, 1, 500, defaults.recordingMaxMiB),
-      fontSize: clampNumber(saved.fontSize, 10, 28, defaults.fontSize),
-      lineHeight: clampDecimal(saved.lineHeight, 1, 2, defaults.lineHeight),
-      letterSpacing: clampDecimal(saved.letterSpacing, 0, 4, defaults.letterSpacing),
-      showCommandComposer: saved.showCommandComposer !== false,
-      copyOnSelect: saved.copyOnSelect === true,
-      pasteOnRightClick: saved.pasteOnRightClick === true,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-function clampNumber(value: unknown, min: number, max: number, fallback: number) {
-  const number = Math.trunc(Number(value));
-  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
-}
-
-function clampDecimal(value: unknown, min: number, max: number, fallback: number) {
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
-}
-
 function openTerminalSettings() {
   Object.assign(terminalSettingsDraft, terminalSettings);
   showTerminalSettings.value = true;
@@ -1467,7 +1387,7 @@ function saveTerminalSettings() {
   terminalSettings.copyOnSelect = terminalSettingsDraft.copyOnSelect === true;
   terminalSettings.pasteOnRightClick = terminalSettingsDraft.pasteOnRightClick === true;
   Object.assign(terminalSettingsDraft, terminalSettings);
-  localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
+  Object.assign(terminalSettings, saveTerminalPreferences(terminalSettings));
   tabs.value.forEach((tab) => tab.terminalView?.setAppearance({
     fontSize: terminalSettings.fontSize,
     lineHeight: terminalSettings.lineHeight,
@@ -1539,7 +1459,7 @@ function toggleQuickSnippets() {
 function toggleCommandComposer() {
   terminalSettings.showCommandComposer = !terminalSettings.showCommandComposer;
   terminalSettingsDraft.showCommandComposer = terminalSettings.showCommandComposer;
-  localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
+  saveTerminalPreferences(terminalSettings);
   nextTick(() => activeTab.value?.terminalView?.fit());
 }
 
@@ -1587,7 +1507,8 @@ async function importConfiguration(event: Event) {
       if (typeof data.terminalSettings.showCommandComposer === "boolean") terminalSettings.showCommandComposer = data.terminalSettings.showCommandComposer;
       if (typeof data.terminalSettings.copyOnSelect === "boolean") terminalSettings.copyOnSelect = data.terminalSettings.copyOnSelect;
       if (typeof data.terminalSettings.pasteOnRightClick === "boolean") terminalSettings.pasteOnRightClick = data.terminalSettings.pasteOnRightClick;
-      localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
+      Object.assign(terminalSettings, normalizeTerminalPreferences(terminalSettings));
+      saveTerminalPreferences(terminalSettings);
     }
     persistSnippets();
     message.success("SSH 配置已导入（凭据不会导入）");
@@ -1729,7 +1650,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-status-text.closed { border-color: #56616a; color: #a8b2ba; background: #252c31; }
 .ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
 .ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; padding: 8px 8px 12px; overflow: hidden; background: #101418; }
-.ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport) { height: 100%; }
+.ssh-terminal :deep(.xterm) { height: 100%; }
 .ssh-terminal :deep(.xterm) { touch-action: pan-y; }
 .ssh-terminal :deep(.xterm-viewport) { overflow-y: auto !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .ssh-welcome { display: grid; place-content: center; justify-items: center; color: #788690; text-align: center; }

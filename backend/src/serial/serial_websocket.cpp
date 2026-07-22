@@ -1,4 +1,5 @@
 #include "serial/serial_websocket.hpp"
+#include "logging/logger.hpp"
 
 #include <chrono>
 #include <stdexcept>
@@ -31,6 +32,8 @@ void SerialWebSocketController::handleNewConnection(const drogon::HttpRequestPtr
     }
     connection->setPingMessage("space-station-serial", std::chrono::seconds(20));
     connection->setContext(std::make_shared<ConnectionState>());
+    const auto log_message = "Serial WebSocket opened: peer=" + request->peerAddr().toIpPort();
+    logI(log_message.c_str());
     connection->send(nlohmann::json({{"type", "ready"}}).dump());
 }
 
@@ -67,12 +70,15 @@ void SerialWebSocketController::handleNewMessage(const drogon::WebSocketConnecti
     }
     catch (const std::exception& error)
     {
+        const auto log_message = std::string("Serial WebSocket request failed: ") + error.what();
+        logW(log_message.c_str());
         SendError(connection, error.what());
     }
 }
 
 void SerialWebSocketController::handleConnectionClosed(const drogon::WebSocketConnectionPtr& connection)
 {
+    logI("Serial WebSocket closed");
     if (const auto state = connection->getContext<ConnectionState>())
         service_.Detach(state->subscription_id);
     connection->clearContext();
