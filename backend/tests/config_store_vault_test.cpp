@@ -2,7 +2,9 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace
@@ -54,6 +56,27 @@ int main()
         Expect(std::filesystem::file_size(key) == 32, "vault key has the wrong size");
         store.DeleteSshCredential("host-1");
         Expect(!store.HasSshCredential("host-1"), "credential was not deleted");
+
+        store.SaveAuthenticatorEntry({
+            {"id", "otp-1"},
+            {"name", "Example"},
+            {"issuer", "Example Inc"},
+            {"account", "user@example.com"},
+            {"secret", "JBSWY3DPEHPK3PXP"},
+            {"algorithm", "SHA1"},
+            {"digits", 6},
+            {"period", 30},
+        });
+        const auto authenticator_entries = store.LoadAuthenticatorEntries();
+        Expect(authenticator_entries.size() == 1, "authenticator entry was not saved");
+        Expect(authenticator_entries[0].value("secret", "") == "JBSWY3DPEHPK3PXP", "authenticator secret changed after decrypt");
+        const auto authenticator_key = root / "data" / "authenticator" / "vault.key";
+        Expect(std::filesystem::file_size(authenticator_key) == 32, "authenticator vault key has the wrong size");
+        std::ifstream database_input(database, std::ios::binary);
+        const std::string database_contents((std::istreambuf_iterator<char>(database_input)), std::istreambuf_iterator<char>());
+        Expect(database_contents.find("JBSWY3DPEHPK3PXP") == std::string::npos, "authenticator secret was stored as plaintext");
+        store.DeleteAuthenticatorEntry("otp-1");
+        Expect(store.LoadAuthenticatorEntries().empty(), "authenticator entry was not deleted");
 
         store.SaveSshHosts(nlohmann::json::array({
             {

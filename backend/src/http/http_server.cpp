@@ -3,6 +3,7 @@
 #include "cert/certificate_service.hpp"
 #include "embedded_assets.hpp"
 #include "logging/logger.hpp"
+#include "serial/serial_websocket.hpp"
 #include "ssh/ssh_websocket.hpp"
 
 #include <nlohmann/json.hpp>
@@ -86,7 +87,7 @@ drogon::ContentType StaticAssetContentType(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 8> hashed_asset_prefixes{
+    const std::array<std::string_view, 11> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/TimeManagerTool-",
         "/assets/HabitTool-",
@@ -94,6 +95,9 @@ const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
         "/assets/FileShareTool-",
         "/assets/TransferTool-",
         "/assets/SshTool-",
+        "/assets/SerialTool-",
+        "/assets/AuthenticatorTool-",
+        "/assets/WebTerminal-",
         "/assets/_plugin-vue_export-helper-",
     };
 
@@ -437,6 +441,7 @@ HttpServer::HttpServer(ConfigStore& config_store, AppConfig config)
       private_key_path_(std::move(config.private_key_path)),
       trusted_root_certificate_path_(std::move(config.trusted_root_certificate_path)),
       config_store_(config_store),
+      authenticator_service_(config_store),
       transfer_manager_(config_store),
       sftp_service_(config_store)
 {
@@ -506,6 +511,8 @@ std::string HttpServer::UiUrl() const
 
 void HttpServer::RegisterRoutes()
 {
+    serial_websocket_controller_ = std::make_shared<serial::SerialWebSocketController>(serial_service_);
+    drogon::app().registerController(serial_websocket_controller_);
     ssh_websocket_controller_ = std::make_shared<ssh::SshWebSocketController>(config_store_);
     drogon::app().registerController(ssh_websocket_controller_);
 
@@ -526,6 +533,69 @@ void HttpServer::RegisterRoutes()
             }));
         },
         {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/serial/ports",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                callback(JsonResponse(serial_service_.ListPorts()));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/authenticator/entries",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                callback(JsonResponse(authenticator_service_.ListCodes()));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/authenticator/entries",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                callback(JsonResponse({{"ok", true}, {"entry", authenticator_service_.SaveEntry(body)}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/authenticator/entries",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                authenticator_service_.DeleteEntry(req->getParameter("id"));
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Delete});
 
     drogon::app().registerHandler(
         "/api/config",

@@ -43,6 +43,9 @@ class ConfigStore
     std::optional<nlohmann::json> LoadSshCredential(const std::string& host_id);
     void SaveSshCredential(const std::string& host_id, const nlohmann::json& credential);
     void DeleteSshCredential(const std::string& host_id);
+    nlohmann::json LoadAuthenticatorEntries();
+    void SaveAuthenticatorEntry(const nlohmann::json& entry);
+    void DeleteAuthenticatorEntry(const std::string& id);
     nlohmann::json LoadTransferConfig();
     void SaveTransferConfig(const nlohmann::json& json);
 

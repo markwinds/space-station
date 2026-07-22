@@ -60,10 +60,13 @@ target_link_libraries(space-transfer-client PRIVATE space-transfer-core)
 
 add_executable(space-station
         src/main.cpp
+        src/authenticator/authenticator_service.cpp
         src/cert/certificate_service.cpp
         src/config/config_store.cpp
         src/http/http_server.cpp
         src/logging/logger.cpp
+        src/serial/serial_service.cpp
+        src/serial/serial_websocket.cpp
         src/ssh/ssh_session.cpp
         src/ssh/network_utils.cpp
         src/ssh/sftp_service.cpp
@@ -123,6 +126,18 @@ if (BUILD_TESTING)
     target_include_directories(ssh-network-utils-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(ssh-network-utils-test PRIVATE c-ares::cares)
     add_test(NAME ssh-network-utils-test COMMAND ssh-network-utils-test)
+
+    add_executable(authenticator-totp-test
+            tests/authenticator_totp_test.cpp
+            src/authenticator/authenticator_service.cpp
+            src/config/config_store.cpp)
+    target_include_directories(authenticator-totp-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(authenticator-totp-test
+            PRIVATE
+            nlohmann_json::nlohmann_json
+            unofficial::sqlite3::sqlite3
+            OpenSSL::Crypto)
+    add_test(NAME authenticator-totp-test COMMAND authenticator-totp-test)
 endif ()
 
 if (WIN32)

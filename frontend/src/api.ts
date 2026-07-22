@@ -364,6 +364,40 @@ export interface TransferClientRequest {
   files: string[];
 }
 
+export interface BackendSerialPort {
+  id: string;
+  name: string;
+  path: string;
+}
+
+export interface AuthenticatorEntry {
+  id: string;
+  name: string;
+  issuer: string;
+  account: string;
+  algorithm: "SHA1" | "SHA256" | "SHA512";
+  digits: 6 | 8;
+  period: number;
+  code: string;
+  remaining: number;
+}
+
+export interface AuthenticatorEntryInput {
+  id: string;
+  name: string;
+  issuer: string;
+  account: string;
+  secret: string;
+  algorithm: "SHA1" | "SHA256" | "SHA512";
+  digits: 6 | 8;
+  period: number;
+}
+
+export interface AuthenticatorEntriesResponse {
+  entries: AuthenticatorEntry[];
+  serverTime: number;
+}
+
 const api = axios.create({
   baseURL: "/api",
   timeout: 10000,
@@ -372,6 +406,25 @@ const api = axios.create({
 export async function fetchHealth(): Promise<HealthResponse> {
   const { data } = await api.get<HealthResponse>("/health");
   return data;
+}
+
+export async function fetchBackendSerialPorts(): Promise<{ ports: BackendSerialPort[] }> {
+  const { data } = await api.get<{ ports: BackendSerialPort[] }>("/tools/serial/ports");
+  return data;
+}
+
+export async function fetchAuthenticatorEntries(): Promise<AuthenticatorEntriesResponse> {
+  const { data } = await api.get<AuthenticatorEntriesResponse>("/tools/authenticator/entries");
+  return data;
+}
+
+export async function saveAuthenticatorEntry(payload: AuthenticatorEntryInput): Promise<AuthenticatorEntry> {
+  const { data } = await api.post<{ ok: boolean; entry: AuthenticatorEntry }>("/tools/authenticator/entries", payload);
+  return data.entry;
+}
+
+export async function deleteAuthenticatorEntry(id: string): Promise<void> {
+  await api.delete("/tools/authenticator/entries", { params: { id } });
 }
 
 export async function fetchConfig(): Promise<AppConfig> {

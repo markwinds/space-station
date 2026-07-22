@@ -55,6 +55,7 @@ struct StatementDeleter
 using SqliteStatement = std::unique_ptr<sqlite3_stmt, StatementDeleter>;
 
 inline constexpr std::string_view kSshCredentialVaultKey = "sshCredentials";
+inline constexpr std::string_view kAuthenticatorVaultKey = "authenticatorEntries";
 
 struct CipherContextDeleter
 {
@@ -1018,6 +1019,50 @@ void ConfigStore::DeleteSshCredential(const std::string& host_id)
         return;
     }
     SaveBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), vault);
+}
+
+nlohmann::json ConfigStore::LoadAuthenticatorEntries()
+{
+    std::lock_guard lock(mutex_);
+    const auto vault = LoadBusinessJsonUnlocked(std::string(kAuthenticatorVaultKey), nlohmann::json::object());
+    auto entries = nlohmann::json::array();
+    if (!vault.is_object())
+    {
+        return entries;
+    }
+    const auto database_path = DatabasePathForConfigJson(LoadJsonUnlocked());
+    const auto key_path = database_path.parent_path() / "authenticator" / "vault.key";
+    for (const auto& [id, envelope] : vault.items())
+    {
+        if (!envelope.is_object()) continue;
+        auto entry = DecryptCredential(key_path, id, envelope);
+        entry["id"] = id;
+        entries.push_back(std::move(entry));
+    }
+    return entries;
+}
+
+void ConfigStore::SaveAuthenticatorEntry(const nlohmann::json& entry)
+{
+    if (!entry.is_object()) throw std::invalid_argument("认证器条目不能为空。");
+    const auto id = entry.value("id", "");
+    const auto name = entry.value("name", "");
+    const auto secret = entry.value("secret", "");
+    if (id.empty() || name.empty() || secret.empty()) throw std::invalid_argument("认证器条目内容不完整。");
+    std::lock_guard lock(mutex_);
+    auto vault = LoadBusinessJsonUnlocked(std::string(kAuthenticatorVaultKey), nlohmann::json::object());
+    if (!vault.is_object()) vault = nlohmann::json::object();
+    const auto database_path = DatabasePathForConfigJson(LoadJsonUnlocked());
+    vault[id] = EncryptCredential(database_path.parent_path() / "authenticator" / "vault.key", id, entry);
+    SaveBusinessJsonUnlocked(std::string(kAuthenticatorVaultKey), vault);
+}
+
+void ConfigStore::DeleteAuthenticatorEntry(const std::string& id)
+{
+    std::lock_guard lock(mutex_);
+    auto vault = LoadBusinessJsonUnlocked(std::string(kAuthenticatorVaultKey), nlohmann::json::object());
+    if (!vault.is_object() || vault.erase(id) == 0) return;
+    SaveBusinessJsonUnlocked(std::string(kAuthenticatorVaultKey), vault);
 }
 
 std::filesystem::path ConfigStore::DefaultDataPath()

@@ -121,7 +121,7 @@
 
       <div v-if="activeTab && activePane === 'terminal' && showSearch" class="ssh-search-bar">
         <n-input ref="searchInput" v-model:value="searchQuery" size="small" clearable placeholder="输入文字，Enter 查找下一个" @keyup.enter="searchTerminal(false)" />
-        <span class="ssh-search-count">{{ activeTab.searchResultCount ? activeTab.searchResultIndex + 1 : 0 }}/{{ activeTab.searchResultCount }}</span>
+        <span class="ssh-search-count">{{ searchCountText(activeTab) }}</span>
         <n-input-number
           v-model:value="searchTargetIndex"
           class="ssh-search-index"
@@ -130,6 +130,8 @@
           :max="Math.max(1, activeTab.searchResultCount)"
           :show-button="false"
           placeholder="序号"
+          @focus="searchIndexEditing = true"
+          @blur="searchIndexEditing = false"
           @keyup.enter="jumpToSearchIndex"
         />
         <n-button size="small" @click="jumpToSearchIndex">跳转</n-button>
@@ -159,9 +161,19 @@
         :key="tab.id"
         class="ssh-terminal-pane"
       >
-        <section
-          :ref="(element) => setTerminalElement(tab.id, element as HTMLElement | null)"
+        <web-terminal
           class="ssh-terminal"
+          :scrollback="terminalSettings.scrollbackLines"
+          :font-size="terminalSettings.fontSize"
+          :line-height="terminalSettings.lineHeight"
+          :letter-spacing="terminalSettings.letterSpacing"
+          :restore-buffer="tab.restoreBuffer"
+          :search-highlight-limit="searchHighlightLimit"
+          @ready="handleTerminalReady(tab, $event)"
+          @data="handleTerminalData(tab, $event)"
+          @resize="handleTerminalResize(tab, $event)"
+          @renderer="updateRenderer(tab, $event)"
+          @search-results="updateSearchResults(tab, $event)"
         />
         <div class="ssh-command-panel">
           <div class="ssh-command-toolbar">
@@ -175,8 +187,11 @@
               <span v-if="pinnedSnippets.length === 0">暂无快捷片段</span>
             </div>
             <n-button text size="tiny" @click="openSnippets">管理片段</n-button>
+            <n-button text size="tiny" @click="toggleCommandComposer">
+              {{ terminalSettings.showCommandComposer ? '隐藏命令框' : '显示命令框' }}
+            </n-button>
           </div>
-          <div class="ssh-command-editor">
+          <div v-if="terminalSettings.showCommandComposer" class="ssh-command-editor">
             <n-input
               v-model:value="commandDraft"
               type="textarea"
@@ -348,6 +363,19 @@
           <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
         </n-form-item>
         <p class="ssh-field-hint">保存后对新打开或重新连接的终端生效。</p>
+        <n-form-item label="字体大小">
+          <n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" :step="1" />
+        </n-form-item>
+        <n-form-item label="行高">
+          <n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" />
+        </n-form-item>
+        <n-form-item label="字符间距">
+          <n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" />
+        </n-form-item>
+        <n-form-item label="命令编辑区">
+          <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示命令编辑和发送框</n-checkbox>
+        </n-form-item>
+        <p class="ssh-field-hint">字体和间距会立即应用到已打开终端；较小字体和行高可以显示更多行。</p>
         <n-form-item class="ssh-settings-recording" label="单次录制缓冲区上限（MiB）">
           <n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" />
         </n-form-item>
@@ -375,13 +403,7 @@
 </template>
 
 <script setup lang="ts">
-import "@xterm/xterm/css/xterm.css";
-import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
-import { SerializeAddon } from "@xterm/addon-serialize";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
+import type { Terminal } from "@xterm/xterm";
 import { AddOutline, CloseOutline, CreateOutline, MenuOutline } from "@vicons/ionicons5";
 import {
   NAlert,
@@ -416,6 +438,14 @@ import {
   type SshPortForward,
 } from "@/api";
 import SftpPanel from "./SftpPanel.vue";
+import WebTerminal from "../terminal/WebTerminal.vue";
+import type {
+  TerminalRenderer,
+  WebTerminalHandle,
+  WebTerminalReadyEvent,
+  WebTerminalResizeEvent,
+  WebTerminalSearchResult,
+} from "../terminal/WebTerminal.types";
 
 type ConnectionStatus = "connecting" | "authenticating" | "connected" | "closed" | "error";
 
@@ -426,11 +456,7 @@ interface TerminalTab {
   message: string;
   socket: WebSocket;
   terminal?: Terminal;
-  fitAddon?: FitAddon;
-  searchAddon?: SearchAddon;
-  serializeAddon?: SerializeAddon;
-  webglAddon?: WebglAddon;
-  resizeObserver?: ResizeObserver;
+  terminalView?: WebTerminalHandle;
   connectPayload: Record<string, unknown>;
   pendingCredential?: CredentialData;
   rememberCredential: boolean;
@@ -449,12 +475,8 @@ interface TerminalTab {
   renderer: "webgl" | "canvas";
   searchResultIndex: number;
   searchResultCount: number;
-  searchTerm: string;
-  searchCountTimer?: number;
-  searchMatches: Array<Array<{ row: number; column: number; width: number }>>;
-  searchOverlay?: HTMLElement;
+  searchResultLimited: boolean;
   clipboardCleanup?: () => void;
-  terminalTouchCleanup?: () => void;
   reconnectHintShown: boolean;
 }
 
@@ -463,6 +485,10 @@ interface CommandSnippet { id: string; name: string; command: string; pinned?: b
 interface TerminalSettings {
   scrollbackLines: number;
   recordingMaxMiB: number;
+  fontSize: number;
+  lineHeight: number;
+  letterSpacing: number;
+  showCommandComposer: boolean;
   copyOnSelect: boolean;
   pasteOnRightClick: boolean;
 }
@@ -494,6 +520,7 @@ const openedSftpTabs = computed(() => tabs.value.filter((tab) => openedSftpTabId
 const showSearch = ref(false);
 const searchQuery = ref("");
 const searchTargetIndex = ref<number | null>(null);
+const searchIndexEditing = ref(false);
 const searchInput = ref<InputInst | null>(null);
 const showSnippets = ref(false);
 const snippets = ref<CommandSnippet[]>(loadSnippets());
@@ -511,13 +538,13 @@ const recordingDraft = reactive({ stripAnsi: true, timestamps: false });
 const terminalSettings = reactive<TerminalSettings>(loadTerminalSettings());
 const terminalSettingsDraft = reactive<TerminalSettings>({ ...terminalSettings });
 const showTerminalSettings = ref(false);
-const terminalElements = new Map<string, HTMLElement>();
 const credentialCache = new Map<string, CredentialData>();
 let clipboardWarningShown = false;
 let clipboardFallbackHintShown = false;
 let clipboardPermissionStatus: PermissionStatus | undefined;
 let originalViewportContent: string | null = null;
 let originalThemeColor: string | null = null;
+let searchInputTimer: number | undefined;
 const clipboardPermissionState = ref<ClipboardReadState>("checking");
 const keyword = ref("");
 const loading = ref(true);
@@ -545,9 +572,7 @@ const hostScrollbarTheme = {
   colorHover: "#83b3af",
   railColor: "#151b20",
 };
-const terminalSearchOptions = {
-  caseSensitive: false,
-};
+const searchHighlightLimit = 1000;
 
 const filteredHosts = computed(() => {
   const query = keyword.value.trim().toLowerCase();
@@ -587,12 +612,13 @@ const clipboardPermissionLabel = computed(() => ({
 
 watch(searchQuery, (value) => {
   if (!showSearch.value) return;
+  if (searchInputTimer) window.clearTimeout(searchInputTimer);
   if (!value) {
-    activeTab.value?.searchAddon?.clearDecorations();
+    activeTab.value?.terminalView?.clearSearch();
     resetSearchResults(activeTab.value);
     return;
   }
-  searchTerminal(false, true);
+  searchInputTimer = window.setTimeout(() => searchTerminal(false, true), 200);
 });
 
 onMounted(() => {
@@ -613,6 +639,7 @@ onMounted(() => {
   window.addEventListener("keydown", handleGlobalShortcut, true);
 });
 onBeforeUnmount(() => {
+  if (searchInputTimer) window.clearTimeout(searchInputTimer);
   const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
   if (viewport && originalViewportContent !== null) viewport.content = originalViewportContent;
   const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -739,7 +766,7 @@ function resumeMobileSession(tab: TerminalTab) {
   activeTabId.value = tab.id;
   activePane.value = "terminal";
   void nextTick(() => {
-    tab.fitAddon?.fit();
+    tab.terminalView?.fit();
     sendResize(tab);
   });
 }
@@ -827,17 +854,15 @@ async function openTerminal(
     recordingSizeBytes: 0,
     recordingLimitReached: false,
     renderer: "canvas",
-    searchResultIndex: 0,
+    searchResultIndex: -1,
     searchResultCount: 0,
-    searchTerm: "",
-    searchMatches: [],
+    searchResultLimited: false,
     reconnectHintShown: false,
   };
   tabs.value.push(tab);
   activeTabId.value = id;
   activePane.value = "terminal";
   await nextTick();
-  initializeTerminal(tab);
   bindTerminalSocket(tab, socket);
 }
 
@@ -879,61 +904,10 @@ function bindTerminalSocket(tab: TerminalTab, socket: WebSocket) {
   };
 }
 
-function initializeTerminal(tab: TerminalTab) {
-  const element = terminalElements.get(tab.id);
-  if (!element) return;
-  const terminal = new Terminal({
-    cursorBlink: true,
-    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-    fontSize: 14,
-    scrollback: terminalSettings.scrollbackLines,
-    allowProposedApi: false,
-    theme: {
-      background: "#101418",
-      foreground: "#d8dee9",
-      cursor: "#8fbcbb",
-      selectionBackground: "#d96820",
-      selectionInactiveBackground: "#d96820",
-      selectionForeground: "#ffffff",
-    },
-  });
-  const fitAddon = new FitAddon();
-  const searchAddon = new SearchAddon();
-  const serializeAddon = new SerializeAddon();
-  terminal.loadAddon(fitAddon);
-  terminal.loadAddon(new WebLinksAddon());
-  terminal.loadAddon(searchAddon);
-  terminal.loadAddon(serializeAddon);
-  terminal.open(element);
-  const screen = element.querySelector<HTMLElement>(".xterm-screen");
-  if (screen) {
-    const overlay = document.createElement("div");
-    overlay.className = "ssh-search-overlay";
-    screen.appendChild(overlay);
-    tab.searchOverlay = overlay;
-  }
-  let webglAddon: WebglAddon | undefined;
-  try {
-    webglAddon = new WebglAddon();
-    webglAddon.onContextLoss(() => {
-      webglAddon?.dispose();
-      updateRenderer(tab, "canvas");
-    });
-    terminal.loadAddon(webglAddon);
-    updateRenderer(tab, "webgl");
-  } catch {
-    webglAddon = undefined;
-  }
-  if (tab.restoreBuffer) terminal.write(tab.restoreBuffer);
-  fitAddon.fit();
-  terminal.focus();
-  terminal.onData((data) => {
-    if (tab.status === "closed" || tab.status === "error") {
-      reconnectTab(tab);
-      return;
-    }
-    if (tab.socket.readyState === WebSocket.OPEN) tab.socket.send(new TextEncoder().encode(data));
-  });
+function handleTerminalReady(tab: TerminalTab, event: WebTerminalReadyEvent) {
+  const { terminal, element } = event;
+  tab.terminal = terminal;
+  tab.terminalView = event.handle;
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== "keydown" || (!event.ctrlKey && !event.metaKey)) return true;
     const key = event.key.toLowerCase();
@@ -955,60 +929,31 @@ function initializeTerminal(tab: TerminalTab) {
     return true;
   });
   setupTerminalClipboard(tab, terminal, element);
-  setupTerminalTouchScrolling(tab, terminal, element);
-  terminal.onScroll(() => renderSearchOverlay(tab));
-  const resizeObserver = new ResizeObserver(() => {
-    fitAddon.fit();
-    sendResize(tab);
-    renderSearchOverlay(tab);
-  });
-  resizeObserver.observe(element);
-  tab.terminal = terminal;
-  tab.fitAddon = fitAddon;
-  tab.searchAddon = searchAddon;
-  tab.serializeAddon = serializeAddon;
-  tab.webglAddon = webglAddon;
-  tab.resizeObserver = resizeObserver;
+  sendResize(tab);
 }
 
-function setupTerminalTouchScrolling(tab: TerminalTab, terminal: Terminal, element: HTMLElement) {
-  let lastY: number | null = null;
-  let remainder = 0;
-  const touchStart = (event: TouchEvent) => {
-    if (event.touches.length !== 1) {
-      lastY = null;
-      return;
-    }
-    lastY = event.touches[0].clientY;
-    remainder = 0;
-  };
-  const touchMove = (event: TouchEvent) => {
-    if (lastY === null || event.touches.length !== 1) return;
-    const currentY = event.touches[0].clientY;
-    remainder += lastY - currentY;
-    lastY = currentY;
-    const lineHeight = Math.max(12, element.clientHeight / Math.max(1, terminal.rows));
-    const lines = Math.trunc(remainder / lineHeight);
-    if (lines !== 0) {
-      terminal.scrollLines(lines);
-      remainder -= lines * lineHeight;
-    }
-    event.preventDefault();
-  };
-  const touchEnd = () => {
-    lastY = null;
-    remainder = 0;
-  };
-  element.addEventListener("touchstart", touchStart, { passive: true, capture: true });
-  element.addEventListener("touchmove", touchMove, { passive: false, capture: true });
-  element.addEventListener("touchend", touchEnd, { passive: true, capture: true });
-  element.addEventListener("touchcancel", touchEnd, { passive: true, capture: true });
-  tab.terminalTouchCleanup = () => {
-    element.removeEventListener("touchstart", touchStart, true);
-    element.removeEventListener("touchmove", touchMove, true);
-    element.removeEventListener("touchend", touchEnd, true);
-    element.removeEventListener("touchcancel", touchEnd, true);
-  };
+function handleTerminalData(tab: TerminalTab, data: string) {
+  if (tab.status === "closed" || tab.status === "error") {
+    reconnectTab(tab);
+    return;
+  }
+  if (tab.socket.readyState === WebSocket.OPEN) tab.socket.send(new TextEncoder().encode(data));
+}
+
+function handleTerminalResize(tab: TerminalTab, event: WebTerminalResizeEvent) {
+  if (tab.socket.readyState !== WebSocket.OPEN) return;
+  tab.socket.send(JSON.stringify({ type: "resize", columns: event.columns, rows: event.rows }));
+}
+
+function updateSearchResults(tab: TerminalTab, event: WebTerminalSearchResult) {
+  const reactiveTab = tabs.value.find((candidate) => candidate.id === tab.id);
+  if (!reactiveTab) return;
+  reactiveTab.searchResultIndex = event.resultIndex;
+  reactiveTab.searchResultCount = event.resultCount;
+  reactiveTab.searchResultLimited = event.limited;
+  if (reactiveTab.id === activeTabId.value && !searchIndexEditing.value) {
+    searchTargetIndex.value = event.resultIndex >= 0 ? event.resultIndex + 1 : null;
+  }
 }
 
 function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: HTMLElement) {
@@ -1127,7 +1072,7 @@ async function requestClipboardAccess() {
 function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
   if (event.data instanceof ArrayBuffer) {
     const bytes = new Uint8Array(event.data);
-    tab.terminal?.write(bytes, () => scheduleSearchCount(tab));
+    tab.terminal?.write(bytes);
     const recordingLimit = terminalSettings.recordingMaxMiB * 1024 * 1024;
     if (tab.recording && tab.recordingSizeBytes < recordingLimit) {
       if (tab.recordingSizeBytes + bytes.byteLength <= recordingLimit) {
@@ -1220,7 +1165,7 @@ function activateTab(id: string) {
   nextTick(() => {
     const tab = tabs.value.find((item) => item.id === id);
     if (activePane.value === "terminal") {
-      tab?.fitAddon?.fit();
+      tab?.terminalView?.fit();
       tab?.terminal?.focus();
       if (tab) sendResize(tab);
       if (tab && showSearch.value && searchQuery.value) searchTerminal(false, true);
@@ -1270,7 +1215,7 @@ function showTerminalPane() {
   activePane.value = "terminal";
   nextTick(() => {
     const tab = activeTab.value;
-    tab?.fitAddon?.fit();
+    tab?.terminalView?.fit();
     tab?.terminal?.focus();
     if (tab) sendResize(tab);
   });
@@ -1302,27 +1247,20 @@ function reconnectTab(tab: TerminalTab) {
 }
 
 function searchTerminal(previous: boolean, incremental = false) {
-  const tab = activeTab.value;
-  const addon = tab?.searchAddon;
-  if (!tab || !addon || !searchQuery.value) return;
-  const termChanged = tab.searchTerm !== searchQuery.value;
-  updateSearchCount(tab, searchQuery.value);
-  if (tab.searchResultCount > 0) {
-    if (termChanged || incremental) tab.searchResultIndex = 0;
-    else if (previous) tab.searchResultIndex = (tab.searchResultIndex - 1 + tab.searchResultCount) % tab.searchResultCount;
-    else tab.searchResultIndex = (tab.searchResultIndex + 1) % tab.searchResultCount;
+  if (searchInputTimer) {
+    window.clearTimeout(searchInputTimer);
+    searchInputTimer = undefined;
   }
-  tab.searchTerm = searchQuery.value;
-  updateSearchCount(tab, searchQuery.value);
-  searchTargetIndex.value = tab.searchResultCount ? tab.searchResultIndex + 1 : null;
-  const options = { ...terminalSearchOptions, incremental };
-  if (previous) addon.findPrevious(searchQuery.value, options);
-  else addon.findNext(searchQuery.value, options);
+  const tab = activeTab.value;
+  if (!tab || !searchQuery.value) return;
+  tab.terminalView?.search(searchQuery.value, previous, incremental);
 }
 
 function openSearch() {
   showSearch.value = true;
-  searchTargetIndex.value = activeTab.value?.searchResultCount ? activeTab.value.searchResultIndex + 1 : null;
+  searchTargetIndex.value = activeTab.value?.searchResultIndex !== undefined && activeTab.value.searchResultIndex >= 0
+    ? activeTab.value.searchResultIndex + 1
+    : null;
   nextTick(() => {
     searchInput.value?.focus();
     if (searchQuery.value) searchTerminal(false, true);
@@ -1330,9 +1268,13 @@ function openSearch() {
 }
 
 function closeSearch() {
+  if (searchInputTimer) {
+    window.clearTimeout(searchInputTimer);
+    searchInputTimer = undefined;
+  }
   showSearch.value = false;
   tabs.value.forEach((tab) => {
-    tab.searchAddon?.clearDecorations();
+    tab.terminalView?.clearSearch();
     resetSearchResults(tab);
   });
   activeTab.value?.terminal?.focus();
@@ -1345,112 +1287,28 @@ function toggleSearch() {
 
 function resetSearchResults(tab?: TerminalTab) {
   if (!tab) return;
-  tab.searchResultIndex = 0;
+  tab.searchResultIndex = -1;
   tab.searchResultCount = 0;
-  tab.searchTerm = "";
-  tab.searchMatches = [];
+  tab.searchResultLimited = false;
   if (tab.id === activeTabId.value) searchTargetIndex.value = null;
-  renderSearchOverlay(tab);
-}
-
-function updateSearchCount(tab: TerminalTab, term: string) {
-  const buffer = tab.terminal?.buffer.active;
-  if (!buffer || !term) {
-    resetSearchResults(tab);
-    return;
-  }
-  const terminal = tab.terminal!;
-  const needle = term.toLocaleLowerCase();
-  const matches: Array<Array<{ row: number; column: number; width: number }>> = [];
-  let logicalText = "";
-  let cells: Array<{ start: number; end: number; row: number; column: number; width: number }> = [];
-  const collectLine = () => {
-    const value = logicalText.toLocaleLowerCase();
-    let offset = 0;
-    while ((offset = value.indexOf(needle, offset)) >= 0) {
-      const end = offset + needle.length;
-      const covered = cells.filter((cell) => cell.end > offset && cell.start < end);
-      const ranges: Array<{ row: number; column: number; width: number }> = [];
-      for (const cell of covered) {
-        const last = ranges[ranges.length - 1];
-        if (last && last.row === cell.row && last.column + last.width === cell.column) last.width += cell.width;
-        else ranges.push({ row: cell.row, column: cell.column, width: cell.width });
-      }
-      if (ranges.length) matches.push(ranges);
-      offset += Math.max(1, needle.length);
-    }
-    logicalText = "";
-    cells = [];
-  };
-  for (let index = 0; index < buffer.length; ++index) {
-    const line = buffer.getLine(index);
-    if (!line) continue;
-    if (!line.isWrapped && logicalText) collectLine();
-    for (let column = 0; column < terminal.cols; ++column) {
-      const cell = line.getCell(column);
-      if (!cell || cell.getWidth() === 0) continue;
-      const value = cell.getChars() || " ";
-      const start = logicalText.length;
-      logicalText += value;
-      cells.push({ start, end: logicalText.length, row: index, column, width: Math.max(1, cell.getWidth()) });
-    }
-  }
-  if (logicalText) collectLine();
-  tab.searchResultCount = matches.length;
-  tab.searchMatches = matches;
-  if (!matches.length) tab.searchResultIndex = 0;
-  else tab.searchResultIndex = Math.min(tab.searchResultIndex, matches.length - 1);
-  if (tab.id === activeTabId.value) searchTargetIndex.value = matches.length ? tab.searchResultIndex + 1 : null;
-  renderSearchOverlay(tab);
 }
 
 function jumpToSearchIndex() {
   const tab = activeTab.value;
-  if (!tab?.terminal || !tab.searchResultCount) {
-    message.warning("当前没有搜索结果");
-    return;
-  }
   const target = Math.trunc(Number(searchTargetIndex.value));
-  if (!Number.isFinite(target) || target < 1 || target > tab.searchResultCount) {
-    message.warning(`请输入 1 到 ${tab.searchResultCount} 之间的序号`);
+  if (!tab || !Number.isFinite(target) || target < 1 || target > tab.searchResultCount) {
+    message.warning(tab?.searchResultCount ? `请输入 1 到 ${tab.searchResultCount} 之间的序号` : "当前没有搜索结果");
     return;
   }
-  tab.searchResultIndex = target - 1;
-  const firstRange = tab.searchMatches[tab.searchResultIndex]?.[0];
-  if (firstRange) {
-    tab.terminal.scrollToLine(Math.max(0, firstRange.row - Math.floor(tab.terminal.rows / 2)));
-    tab.terminal.select(firstRange.column, firstRange.row, firstRange.width);
+  if (!tab.terminalView?.jumpToSearchIndex(target - 1)) {
+    message.warning("搜索索引尚未准备完成，请稍后重试");
   }
-  renderSearchOverlay(tab);
-  tab.terminal.focus();
 }
 
-function renderSearchOverlay(tab: TerminalTab) {
-  const terminal = tab.terminal;
-  const overlay = tab.searchOverlay;
-  if (!terminal || !overlay) return;
-  overlay.replaceChildren();
-  if (!showSearch.value || !searchQuery.value) return;
-  const viewportY = terminal.buffer.active.viewportY;
-  const cellWidth = overlay.parentElement!.clientWidth / terminal.cols;
-  const cellHeight = overlay.parentElement!.clientHeight / terminal.rows;
-  tab.searchMatches.forEach((ranges, matchIndex) => ranges.forEach((range) => {
-    const viewportRow = range.row - viewportY;
-    if (viewportRow < 0 || viewportRow >= terminal.rows) return;
-    const highlight = document.createElement("span");
-    highlight.className = matchIndex === tab.searchResultIndex ? "ssh-search-match active" : "ssh-search-match";
-    highlight.style.left = `${range.column * cellWidth}px`;
-    highlight.style.top = `${viewportRow * cellHeight}px`;
-    highlight.style.width = `${range.width * cellWidth}px`;
-    highlight.style.height = `${cellHeight}px`;
-    overlay.appendChild(highlight);
-  }));
-}
-
-function scheduleSearchCount(tab: TerminalTab) {
-  if (!showSearch.value || tab.id !== activeTabId.value || !searchQuery.value) return;
-  if (tab.searchCountTimer) window.clearTimeout(tab.searchCountTimer);
-  tab.searchCountTimer = window.setTimeout(() => updateSearchCount(tab, searchQuery.value), 200);
+function searchCountText(tab: TerminalTab) {
+  const current = tab.searchResultIndex >= 0 ? String(tab.searchResultIndex + 1) : tab.searchResultCount ? "?" : "0";
+  const total = tab.searchResultLimited ? `${searchHighlightLimit}+` : String(tab.searchResultCount);
+  return `${current}/${total}`;
 }
 
 function handleGlobalShortcut(event: KeyboardEvent) {
@@ -1460,7 +1318,7 @@ function handleGlobalShortcut(event: KeyboardEvent) {
   }
 }
 
-function updateRenderer(tab: TerminalTab, renderer: "webgl" | "canvas") {
+function updateRenderer(tab: TerminalTab, renderer: TerminalRenderer) {
   const reactiveTab = tabs.value.find((item) => item.id === tab.id);
   if (reactiveTab) reactiveTab.renderer = renderer;
 }
@@ -1556,12 +1414,25 @@ function normalizeRecordingText(value: string) {
 }
 
 function loadTerminalSettings(): TerminalSettings {
-  const defaults: TerminalSettings = { scrollbackLines: 50000, recordingMaxMiB: 50, copyOnSelect: false, pasteOnRightClick: false };
+  const defaults: TerminalSettings = {
+    scrollbackLines: 50000,
+    recordingMaxMiB: 50,
+    fontSize: 14,
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    showCommandComposer: true,
+    copyOnSelect: false,
+    pasteOnRightClick: false,
+  };
   try {
     const saved = JSON.parse(localStorage.getItem("ssh-terminal-settings") || "{}") as Partial<TerminalSettings>;
     return {
       scrollbackLines: clampNumber(saved.scrollbackLines, 1000, 500000, defaults.scrollbackLines),
       recordingMaxMiB: clampNumber(saved.recordingMaxMiB, 1, 500, defaults.recordingMaxMiB),
+      fontSize: clampNumber(saved.fontSize, 10, 28, defaults.fontSize),
+      lineHeight: clampDecimal(saved.lineHeight, 1, 2, defaults.lineHeight),
+      letterSpacing: clampDecimal(saved.letterSpacing, 0, 4, defaults.letterSpacing),
+      showCommandComposer: saved.showCommandComposer !== false,
       copyOnSelect: saved.copyOnSelect === true,
       pasteOnRightClick: saved.pasteOnRightClick === true,
     };
@@ -1575,6 +1446,11 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
 }
 
+function clampDecimal(value: unknown, min: number, max: number, fallback: number) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+}
+
 function openTerminalSettings() {
   Object.assign(terminalSettingsDraft, terminalSettings);
   showTerminalSettings.value = true;
@@ -1584,12 +1460,21 @@ function openTerminalSettings() {
 function saveTerminalSettings() {
   terminalSettings.scrollbackLines = clampNumber(terminalSettingsDraft.scrollbackLines, 1000, 500000, 50000);
   terminalSettings.recordingMaxMiB = clampNumber(terminalSettingsDraft.recordingMaxMiB, 1, 500, 50);
+  terminalSettings.fontSize = clampNumber(terminalSettingsDraft.fontSize, 10, 28, 14);
+  terminalSettings.lineHeight = clampDecimal(terminalSettingsDraft.lineHeight, 1, 2, 1.2);
+  terminalSettings.letterSpacing = clampDecimal(terminalSettingsDraft.letterSpacing, 0, 4, 0);
+  terminalSettings.showCommandComposer = terminalSettingsDraft.showCommandComposer !== false;
   terminalSettings.copyOnSelect = terminalSettingsDraft.copyOnSelect === true;
   terminalSettings.pasteOnRightClick = terminalSettingsDraft.pasteOnRightClick === true;
   Object.assign(terminalSettingsDraft, terminalSettings);
   localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
+  tabs.value.forEach((tab) => tab.terminalView?.setAppearance({
+    fontSize: terminalSettings.fontSize,
+    lineHeight: terminalSettings.lineHeight,
+    letterSpacing: terminalSettings.letterSpacing,
+  }));
   showTerminalSettings.value = false;
-  message.success("终端设置已保存；回滚行数将在新终端中生效");
+  message.success("终端显示设置已应用；回滚行数将在新终端中生效");
 }
 
 function loadSnippets(): CommandSnippet[] {
@@ -1646,7 +1531,16 @@ function sendSnippet(snippet: CommandSnippet, closeModal = true) {
 function toggleQuickSnippets() {
   showQuickSnippets.value = !showQuickSnippets.value;
   localStorage.setItem("ssh-show-quick-snippets", String(showQuickSnippets.value));
-  nextTick(() => activeTab.value?.fitAddon?.fit());
+  nextTick(() => {
+    activeTab.value?.terminalView?.fit();
+  });
+}
+
+function toggleCommandComposer() {
+  terminalSettings.showCommandComposer = !terminalSettings.showCommandComposer;
+  terminalSettingsDraft.showCommandComposer = terminalSettings.showCommandComposer;
+  localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
+  nextTick(() => activeTab.value?.terminalView?.fit());
 }
 
 function sendCommand() {
@@ -1687,6 +1581,10 @@ async function importConfiguration(event: Event) {
     if (data.terminalSettings) {
       terminalSettings.scrollbackLines = clampNumber(data.terminalSettings.scrollbackLines, 1000, 500000, terminalSettings.scrollbackLines);
       terminalSettings.recordingMaxMiB = clampNumber(data.terminalSettings.recordingMaxMiB, 1, 500, terminalSettings.recordingMaxMiB);
+      terminalSettings.fontSize = clampNumber(data.terminalSettings.fontSize, 10, 28, terminalSettings.fontSize);
+      terminalSettings.lineHeight = clampDecimal(data.terminalSettings.lineHeight, 1, 2, terminalSettings.lineHeight);
+      terminalSettings.letterSpacing = clampDecimal(data.terminalSettings.letterSpacing, 0, 4, terminalSettings.letterSpacing);
+      if (typeof data.terminalSettings.showCommandComposer === "boolean") terminalSettings.showCommandComposer = data.terminalSettings.showCommandComposer;
       if (typeof data.terminalSettings.copyOnSelect === "boolean") terminalSettings.copyOnSelect = data.terminalSettings.copyOnSelect;
       if (typeof data.terminalSettings.pasteOnRightClick === "boolean") terminalSettings.pasteOnRightClick = data.terminalSettings.pasteOnRightClick;
       localStorage.setItem("ssh-terminal-settings", JSON.stringify(terminalSettings));
@@ -1743,11 +1641,6 @@ async function stopForward(id: string) {
   await refreshForwards();
 }
 
-function setTerminalElement(id: string, element: HTMLElement | null) {
-  if (element) terminalElements.set(id, element);
-  else terminalElements.delete(id);
-}
-
 function closeTab(id: string) {
   const index = tabs.value.findIndex((tab) => tab.id === id);
   if (index < 0) return;
@@ -1763,20 +1656,13 @@ function closeTab(id: string) {
 }
 
 function disposeTab(tab: TerminalTab) {
-  if (tab.searchCountTimer) window.clearTimeout(tab.searchCountTimer);
   tab.clipboardCleanup?.();
-  tab.terminalTouchCleanup?.();
-  tab.searchOverlay?.remove();
-  tab.resizeObserver?.disconnect();
-  tab.webglAddon?.dispose();
-  tab.terminal?.dispose();
   if (tab.socket.readyState === WebSocket.OPEN || tab.socket.readyState === WebSocket.CONNECTING) tab.socket.close();
   if (tab.pendingCredential) {
     tab.pendingCredential.password = "";
     tab.pendingCredential.privateKey = "";
     tab.pendingCredential.passphrase = "";
   }
-  terminalElements.delete(tab.id);
 }
 </script>
 
@@ -1827,8 +1713,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-search-bar :deep(.n-button) { color: #e5edf2; background: #34434e; border-color: #5d707c; }
 .ssh-search-bar :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
 .ssh-search-bar > :first-child { min-width: 160px; flex: 1; }
+.ssh-search-index { width: 86px; flex: none; }
 .ssh-search-count { min-width: 54px; color: #dce5ea; font: 12px/1.4 monospace; text-align: center; white-space: nowrap; }
-.ssh-search-index { width: 72px; flex: 0 0 72px; }
 .ssh-config-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -7px; }
 .ssh-config-actions :deep(.n-button) { color: #d5dfe5; background: #26323a; border-color: #41515d; }
 .ssh-config-actions :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
@@ -1846,9 +1732,6 @@ function disposeTab(tab: TerminalTab) {
 .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport) { height: 100%; }
 .ssh-terminal :deep(.xterm) { touch-action: pan-y; }
 .ssh-terminal :deep(.xterm-viewport) { overflow-y: auto !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
-.ssh-terminal :deep(.ssh-search-overlay) { position: absolute; z-index: 30; inset: 0; overflow: hidden; pointer-events: none; }
-.ssh-terminal :deep(.ssh-search-match) { position: absolute; box-sizing: border-box; border: 1px solid #e1ca4d; background: rgb(167 145 25 / 62%); }
-.ssh-terminal :deep(.ssh-search-match.active) { border: 2px solid #ffe39a; background: rgb(224 92 17 / 78%); }
 .ssh-welcome { display: grid; place-content: center; justify-items: center; color: #788690; text-align: center; }
 .ssh-welcome-mark { color: #79a8a5; font: 700 52px/1 monospace; }
 .ssh-welcome h1 { margin: 18px 0 7px; color: #b9c3ca; font-size: 20px; }

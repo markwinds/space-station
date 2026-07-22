@@ -5,11 +5,13 @@ import {
   CubeOutline,
   FolderOpenOutline,
   KeyOutline,
+  KeypadOutline,
   SwapHorizontalOutline,
   TerminalOutline,
+  HardwareChipOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -37,6 +39,14 @@ export const tools: ToolDefinition[] = [
     category: "Security",
     icon: KeyOutline,
     path: "/tools/certificate",
+  },
+  {
+    id: "authenticator",
+    title: "认证器",
+    description: "生成和管理 TOTP 动态验证码",
+    category: "Security",
+    icon: KeypadOutline,
+    path: "/tools/authenticator",
   },
   {
     id: "timeManager",
@@ -77,6 +87,14 @@ export const tools: ToolDefinition[] = [
     category: "Remote",
     icon: TerminalOutline,
     path: "/tools/ssh",
+  },
+  {
+    id: "serial",
+    title: "串口终端",
+    description: "连接浏览器或服务器所在主机的串口",
+    category: "Device",
+    icon: HardwareChipOutline,
+    path: "/tools/serial",
   },
   {
     id: "runtime",

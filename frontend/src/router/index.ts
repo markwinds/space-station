@@ -12,6 +12,8 @@ const HabitTool = defineAsyncComponent(() => import("@/components/tools/HabitToo
 const FileShareTool = defineAsyncComponent(() => import("@/components/tools/FileShareTool.vue"));
 const TransferTool = defineAsyncComponent(() => import("@/components/tools/TransferTool.vue"));
 const SshTool = defineAsyncComponent(() => import("@/components/tools/SshTool.vue"));
+const SerialTool = defineAsyncComponent(() => import("@/components/tools/SerialTool.vue"));
+const AuthenticatorTool = defineAsyncComponent(() => import("@/components/tools/AuthenticatorTool.vue"));
 
 const router = createRouter({
   history: createWebHistory("/web/"),
@@ -37,6 +39,15 @@ const router = createRouter({
       props: {
         tool: findTool("certificate"),
         component: CertificateTool,
+      },
+    },
+    {
+      path: "/tools/authenticator",
+      name: "authenticator",
+      component: ToolView,
+      props: {
+        tool: findTool("authenticator"),
+        component: AuthenticatorTool,
       },
     },
     {
@@ -85,6 +96,17 @@ const router = createRouter({
       props: {
         tool: findTool("ssh"),
         component: SshTool,
+        hideHeader: true,
+      },
+    },
+    {
+      path: "/tools/serial",
+      name: "serial",
+      component: ToolView,
+      meta: { hideChrome: true },
+      props: {
+        tool: findTool("serial"),
+        component: SerialTool,
         hideHeader: true,
       },
     },
