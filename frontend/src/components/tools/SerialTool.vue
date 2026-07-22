@@ -71,7 +71,6 @@
           <terminal-action-bar
             class="serial-desktop-actions"
             :recording="Boolean(activeView?.recording)"
-            :renderer="activeView?.renderer"
             settings
             @search="openSearch"
             @snippets="showSnippets = true"
@@ -82,6 +81,7 @@
           <n-button v-if="activeSession.status === 'error' || activeSession.status === 'closed'" size="tiny" secondary @click="reconnectActive">重连</n-button>
           <span class="serial-location">{{ activeSession.location === 'browser' ? '浏览器' : '服务器' }}</span>
           <span class="serial-status-label" :class="activeSession.status">{{ statusText(activeSession) }}</span>
+          <terminal-renderer-badge v-if="activeView" class="serial-renderer" :renderer="activeView.renderer" />
         </div>
       </header>
 
@@ -209,6 +209,7 @@ import WebTerminal from "../terminal/WebTerminal.vue";
 import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
 import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
+import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
 import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
@@ -243,6 +244,8 @@ interface SerialSession {
   chunks: Uint8Array[];
   bufferedBytes: number;
   socket?: WebSocket;
+  socketOpened: boolean;
+  keepaliveTimer?: number;
   browserPort?: SerialPort;
   reader?: ReadableStreamDefaultReader<Uint8Array>;
   readTask?: Promise<void>;
@@ -410,6 +413,7 @@ async function openSelectedPort() {
     closing: false,
     chunks: [],
     bufferedBytes: 0,
+    socketOpened: false,
     browserPort: browserItem ? markRaw(browserItem.port) : undefined,
     writeChain: Promise.resolve(),
   });
@@ -464,13 +468,21 @@ function openServerSession(session: SerialSession) {
   const socket = markRaw(new WebSocket(`${protocol}//${window.location.host}/api/tools/serial/session`));
   socket.binaryType = "arraybuffer";
   session.socket = socket;
-  socket.onopen = () => socket.send(JSON.stringify({ type: "open", port: session.portId, options: {
-    baudRate: session.settings.baudRate,
-    dataBits: session.settings.dataBits,
-    stopBits: session.settings.stopBits,
-    parity: session.settings.parity,
-    flowControl: session.settings.flowControl,
-  } }));
+  session.socketOpened = false;
+  socket.onopen = () => {
+    session.socketOpened = true;
+    socket.send(JSON.stringify({ type: "open", port: session.portId, options: {
+      baudRate: session.settings.baudRate,
+      dataBits: session.settings.dataBits,
+      stopBits: session.settings.stopBits,
+      parity: session.settings.parity,
+      flowControl: session.settings.flowControl,
+    } }));
+    window.clearInterval(session.keepaliveTimer);
+    session.keepaliveTimer = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ping", at: Date.now() }));
+    }, 15000);
+  };
   socket.onmessage = (event) => {
     if (event.data instanceof ArrayBuffer) { receiveData(session, new Uint8Array(event.data)); return; }
     if (event.data instanceof Blob) { void event.data.arrayBuffer().then((data) => receiveData(session, new Uint8Array(data))); return; }
@@ -485,9 +497,13 @@ function openServerSession(session: SerialSession) {
     } catch { /* Ignore non-protocol text. */ }
   };
   socket.onerror = () => {
-    if (!session.error) failSession(session, "串口 WebSocket 握手失败，请确认后端服务仍在运行并刷新服务器设备列表。");
+    if (!session.error) failSession(session, session.socketOpened
+      ? "串口 WebSocket 连接异常中断，请检查网络或后端日志。"
+      : "串口 WebSocket 握手失败，请确认后端服务仍在运行并刷新服务器设备列表。");
   };
   socket.onclose = (event) => {
+    window.clearInterval(session.keepaliveTimer);
+    session.keepaliveTimer = undefined;
     if (!session.closing && session.status !== "error") {
       session.status = "closed";
       const detail = event.reason ? `：${event.reason}` : event.code !== 1000 ? `（代码 ${event.code}）` : "";
@@ -616,6 +632,8 @@ async function closeSession(session: SerialSession) {
   session.closing = true;
   session.status = "closed";
   if (session.location === "server") {
+    window.clearInterval(session.keepaliveTimer);
+    session.keepaliveTimer = undefined;
     const socket = session.socket;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "close" }));
     if (socket) {
@@ -909,6 +927,7 @@ onBeforeUnmount(() => {
 .serial-status-dot.error { background: #e26969; }
 .serial-tab-actions { min-width: 0; flex: 0 0 auto; padding: 0 12px; display: flex; align-items: center; gap: 8px; }
 .serial-location, .serial-status-label { padding: 3px 8px; border-radius: 999px; background: #263640; color: #b9c8d1; font-size: 11px; white-space: nowrap; }
+.serial-renderer { order: 10; }
 .serial-status-label.open { background: rgba(39, 135, 83, .26); color: #78d7a1; }
 .serial-status-label.error { background: rgba(169, 62, 62, .28); color: #f0a0a0; }
 .serial-mobile-menu { display: none; align-self: center; margin-left: 8px; }

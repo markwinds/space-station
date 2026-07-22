@@ -54,7 +54,11 @@ void SerialWebSocketController::handleNewMessage(const drogon::WebSocketConnecti
         const auto payload = nlohmann::json::parse(message, nullptr, false);
         if (!payload.is_object()) throw std::runtime_error("串口消息格式无效。");
         const auto action = payload.value("type", "");
-        if (action == "open")
+        if (action == "ping")
+        {
+            connection->send(nlohmann::json({{"type", "pong"}, {"at", payload.value("at", 0LL)}}).dump());
+        }
+        else if (action == "open")
         {
             if (!state->subscription_id.empty()) throw std::runtime_error("当前连接已经打开串口。");
             state->subscription_id = service_.Attach(payload.value("port", ""),
