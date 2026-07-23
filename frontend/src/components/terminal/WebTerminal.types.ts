@@ -24,7 +24,14 @@ export interface WebTerminalHandle {
   writeln(data: string): void;
   fit(): void;
   focus(): void;
-  search(term: string, previous?: boolean, incremental?: boolean): boolean;
+  search(
+    term: string,
+    previous?: boolean,
+    incremental?: boolean,
+    caseSensitive?: boolean,
+    wholeWord?: boolean,
+    regex?: boolean,
+  ): boolean;
   jumpToSearchIndex(index: number): boolean;
   clearSearch(): void;
   setAppearance(options: { fontSize?: number; lineHeight?: number; letterSpacing?: number }): void;

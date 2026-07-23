@@ -244,6 +244,7 @@
             </div>
           </n-popover>
           <n-input
+            ref="taskTitleInput"
             :value="selectedTask.title"
             placeholder="任务标题"
             @update:value="updateTask(selectedTask.id, { title: $event })"
@@ -347,6 +348,7 @@ import {
   NRadioButton,
   NRadioGroup,
   NSelect,
+  type InputInst,
 } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue";
 import {
@@ -385,6 +387,7 @@ const calendarMode = ref<CalendarMode>("month");
 const calendarCursor = ref(startOfDay(new Date()));
 const activePanel = ref<PanelName>(null);
 const selectedTaskId = ref<string | null>(null);
+const taskTitleInput = ref<InputInst | null>(null);
 const detailsExpanded = ref(false);
 const iconPickerOpen = ref(false);
 const completionEffect = ref<{ id: number; x: number; y: number } | null>(null);
@@ -798,6 +801,7 @@ async function addTask(parentId: string | null) {
     if (el) {
       mind.value.selectNode(el, true);
     }
+    focusTaskTitle();
     return;
   }
   state.tasks.push(task);
@@ -810,7 +814,13 @@ async function addTask(parentId: string | null) {
     if (el) {
       mind.value?.selectNode(el, true);
     }
+    focusTaskTitle();
   });
+}
+
+function focusTaskTitle() {
+  taskTitleInput.value?.focus();
+  taskTitleInput.value?.select();
 }
 
 function updateTask(id: string, patch: Partial<TimeManagerTask>) {

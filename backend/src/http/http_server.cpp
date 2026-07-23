@@ -4,6 +4,7 @@
 #include "embedded_assets.hpp"
 #include "logging/logger.hpp"
 #include "serial/serial_websocket.hpp"
+#include "serial/browser_serial_share_websocket.hpp"
 #include "ssh/ssh_websocket.hpp"
 
 #include <nlohmann/json.hpp>
@@ -513,6 +514,9 @@ void HttpServer::RegisterRoutes()
 {
     serial_websocket_controller_ = std::make_shared<serial::SerialWebSocketController>(serial_service_);
     drogon::app().registerController(serial_websocket_controller_);
+    browser_serial_share_websocket_controller_ =
+        std::make_shared<serial::BrowserSerialShareWebSocketController>(browser_serial_share_service_);
+    drogon::app().registerController(browser_serial_share_websocket_controller_);
     ssh_websocket_controller_ = std::make_shared<ssh::SshWebSocketController>(config_store_);
     drogon::app().registerController(ssh_websocket_controller_);
 
@@ -546,6 +550,14 @@ void HttpServer::RegisterRoutes()
             {
                 callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
             }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/serial/browser-shares",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            callback(JsonResponse(browser_serial_share_service_.ListShares()));
         },
         {drogon::Get});
 

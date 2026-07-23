@@ -122,6 +122,9 @@
         ref="searchInput"
         v-model:query="searchQuery"
         v-model:target-index="searchTargetIndex"
+        v-model:case-sensitive="searchCaseSensitive"
+        v-model:whole-word="searchWholeWord"
+        v-model:regex="searchRegex"
         class="ssh-search-bar"
         :result-count="activeTab.searchResultCount"
         :count-text="searchCountText(activeTab)"
@@ -506,6 +509,9 @@ const openedSftpTabIds = ref<string[]>([]);
 const openedSftpTabs = computed(() => tabs.value.filter((tab) => openedSftpTabIds.value.includes(tab.id)));
 const showSearch = ref(false);
 const searchQuery = ref("");
+const searchCaseSensitive = ref(false);
+const searchWholeWord = ref(false);
+const searchRegex = ref(false);
 const searchTargetIndex = ref<number | null>(null);
 const searchIndexEditing = ref(false);
 const searchInput = ref<{ focus: () => void } | null>(null);
@@ -597,7 +603,7 @@ const clipboardPermissionLabel = computed(() => ({
   insecure: "当前页面不安全",
 })[clipboardPermissionState.value]);
 
-watch(searchQuery, (value) => {
+watch([searchQuery, searchCaseSensitive, searchWholeWord, searchRegex], ([value]) => {
   if (!showSearch.value) return;
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
   if (!value) {
@@ -846,11 +852,14 @@ async function openTerminal(
     searchResultLimited: false,
     reconnectHintShown: false,
   };
+  // The backend sends `ready` immediately after the WebSocket handshake. Bind
+  // handlers before rendering the terminal so a fast first connection cannot
+  // lose that event while `nextTick` is pending.
+  bindTerminalSocket(tab, socket);
   tabs.value.push(tab);
   activeTabId.value = id;
   activePane.value = "terminal";
   await nextTick();
-  bindTerminalSocket(tab, socket);
 }
 
 function createTerminalSocket() {
@@ -1211,7 +1220,14 @@ function searchTerminal(previous: boolean, incremental = false) {
   }
   const tab = activeTab.value;
   if (!tab || !searchQuery.value) return;
-  tab.terminalView?.search(searchQuery.value, previous, incremental);
+  tab.terminalView?.search(
+    searchQuery.value,
+    previous,
+    incremental,
+    searchCaseSensitive.value,
+    searchWholeWord.value,
+    searchRegex.value,
+  );
 }
 
 function openSearch() {
@@ -1630,12 +1646,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-pane-switch { align-self: center; margin: 0 4px; padding: 2px; display: flex; border: 1px solid #2b3740; border-radius: 6px; background: #101418; }
 .ssh-pane-switch button { padding: 3px 9px; border: 0; border-radius: 4px; background: transparent; color: #7f8d99; font-size: 12px; cursor: pointer; }
 .ssh-pane-switch button.active { background: #2b3a42; color: #dce4e9; }
-.ssh-search-bar { position: absolute; z-index: 5; top: 47px; right: 12px; width: min(650px, calc(100% - 24px)); padding: 8px; display: flex; align-items: center; gap: 7px; border: 1px solid #4d606c; border-radius: 7px; background: #1a2228; box-shadow: 0 8px 24px #0008; }
-.ssh-search-bar :deep(.n-button) { color: #e5edf2; background: #34434e; border-color: #5d707c; }
-.ssh-search-bar :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
-.ssh-search-bar > :first-child { min-width: 160px; flex: 1; }
-.ssh-search-index { width: 86px; flex: none; }
-.ssh-search-count { min-width: 54px; color: #dce5ea; font: 12px/1.4 monospace; text-align: center; white-space: nowrap; }
+.ssh-search-bar { top: 47px; }
 .ssh-config-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -7px; }
 .ssh-config-actions :deep(.n-button) { color: #d5dfe5; background: #26323a; border-color: #41515d; }
 .ssh-config-actions :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
@@ -1737,8 +1748,6 @@ function disposeTab(tab: TerminalTab) {
   .ssh-persist-credential { display: flex; margin: 10px 0 0; }
   .ssh-forward-form { grid-template-columns: 1fr; }
   .ssh-forward-form > :last-child { grid-column: 1; }
-  .ssh-search-bar { flex-wrap: wrap; }
-  .ssh-search-bar > :first-child { flex-basis: 100%; }
   .ssh-command-toolbar { flex-wrap: wrap; }
   .ssh-quick-snippets { order: 3; flex-basis: 100%; }
   .ssh-command-editor { grid-template-columns: minmax(0, 1fr) 64px; }

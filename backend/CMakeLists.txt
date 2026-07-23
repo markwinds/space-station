@@ -67,6 +67,8 @@ add_executable(space-station
         src/logging/logger.cpp
         src/serial/serial_service.cpp
         src/serial/serial_websocket.cpp
+        src/serial/browser_serial_share_service.cpp
+        src/serial/browser_serial_share_websocket.cpp
         src/ssh/ssh_session.cpp
         src/ssh/network_utils.cpp
         src/ssh/sftp_service.cpp

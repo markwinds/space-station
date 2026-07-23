@@ -3,11 +3,12 @@
     <aside class="serial-sidebar">
       <div class="serial-brand">
         <router-link to="/" aria-label="返回首页">SS</router-link>
-        <div><strong>串口终端</strong><small>浏览器 / 服务器</small></div>
+        <div><strong>串口终端</strong><small>本机 / 共享 / 服务器</small></div>
       </div>
 
       <div class="serial-source-switch">
         <button type="button" :class="{ active: source === 'browser' }" @click="source = 'browser'">浏览器串口</button>
+        <button type="button" :class="{ active: source === 'shared' }" @click="source = 'shared'">他人共享</button>
         <button type="button" :class="{ active: source === 'server' }" @click="source = 'server'">服务器串口</button>
       </div>
 
@@ -22,6 +23,20 @@
         <n-select v-model:value="browserPortId" :options="browserPortOptions" placeholder="先选择一个串口" />
         <n-button type="primary" secondary :disabled="!browserSupported" @click="requestBrowserPort">选择浏览器串口</n-button>
         <p class="serial-hint">浏览器只允许网页访问你主动选择的设备，授权由当前浏览器和站点管理。</p>
+        <div class="serial-share-settings">
+          <n-checkbox v-model:checked="browserShareSettings.enabled">共享给其他客户端</n-checkbox>
+          <n-input v-if="browserShareSettings.enabled" v-model:value="browserShareSettings.name" size="small" maxlength="120" placeholder="共享名称" />
+          <n-checkbox v-if="browserShareSettings.enabled" v-model:checked="browserShareSettings.writeEnabled">允许其他客户端写入</n-checkbox>
+          <p v-if="browserShareSettings.enabled" class="serial-hint">默认建议只读。拥有者页面关闭或本机串口断开后，共享立即离线。</p>
+        </div>
+      </template>
+      <template v-else-if="source === 'shared'">
+        <div class="serial-field-heading">
+          <span>在线浏览器共享</span>
+          <n-button size="tiny" secondary :loading="loadingSharedPorts" @click="refreshSharedPorts">刷新</n-button>
+        </div>
+        <n-select v-model:value="sharedPortId" filterable :options="sharedPortOptions" placeholder="选择其他客户端共享的串口" />
+        <p class="serial-hint">数据通过 Space Station 后端中继；只读共享不能从此客户端发送数据。</p>
       </template>
       <template v-else>
         <div class="serial-field-heading">
@@ -32,14 +47,14 @@
         <p class="serial-hint">设备位于运行 Space Station 后端的主机，不一定是当前浏览器所在设备。</p>
       </template>
 
-      <div class="serial-divider" />
-      <div class="serial-grid">
+      <div v-if="source !== 'shared'" class="serial-divider" />
+      <div v-if="source !== 'shared'" class="serial-grid">
         <label><span>波特率</span><n-select v-model:value="settings.baudRate" filterable tag :options="baudOptions" /></label>
         <label><span>数据位</span><n-select v-model:value="settings.dataBits" :options="dataBitsOptions" /></label>
         <label><span>停止位</span><n-select v-model:value="settings.stopBits" :options="stopBitsOptions" /></label>
         <label><span>校验位</span><n-select v-model:value="settings.parity" :options="parityOptions" /></label>
       </div>
-      <label class="serial-flow"><span>流控制</span><n-select v-model:value="settings.flowControl" :options="flowOptions" /></label>
+      <label v-if="source !== 'shared'" class="serial-flow"><span>流控制</span><n-select v-model:value="settings.flowControl" :options="flowOptions" /></label>
       <n-button class="serial-open" type="primary" :disabled="!selectedPortAvailable" @click="openSelectedPort">
         打开串口
       </n-button>
@@ -94,7 +109,7 @@
             @settings="openTerminalSettings"
           />
           <n-button v-if="activeSession.status === 'error' || activeSession.status === 'closed'" size="tiny" secondary @click="reconnectActive">重连</n-button>
-          <span class="serial-location">{{ activeSession.location === 'browser' ? '浏览器' : '服务器' }}</span>
+          <span class="serial-location">{{ locationText(activeSession.location) }}</span>
           <span class="serial-status-label" :class="activeSession.status">{{ statusText(activeSession) }}</span>
           <terminal-renderer-badge v-if="activeView" class="serial-renderer" :renderer="activeView.renderer" />
           <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
@@ -108,6 +123,9 @@
         ref="searchInput"
         v-model:query="searchQuery"
         v-model:target-index="searchTargetIndex"
+        v-model:case-sensitive="searchCaseSensitive"
+        v-model:whole-word="searchWholeWord"
+        v-model:regex="searchRegex"
         class="serial-search-bar"
         :result-count="activeView.searchResultCount"
         :count-text="searchCountText(activeView)"
@@ -164,7 +182,7 @@
               @keyup.meta.enter="sendFromComposer(view)"
             />
             <n-select v-if="view.sendMode === 'text'" v-model:value="view.lineEnding" class="serial-line-ending" :options="lineEndingOptions" size="small" />
-            <n-button type="primary" :disabled="sessionFor(view)?.status !== 'open'" @click="sendFromComposer(view)">发送</n-button>
+            <n-button type="primary" :disabled="!canWrite(view)" @click="sendFromComposer(view)">发送</n-button>
             </div></template>
           </terminal-command-panel>
         </section>
@@ -222,7 +240,7 @@
 <script setup lang="ts">
 import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NInput, NInputNumber, NModal, NSelect, useMessage } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { fetchBackendSerialPorts, type BackendSerialPort } from "@/api";
+import { fetchBackendSerialPorts, fetchBrowserSerialShares, type BackendSerialPort, type BrowserSerialShare } from "@/api";
 import WebTerminal from "../terminal/WebTerminal.vue";
 import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
@@ -232,7 +250,7 @@ import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTer
 import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 
-type Location = "browser" | "server";
+type Location = "browser" | "shared" | "server";
 type SessionStatus = "connecting" | "open" | "closed" | "error";
 type SendMode = "text" | "hex";
 
@@ -267,6 +285,12 @@ interface SerialSession {
   keepaliveTimer?: number;
   retryTimer?: number;
   viewers: number;
+  writeEnabled: boolean;
+  relaySocket?: WebSocket;
+  relayKeepaliveTimer?: number;
+  shareId?: string;
+  sharing: boolean;
+  readOnlyHintShown: boolean;
   browserPort?: SerialPort;
   reader?: ReadableStreamDefaultReader<Uint8Array>;
   readTask?: Promise<void>;
@@ -308,6 +332,9 @@ const browserPortId = ref<string | null>(null);
 const serverPorts = ref<BackendSerialPort[]>([]);
 const serverPortId = ref<string | null>(null);
 const loadingServerPorts = ref(false);
+const sharedPorts = ref<BrowserSerialShare[]>([]);
+const sharedPortId = ref<string | null>(null);
+const loadingSharedPorts = ref(false);
 const sessions = reactive(new Map<string, SerialSession>());
 const views = reactive<SerialView[]>([]);
 const activeViewId = ref("");
@@ -317,6 +344,9 @@ const terminalSettingsDraft = reactive<TerminalPreferences>({ ...terminalSetting
 const showTerminalSettings = ref(false);
 const showSearch = ref(false);
 const searchQuery = ref("");
+const searchCaseSensitive = ref(false);
+const searchWholeWord = ref(false);
+const searchRegex = ref(false);
 const searchTargetIndex = ref<number | null>(null);
 const searchIndexEditing = ref(false);
 const searchInput = ref<{ focus: () => void } | null>(null);
@@ -331,6 +361,18 @@ const recordingDraft = reactive({ stripAnsi: true, timestamps: false });
 const browserIds = new WeakMap<SerialPort, string>();
 let browserSequence = 0;
 let searchInputTimer: number | undefined;
+let sharedRefreshTimer: number | undefined;
+let shareSettingsTimer: number | undefined;
+
+const storedBrowserShareSettings = (() => {
+  try { return JSON.parse(localStorage.getItem("space-station:browser-serial-share") || "{}"); }
+  catch { return {}; }
+})();
+const browserShareSettings = reactive({
+  enabled: storedBrowserShareSettings.enabled === true,
+  name: String(storedBrowserShareSettings.name || "我的浏览器串口"),
+  writeEnabled: storedBrowserShareSettings.writeEnabled === true,
+});
 
 const pinnedSnippets = computed(() => snippets.value.filter((snippet) => snippet.pinned !== false));
 const mobileActionOptions = computed(() => {
@@ -344,7 +386,7 @@ const mobileActionOptions = computed(() => {
     { label: "命令片段", key: "snippets" },
     { label: view.recording ? "停止录制" : "开始录制", key: "recording" },
     { label: "终端设置", key: "settings" },
-    { label: `位置：${session.location === "browser" ? "浏览器" : "服务器"}`, key: "location", disabled: true },
+    { label: `位置：${locationText(session.location)}`, key: "location", disabled: true },
     { label: `状态：${statusText(session)}`, key: "status", disabled: true },
     { label: `渲染：${view.renderer === "webgl" ? "GPU" : "Canvas"}`, key: "renderer", disabled: true },
   );
@@ -373,7 +415,13 @@ const lineEndingOptions = [{ label: "不追加", value: "none" }, { label: "LF",
 
 const browserPortOptions = computed(() => browserPorts.value.map((item) => ({ label: item.label, value: item.id })));
 const serverPortOptions = computed(() => serverPorts.value.map((item) => ({ label: item.name === item.path ? item.path : `${item.name} · ${item.path}`, value: item.id })));
-const selectedPortAvailable = computed(() => source.value === "browser" ? Boolean(browserPortId.value) : Boolean(serverPortId.value));
+const sharedPortOptions = computed(() => sharedPorts.value.map((item) => ({
+  label: `${item.name} · ${item.portLabel}${item.writeEnabled ? " · 可写" : " · 只读"}`,
+  value: item.id,
+})));
+const selectedPortAvailable = computed(() => source.value === "browser"
+  ? Boolean(browserPortId.value)
+  : source.value === "shared" ? Boolean(sharedPortId.value) : Boolean(serverPortId.value));
 const activeView = computed(() => views.find((view) => view.id === activeViewId.value));
 const activeSession = computed(() => activeView.value ? sessions.get(activeView.value.sessionKey) : undefined);
 
@@ -420,19 +468,32 @@ async function refreshServerPorts() {
   finally { loadingServerPorts.value = false; }
 }
 
+async function refreshSharedPorts() {
+  loadingSharedPorts.value = true;
+  try {
+    const result = await fetchBrowserSerialShares();
+    const ownedShareIds = new Set(Array.from(sessions.values())
+      .filter((session) => session.location === "browser" && session.shareId)
+      .map((session) => session.shareId!));
+    sharedPorts.value = result.shares.filter((item) => !ownedShareIds.has(item.id));
+    if (!sharedPorts.value.some((item) => item.id === sharedPortId.value)) sharedPortId.value = sharedPorts.value[0]?.id ?? null;
+  } catch (error) { message.error(`读取浏览器串口共享失败：${errorMessage(error)}`); }
+  finally { loadingSharedPorts.value = false; }
+}
+
 function settingsMatch(left: SerialSettings, right: SerialSettings) {
   return left.baudRate === right.baudRate && left.dataBits === right.dataBits && left.stopBits === right.stopBits && left.parity === right.parity && left.flowControl === right.flowControl;
 }
 
 async function openSelectedPort() {
-  const portId = source.value === "browser" ? browserPortId.value : serverPortId.value;
+  const portId = source.value === "browser" ? browserPortId.value : source.value === "shared" ? sharedPortId.value : serverPortId.value;
   if (!portId) return;
   const key = `${source.value}:${portId}`;
   const existing = sessions.get(key);
   if (existing) {
     const existingView = views.find((view) => view.sessionKey === existing.key);
     if (existingView) activateView(existingView.id);
-    if (!settingsMatch(existing.settings, settings)) {
+    if (existing.location !== "shared" && !settingsMatch(existing.settings, settings)) {
       message.warning(`已切换到现有终端；该串口使用 ${existing.settings.baudRate}-${existing.settings.dataBits}-${existing.settings.parity}，关闭后才能修改参数。`);
       return;
     }
@@ -441,11 +502,12 @@ async function openSelectedPort() {
 
   const browserItem = browserPorts.value.find((item) => item.id === portId);
   const serverItem = serverPorts.value.find((item) => item.id === portId);
+  const sharedItem = sharedPorts.value.find((item) => item.id === portId);
   const session = reactive<SerialSession>({
     key,
     location: source.value,
     portId,
-    name: browserItem?.label ?? serverItem?.name ?? portId,
+    name: browserItem?.label ?? sharedItem?.name ?? serverItem?.name ?? portId,
     settings: { ...settings },
     status: "connecting",
     error: "",
@@ -455,6 +517,10 @@ async function openSelectedPort() {
     bufferedBytes: 0,
     socketOpened: false,
     viewers: 0,
+    writeEnabled: sharedItem?.writeEnabled ?? true,
+    sharing: false,
+    readOnlyHintShown: false,
+    shareId: source.value === "browser" && browserShareSettings.enabled ? crypto.randomUUID() : sharedItem?.id,
     browserPort: browserItem ? markRaw(browserItem.port) : undefined,
     writeChain: Promise.resolve(),
   });
@@ -469,6 +535,7 @@ async function startSession(session: SerialSession) {
   session.closing = false;
   try {
     if (session.location === "browser") await openBrowserSession(session);
+    else if (session.location === "shared") openSharedSession(session);
     else openServerSession(session);
   } catch (error) {
     failSession(session, errorMessage(error));
@@ -480,6 +547,7 @@ async function openBrowserSession(session: SerialSession) {
   await session.browserPort.open({ ...session.settings, bufferSize: 1024 * 1024 });
   session.status = "open";
   broadcastNotice(session, `\r\n\x1b[36m[已连接浏览器串口 ${session.name}]\x1b[0m\r\n`);
+  if (browserShareSettings.enabled && session.shareId) openBrowserShareOwner(session);
   const readTask = (async () => {
     if (!session.browserPort?.readable) return;
     const reader = session.browserPort.readable.getReader();
@@ -488,7 +556,10 @@ async function openBrowserSession(session: SerialSession) {
       while (!session.closing) {
         const { value, done } = await reader.read();
         if (done) break;
-        if (value?.byteLength) receiveData(session, value);
+        if (value?.byteLength) {
+          receiveData(session, value);
+          if (session.relaySocket?.readyState === WebSocket.OPEN) session.relaySocket.send(value);
+        }
       }
     } finally {
       reader.releaseLock();
@@ -499,14 +570,115 @@ async function openBrowserSession(session: SerialSession) {
   await readTask;
   if (session.readTask === readTask) session.readTask = undefined;
   if (!session.closing) {
+    closeBrowserShareOwner(session);
     session.status = "closed";
     broadcastNotice(session, "\r\n\x1b[33m[串口读取已结束，按任意键重连]\x1b[0m\r\n");
   }
 }
 
-function openServerSession(session: SerialSession, attempt = 0) {
+function websocketUrl(path: string) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = markRaw(new WebSocket(`${protocol}//${window.location.host}/api/tools/serial/session`));
+  return `${protocol}//${window.location.host}${path}`;
+}
+
+function openBrowserShareOwner(session: SerialSession) {
+  if (!session.shareId) return;
+  const socket = markRaw(new WebSocket(websocketUrl("/api/tools/serial/browser-share")));
+  socket.binaryType = "arraybuffer";
+  session.relaySocket = socket;
+  socket.onopen = () => {
+    socket.send(JSON.stringify({
+      type: "publish",
+      shareId: session.shareId,
+      name: browserShareSettings.name.trim() || session.name,
+      portLabel: session.name,
+      writeEnabled: browserShareSettings.writeEnabled,
+    }));
+    window.clearInterval(session.relayKeepaliveTimer);
+    session.relayKeepaliveTimer = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ping", at: Date.now() }));
+    }, 15000);
+  };
+  socket.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      void writeSession(session, new Uint8Array(event.data)).catch((error) => broadcastNotice(session, `\r\n\x1b[31m[远程写入失败：${errorMessage(error)}]\x1b[0m\r\n`));
+      return;
+    }
+    if (event.data instanceof Blob) {
+      void event.data.arrayBuffer().then((data) => writeSession(session, new Uint8Array(data))).catch(() => undefined);
+      return;
+    }
+    try {
+      const payload = JSON.parse(String(event.data));
+      if (payload.type === "published") {
+        session.sharing = true;
+        broadcastNotice(session, `\r\n\x1b[36m[已共享为“${browserShareSettings.name.trim() || session.name}” · ${browserShareSettings.writeEnabled ? "允许远程写入" : "只读"}]\x1b[0m\r\n`);
+      } else if (payload.type === "share-state") {
+        session.viewers = Number(payload.viewers) || 0;
+      } else if (payload.type === "error") {
+        session.sharing = false;
+        broadcastNotice(session, `\r\n\x1b[31m[共享失败：${payload.message || "未知错误"}]\x1b[0m\r\n`);
+      }
+    } catch { /* Ignore non-protocol text. */ }
+  };
+  socket.onerror = () => { session.sharing = false; };
+  socket.onclose = () => {
+    window.clearInterval(session.relayKeepaliveTimer);
+    session.relayKeepaliveTimer = undefined;
+    if (session.sharing && !session.closing) broadcastNotice(session, "\r\n\x1b[33m[浏览器串口共享通道已断开，本地串口仍可使用]\x1b[0m\r\n");
+    session.sharing = false;
+  };
+}
+
+function openSharedSession(session: SerialSession) {
+  const socket = markRaw(new WebSocket(websocketUrl("/api/tools/serial/browser-share")));
+  socket.binaryType = "arraybuffer";
+  session.socket = socket;
+  session.socketOpened = false;
+  socket.onopen = () => {
+    session.socketOpened = true;
+    socket.send(JSON.stringify({ type: "subscribe", shareId: session.portId }));
+    window.clearInterval(session.keepaliveTimer);
+    session.keepaliveTimer = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ping", at: Date.now() }));
+    }, 15000);
+  };
+  socket.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) { receiveData(session, new Uint8Array(event.data)); return; }
+    if (event.data instanceof Blob) { void event.data.arrayBuffer().then((data) => receiveData(session, new Uint8Array(data))); return; }
+    try {
+      const payload = JSON.parse(String(event.data));
+      if (payload.type === "subscribed") {
+        session.status = "open";
+        session.writeEnabled = payload.writeEnabled === true;
+        session.viewers = Number(payload.viewers) || 1;
+        broadcastNotice(session, `\r\n\x1b[36m[已连接浏览器共享串口“${session.name}” · ${session.writeEnabled ? "可写" : "只读"}]\x1b[0m\r\n`);
+      } else if (payload.type === "share-state") {
+        session.viewers = Number(payload.viewers) || session.viewers;
+        session.writeEnabled = payload.writeEnabled === true;
+        if (session.writeEnabled) session.readOnlyHintShown = false;
+      } else if (payload.type === "write-error") {
+        message.warning(payload.message || "共享串口写入失败");
+      } else if (payload.type === "unavailable") {
+        failSession(session, payload.message || "浏览器串口共享已经离线");
+      } else if (payload.type === "error") failSession(session, payload.message || "浏览器串口共享连接失败");
+    } catch { /* Ignore non-protocol text. */ }
+  };
+  socket.onerror = () => {
+    if (!session.error) failSession(session, session.socketOpened ? "浏览器串口共享连接异常中断。" : "浏览器串口共享 WebSocket 握手失败。");
+  };
+  socket.onclose = () => {
+    window.clearInterval(session.keepaliveTimer);
+    session.keepaliveTimer = undefined;
+    if (!session.closing && session.status !== "error") {
+      session.status = "closed";
+      broadcastNotice(session, "\r\n\x1b[33m[浏览器串口共享连接已关闭，按任意键重连]\x1b[0m\r\n");
+    }
+  };
+}
+
+function openServerSession(session: SerialSession, attempt = 0) {
+  const socket = markRaw(new WebSocket(websocketUrl("/api/tools/serial/session")));
   let transportError = false;
   socket.binaryType = "arraybuffer";
   session.socket = socket;
@@ -600,8 +772,9 @@ function broadcastNotice(session: SerialSession, text: string) {
 async function writeSession(session: SerialSession, data: Uint8Array) {
   if (session.status !== "open") throw new Error("串口尚未连接。");
   session.writeChain = session.writeChain.then(async () => {
-    if (session.location === "server") {
+    if (session.location === "server" || session.location === "shared") {
       if (session.socket?.readyState !== WebSocket.OPEN) throw new Error("服务器串口连接已断开。");
+      if (session.location === "shared" && !session.writeEnabled) throw new Error("该浏览器共享串口为只读，拥有者未允许远程写入。");
       session.socket.send(data);
       return;
     }
@@ -667,6 +840,13 @@ function handleTerminalData(view: SerialView, data: string) {
     return;
   }
   if (session.status !== "open") return;
+  if (session.location === "shared" && !session.writeEnabled) {
+    if (!session.readOnlyHintShown) {
+      session.readOnlyHintShown = true;
+      message.info("该浏览器串口共享为只读，拥有者需要开启“允许其他客户端写入”");
+    }
+    return;
+  }
   void writeSession(session, new TextEncoder().encode(data)).catch((error) => message.error(errorMessage(error)));
 }
 
@@ -692,13 +872,13 @@ async function closeView(viewId: string) {
 async function closeSession(session: SerialSession) {
   session.closing = true;
   session.status = "closed";
-  if (session.location === "server") {
+  if (session.location === "server" || session.location === "shared") {
     window.clearInterval(session.keepaliveTimer);
     session.keepaliveTimer = undefined;
     window.clearTimeout(session.retryTimer);
     session.retryTimer = undefined;
     const socket = session.socket;
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "close" }));
+    if (session.location === "server" && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "close" }));
     if (socket) {
       socket.onopen = null;
       socket.onmessage = null;
@@ -709,9 +889,26 @@ async function closeSession(session: SerialSession) {
     session.socket = undefined;
     return;
   }
+  closeBrowserShareOwner(session);
   await session.reader?.cancel().catch(() => undefined);
   await session.readTask?.catch(() => undefined);
   await session.browserPort?.close().catch(() => undefined);
+}
+
+function closeBrowserShareOwner(session: SerialSession) {
+  window.clearInterval(session.relayKeepaliveTimer);
+  session.relayKeepaliveTimer = undefined;
+  const relay = session.relaySocket;
+  if (relay) {
+    relay.onopen = null;
+    relay.onmessage = null;
+    relay.onerror = null;
+    relay.onclose = null;
+    relay.close();
+  }
+  session.relaySocket = undefined;
+  session.sharing = false;
+  session.viewers = 0;
 }
 
 async function reconnectActive() {
@@ -740,7 +937,18 @@ function statusText(session: SerialSession) {
   if (session.status === "connecting") return "连接中";
   if (session.status === "error") return "连接失败";
   if (session.status === "closed") return "已断开";
-  return session.location === "server" ? `已连接 · ${session.viewers || 1} 个客户端` : "已连接";
+  if (session.location === "server") return `已连接 · ${session.viewers || 1} 个客户端`;
+  if (session.location === "shared") return `已连接 · ${session.viewers || 1} 个订阅`;
+  return session.sharing ? `已连接 · 已共享 · ${session.viewers} 个远程客户端` : "已连接";
+}
+
+function locationText(location: Location) {
+  return location === "browser" ? "本机浏览器" : location === "shared" ? "浏览器共享" : "服务器";
+}
+
+function canWrite(view: SerialView) {
+  const session = sessions.get(view.sessionKey);
+  return session?.status === "open" && (session.location !== "shared" || session.writeEnabled);
 }
 
 function handleMobileAction(key: string) {
@@ -806,7 +1014,14 @@ function closeSearch() {
 function searchTerminal(previous: boolean, incremental = false) {
   if (searchInputTimer) { window.clearTimeout(searchInputTimer); searchInputTimer = undefined; }
   if (!activeView.value || !searchQuery.value) return;
-  activeView.value.terminalView?.search(searchQuery.value, previous, incremental);
+  activeView.value.terminalView?.search(
+    searchQuery.value,
+    previous,
+    incremental,
+    searchCaseSensitive.value,
+    searchWholeWord.value,
+    searchRegex.value,
+  );
 }
 
 function jumpToSearchIndex() {
@@ -846,6 +1061,7 @@ function saveTerminalSettings() {
 function toggleCommandComposer() {
   terminalSettings.showCommandComposer = !terminalSettings.showCommandComposer;
   saveTerminalPreferences(terminalSettings);
+  nextTick(() => activeView.value?.terminalView?.fit());
 }
 
 function loadSnippets(): CommandSnippet[] {
@@ -955,9 +1171,39 @@ function downloadText(filename: string, content: string) {
 }
 
 watch(settings, (value) => localStorage.setItem("space-station:serial-settings", JSON.stringify(value)), { deep: true });
-watch(source, (value) => { if (value === "server") void refreshServerPorts(); else void refreshBrowserPorts(); });
+watch(browserShareSettings, (value) => {
+  localStorage.setItem("space-station:browser-serial-share", JSON.stringify(value));
+  window.clearTimeout(shareSettingsTimer);
+  shareSettingsTimer = window.setTimeout(() => {
+    sessions.forEach((session) => {
+      if (session.location !== "browser" || session.status !== "open" || session.closing) return;
+      if (browserShareSettings.enabled) {
+        if (session.sharing && session.relaySocket?.readyState === WebSocket.OPEN) {
+          session.relaySocket.send(JSON.stringify({
+            type: "update",
+            name: browserShareSettings.name.trim() || session.name,
+            writeEnabled: browserShareSettings.writeEnabled,
+          }));
+        } else {
+          session.shareId ||= crypto.randomUUID();
+          openBrowserShareOwner(session);
+        }
+      } else closeBrowserShareOwner(session);
+    });
+  }, 250);
+}, { deep: true });
+watch(source, (value) => {
+  window.clearInterval(sharedRefreshTimer);
+  sharedRefreshTimer = undefined;
+  if (value === "server") void refreshServerPorts();
+  else if (value === "shared") {
+    void refreshSharedPorts();
+    sharedRefreshTimer = window.setInterval(() => void refreshSharedPorts(), 5000);
+  }
+  else void refreshBrowserPorts();
+});
 watch(showQuickSnippets, (value) => localStorage.setItem("serial-show-quick-snippets", String(value)));
-watch(searchQuery, (value) => {
+watch([searchQuery, searchCaseSensitive, searchWholeWord, searchRegex], ([value]) => {
   if (!showSearch.value) return;
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
   if (!value) { activeView.value?.terminalView?.clearSearch(); return; }
@@ -967,6 +1213,7 @@ watch(searchQuery, (value) => {
 onMounted(() => {
   void refreshServerPorts();
   void refreshBrowserPorts();
+  void refreshSharedPorts();
   window.addEventListener("keydown", handleGlobalShortcut, true);
 });
 
@@ -988,9 +1235,11 @@ onBeforeUnmount(() => {
 .serial-brand > div { display: grid; gap: 2px; }
 .serial-brand strong { font-size: 18px; }
 .serial-brand small, .serial-hint { color: #8fa0ad; }
-.serial-source-switch { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border-radius: 8px; background: #0e151a; }
+.serial-source-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 3px; border-radius: 8px; background: #0e151a; }
 .serial-source-switch button { min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: #9caab4; cursor: pointer; }
 .serial-source-switch button.active { background: #283842; color: #e9f0f4; font-weight: 700; }
+.serial-share-settings { padding: 10px; display: grid; gap: 9px; border: 1px solid #30414b; border-radius: 8px; background: #11191f; }
+.serial-share-settings .serial-hint { margin: 0; }
 .serial-field-heading { display: flex; align-items: center; justify-content: space-between; min-height: 24px; color: #c9d3da; font-size: 13px; font-weight: 700; }
 .serial-field-heading :deep(.n-button), .serial-tab-actions > :deep(.n-button) { color: #e1eaef; background: #2a3a44; border-color: #526671; }
 .serial-field-heading :deep(.n-button:hover), .serial-tab-actions > :deep(.n-button:hover) { color: #102027; background: #91bfbd; border-color: #91bfbd; }

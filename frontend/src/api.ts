@@ -370,6 +370,14 @@ export interface BackendSerialPort {
   path: string;
 }
 
+export interface BrowserSerialShare {
+  id: string;
+  name: string;
+  portLabel: string;
+  writeEnabled: boolean;
+  viewers: number;
+}
+
 export interface AuthenticatorEntry {
   id: string;
   name: string;
@@ -410,6 +418,11 @@ export async function fetchHealth(): Promise<HealthResponse> {
 
 export async function fetchBackendSerialPorts(): Promise<{ ports: BackendSerialPort[] }> {
   const { data } = await api.get<{ ports: BackendSerialPort[] }>("/tools/serial/ports");
+  return data;
+}
+
+export async function fetchBrowserSerialShares(): Promise<{ shares: BrowserSerialShare[] }> {
+  const { data } = await api.get<{ shares: BrowserSerialShare[] }>("/tools/serial/browser-shares");
   return data;
 }
 

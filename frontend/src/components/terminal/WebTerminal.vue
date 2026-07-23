@@ -65,12 +65,16 @@ let serializeAddon: SerializeAddon | undefined;
 let webglAddon: WebglAddon | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let resizeFrame = 0;
+let fitStabilizeFrame = 0;
 let appearanceFrame = 0;
 let touchCleanup: (() => void) | undefined;
 let searchWorker: Worker | undefined;
 let searchCountTimer = 0;
 let searchCountRequestId = 0;
 let currentSearchTerm = "";
+let currentSearchCaseSensitive = false;
+let currentSearchWholeWord = false;
+let currentSearchRegex = false;
 let currentSearchIndex = -1;
 let exactSearchCount: number | undefined;
 let addonSearchIndex = -1;
@@ -83,8 +87,8 @@ let nearbyDecorations: IDisposable[] = [];
 
 type SearchWorkerResponse =
   | { type: "result"; id: number; count: number }
-  | { type: "location"; id: number; index: number; row: number; offset: number }
-  | { type: "window"; id: number; locations: Array<[index: number, row: number, offset: number]> };
+  | { type: "location"; id: number; index: number; row: number; offset: number; length: number }
+  | { type: "window"; id: number; locations: Array<[index: number, row: number, offset: number, length: number]> };
 
 const searchDecorations = {
   matchBackground: "#756719",
@@ -95,15 +99,33 @@ const searchDecorations = {
   activeMatchColorOverviewRuler: "#f18a4f",
 };
 
+let reportedColumns = 0;
+let reportedRows = 0;
+
 function reportSize() {
   if (!terminal) return;
+  if (terminal.cols === reportedColumns && terminal.rows === reportedRows) return;
+  reportedColumns = terminal.cols;
+  reportedRows = terminal.rows;
   emit("resize", { columns: terminal.cols, rows: terminal.rows });
 }
 
-function fit() {
+function fitNow() {
   if (!terminal || !fitAddon) return;
   fitAddon.fit();
   reportSize();
+}
+
+function fit() {
+  fitNow();
+  // Removing a sibling panel changes the available grid/flex height. A second
+  // frame lets xterm apply its new canvas dimensions before refreshing the
+  // final row, avoiding a half-clipped line after the command panel is hidden.
+  window.cancelAnimationFrame(fitStabilizeFrame);
+  fitStabilizeFrame = window.requestAnimationFrame(() => {
+    fitNow();
+    terminal?.refresh(0, Math.max(0, terminal.rows - 1));
+  });
 }
 
 function write(data: string | Uint8Array, callback?: () => void) {
@@ -164,12 +186,12 @@ function matchBufferSize(row: number, column: number, textLength: number) {
   return Math.max(1, textLength);
 }
 
-function decorateMatch(row: number, stringOffset: number, active: boolean, target: IDisposable[]) {
+function decorateMatch(row: number, stringOffset: number, textLength: number, active: boolean, target: IDisposable[]) {
   const instance = terminal;
   if (!instance || !currentSearchTerm) return;
   const column = bufferColumnFromStringOffset(row, stringOffset);
   if (column < 0 || column >= instance.cols) return;
-  const size = matchBufferSize(row, column, currentSearchTerm.length);
+  const size = matchBufferSize(row, column, textLength);
   let remaining = size;
   let decorationRow = row;
   let decorationColumn = column;
@@ -227,7 +249,14 @@ async function buildSearchSnapshot(requestId: number, term: string) {
   const instance = terminal;
   const worker = searchWorker;
   if (!instance || !worker || requestId !== searchCountRequestId || term !== currentSearchTerm) return;
-  worker.postMessage({ type: "start", id: requestId, query: term });
+  worker.postMessage({
+    type: "start",
+    id: requestId,
+    query: term,
+    caseSensitive: currentSearchCaseSensitive,
+    wholeWord: currentSearchWholeWord,
+    regex: currentSearchRegex,
+  });
   const buffer = instance.buffer.active;
   let segments: Array<[row: number, text: string, wrapsToNext: boolean]> = [];
   let sliceStartedAt = performance.now();
@@ -268,14 +297,34 @@ function scheduleExactSearchCount(term: string, delay = 0, resetKnownCount = fal
   }, delay);
 }
 
-function search(term: string, previous = false, incremental = false) {
+function search(
+  term: string,
+  previous = false,
+  incremental = false,
+  caseSensitive = false,
+  wholeWord = false,
+  regex = false,
+) {
   if (!searchAddon || !term) return false;
-  const termChanged = term !== currentSearchTerm;
+  const queryChanged = term !== currentSearchTerm;
+  const optionsChanged = caseSensitive !== currentSearchCaseSensitive
+    || wholeWord !== currentSearchWholeWord
+    || regex !== currentSearchRegex;
+  const termChanged = queryChanged || optionsChanged;
   if (!termChanged && incremental) return addonSearchCount > 0;
   if (termChanged) {
     disposeDecorations(jumpDecorations);
     disposeDecorations(nearbyDecorations);
+    if (optionsChanged) {
+      // SearchAddon can navigate with new options while retaining decorations
+      // and result counts created with the previous options. Clearing its
+      // cached term forces a complete highlight/result rebuild.
+      searchAddon.clearDecorations();
+    }
     currentSearchTerm = term;
+    currentSearchCaseSensitive = caseSensitive;
+    currentSearchWholeWord = wholeWord;
+    currentSearchRegex = regex;
     currentSearchIndex = -1;
     addonSearchIndex = -1;
     addonSearchCount = 0;
@@ -286,8 +335,25 @@ function search(term: string, previous = false, incremental = false) {
     disposeDecorations(jumpDecorations);
     pendingSearchAction = previous ? "previous" : "next";
   }
-  const options = { caseSensitive: false, incremental, decorations: searchDecorations };
-  const found = previous ? searchAddon.findPrevious(term, options) : searchAddon.findNext(term, options);
+  const options = {
+    caseSensitive,
+    wholeWord,
+    regex,
+    incremental: optionsChanged ? false : incremental,
+    decorations: searchDecorations,
+  };
+  let found = false;
+  try {
+    found = previous ? searchAddon.findPrevious(term, options) : searchAddon.findNext(term, options);
+  } catch {
+    // Invalid regular expressions are treated as zero matches. The search
+    // worker follows the same rule and will publish the exact zero count.
+    searchAddon.clearDecorations();
+    addonSearchIndex = -1;
+    addonSearchCount = 0;
+    currentSearchIndex = -1;
+    emitSearchResult();
+  }
   pendingSearchAction = undefined;
   return found;
 }
@@ -309,6 +375,9 @@ function clearSearch() {
   window.clearTimeout(searchCountTimer);
   searchCountRequestId += 1;
   currentSearchTerm = "";
+  currentSearchCaseSensitive = false;
+  currentSearchWholeWord = false;
+  currentSearchRegex = false;
   currentSearchIndex = -1;
   exactSearchCount = undefined;
   addonSearchIndex = -1;
@@ -332,7 +401,6 @@ function setAppearance(options: { fontSize?: number; lineHeight?: number; letter
   appearanceFrame = window.requestAnimationFrame(() => {
     terminal?.refresh(0, Math.max(0, terminal.rows - 1));
     fit();
-    appearanceFrame = window.requestAnimationFrame(fit);
   });
 }
 
@@ -437,14 +505,14 @@ onMounted(() => {
       currentSearchIndex = response.index;
       searchAddon?.clearActiveDecoration();
       disposeDecorations(jumpDecorations);
-      decorateMatch(response.row, response.offset, true, jumpDecorations);
+      decorateMatch(response.row, response.offset, response.length, true, jumpDecorations);
       emitSearchResult();
       requestNearbyHighlights();
       return;
     }
     disposeDecorations(nearbyDecorations);
-    for (const [index, row, offset] of response.locations) {
-      if (index !== currentSearchIndex) decorateMatch(row, offset, false, nearbyDecorations);
+    for (const [index, row, offset, length] of response.locations) {
+      if (index !== currentSearchIndex) decorateMatch(row, offset, length, false, nearbyDecorations);
     }
   };
   serializeAddon = new SerializeAddon();
@@ -508,6 +576,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(resizeFrame);
+  window.cancelAnimationFrame(fitStabilizeFrame);
   window.cancelAnimationFrame(appearanceFrame);
   window.clearTimeout(searchCountTimer);
   searchCountRequestId += 1;
