@@ -557,7 +557,10 @@ void HttpServer::RegisterRoutes()
         "/api/tools/serial/browser-shares",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             if (!RequireSecureRequest(req, callback)) return;
-            callback(JsonResponse(browser_serial_share_service_.ListShares()));
+            auto response = JsonResponse(browser_serial_share_service_.ListShares());
+            response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+            response->addHeader("Pragma", "no-cache");
+            callback(response);
         },
         {drogon::Get});
 

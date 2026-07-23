@@ -27,7 +27,10 @@
           <n-checkbox v-model:checked="browserShareSettings.enabled">共享给其他客户端</n-checkbox>
           <n-input v-if="browserShareSettings.enabled" v-model:value="browserShareSettings.name" size="small" maxlength="120" placeholder="共享名称" />
           <n-checkbox v-if="browserShareSettings.enabled" v-model:checked="browserShareSettings.writeEnabled">允许其他客户端写入</n-checkbox>
-          <p v-if="browserShareSettings.enabled" class="serial-hint">默认建议只读。拥有者页面关闭或本机串口断开后，共享立即离线。</p>
+          <p v-if="browserShareSettings.enabled" class="serial-share-status" :class="browserShareStatus.kind">
+            <span aria-hidden="true" />{{ browserShareStatus.text }}
+          </p>
+          <p v-if="browserShareSettings.enabled" class="serial-hint">默认建议只读。必须先打开浏览器串口才会发布；拥有者页面关闭或本机串口断开后，共享立即离线。</p>
         </div>
       </template>
       <template v-else-if="source === 'shared'">
@@ -36,6 +39,9 @@
           <n-button size="tiny" secondary :loading="loadingSharedPorts" @click="refreshSharedPorts">刷新</n-button>
         </div>
         <n-select v-model:value="sharedPortId" filterable :options="sharedPortOptions" placeholder="选择其他客户端共享的串口" />
+        <p class="serial-shared-refresh-state">
+          {{ sharedPorts.length ? `已发现 ${sharedPorts.length} 个在线共享` : "暂无在线共享" }} · 每 2 秒自动刷新
+        </p>
         <p class="serial-hint">数据通过 Space Station 后端中继；只读共享不能从此客户端发送数据。</p>
       </template>
       <template v-else>
@@ -288,6 +294,8 @@ interface SerialSession {
   writeEnabled: boolean;
   relaySocket?: WebSocket;
   relayKeepaliveTimer?: number;
+  relayRetryTimer?: number;
+  relayRetryAttempt?: number;
   shareId?: string;
   sharing: boolean;
   readOnlyHintShown: boolean;
@@ -363,6 +371,7 @@ let browserSequence = 0;
 let searchInputTimer: number | undefined;
 let sharedRefreshTimer: number | undefined;
 let shareSettingsTimer: number | undefined;
+const sharedRefreshIntervalMs = 2000;
 
 const storedBrowserShareSettings = (() => {
   try { return JSON.parse(localStorage.getItem("space-station:browser-serial-share") || "{}"); }
@@ -419,6 +428,20 @@ const sharedPortOptions = computed(() => sharedPorts.value.map((item) => ({
   label: `${item.name} · ${item.portLabel}${item.writeEnabled ? " · 可写" : " · 只读"}`,
   value: item.id,
 })));
+const browserShareStatus = computed<{ kind: "online" | "pending" | "offline"; text: string }>(() => {
+  const browserSessions = Array.from(sessions.values()).filter((session) => session.location === "browser" && session.status === "open" && !session.closing);
+  const onlineCount = browserSessions.filter((session) => session.sharing).length;
+  if (onlineCount > 0) {
+    return { kind: "online", text: `${onlineCount} 个串口已发布，其他客户端将在 2 秒内看到` };
+  }
+  if (browserSessions.some((session) => session.relaySocket?.readyState === WebSocket.CONNECTING)) {
+    return { kind: "pending", text: "正在发布共享…" };
+  }
+  if (browserSessions.length > 0) {
+    return { kind: "offline", text: "共享通道暂时离线，正在自动重连…" };
+  }
+  return { kind: "pending", text: "请先打开浏览器串口，共享才会发布" };
+});
 const selectedPortAvailable = computed(() => source.value === "browser"
   ? Boolean(browserPortId.value)
   : source.value === "shared" ? Boolean(sharedPortId.value) : Boolean(serverPortId.value));
@@ -469,6 +492,7 @@ async function refreshServerPorts() {
 }
 
 async function refreshSharedPorts() {
+  if (loadingSharedPorts.value) return;
   loadingSharedPorts.value = true;
   try {
     const result = await fetchBrowserSerialShares();
@@ -479,6 +503,10 @@ async function refreshSharedPorts() {
     if (!sharedPorts.value.some((item) => item.id === sharedPortId.value)) sharedPortId.value = sharedPorts.value[0]?.id ?? null;
   } catch (error) { message.error(`读取浏览器串口共享失败：${errorMessage(error)}`); }
   finally { loadingSharedPorts.value = false; }
+}
+
+function refreshSharedPortsWhenVisible() {
+  if (source.value === "shared" && document.visibilityState === "visible") void refreshSharedPorts();
 }
 
 function settingsMatch(left: SerialSettings, right: SerialSettings) {
@@ -583,6 +611,9 @@ function websocketUrl(path: string) {
 
 function openBrowserShareOwner(session: SerialSession) {
   if (!session.shareId) return;
+  if (session.relaySocket?.readyState === WebSocket.OPEN || session.relaySocket?.readyState === WebSocket.CONNECTING) return;
+  window.clearTimeout(session.relayRetryTimer);
+  session.relayRetryTimer = undefined;
   const socket = markRaw(new WebSocket(websocketUrl("/api/tools/serial/browser-share")));
   socket.binaryType = "arraybuffer";
   session.relaySocket = socket;
@@ -612,6 +643,7 @@ function openBrowserShareOwner(session: SerialSession) {
       const payload = JSON.parse(String(event.data));
       if (payload.type === "published") {
         session.sharing = true;
+        session.relayRetryAttempt = 0;
         broadcastNotice(session, `\r\n\x1b[36m[已共享为“${browserShareSettings.name.trim() || session.name}” · ${browserShareSettings.writeEnabled ? "允许远程写入" : "只读"}]\x1b[0m\r\n`);
       } else if (payload.type === "share-state") {
         session.viewers = Number(payload.viewers) || 0;
@@ -625,8 +657,18 @@ function openBrowserShareOwner(session: SerialSession) {
   socket.onclose = () => {
     window.clearInterval(session.relayKeepaliveTimer);
     session.relayKeepaliveTimer = undefined;
+    if (session.relaySocket === socket) session.relaySocket = undefined;
     if (session.sharing && !session.closing) broadcastNotice(session, "\r\n\x1b[33m[浏览器串口共享通道已断开，本地串口仍可使用]\x1b[0m\r\n");
     session.sharing = false;
+    if (!session.closing && session.status === "open" && browserShareSettings.enabled) {
+      const attempt = (session.relayRetryAttempt ?? 0) + 1;
+      session.relayRetryAttempt = attempt;
+      const delay = Math.min(10000, 1000 * (2 ** Math.min(attempt - 1, 3)));
+      session.relayRetryTimer = window.setTimeout(() => {
+        session.relayRetryTimer = undefined;
+        if (!session.closing && session.status === "open" && browserShareSettings.enabled) openBrowserShareOwner(session);
+      }, delay);
+    }
   };
 }
 
@@ -898,6 +940,9 @@ async function closeSession(session: SerialSession) {
 function closeBrowserShareOwner(session: SerialSession) {
   window.clearInterval(session.relayKeepaliveTimer);
   session.relayKeepaliveTimer = undefined;
+  window.clearTimeout(session.relayRetryTimer);
+  session.relayRetryTimer = undefined;
+  session.relayRetryAttempt = 0;
   const relay = session.relaySocket;
   if (relay) {
     relay.onopen = null;
@@ -1198,7 +1243,7 @@ watch(source, (value) => {
   if (value === "server") void refreshServerPorts();
   else if (value === "shared") {
     void refreshSharedPorts();
-    sharedRefreshTimer = window.setInterval(() => void refreshSharedPorts(), 5000);
+    sharedRefreshTimer = window.setInterval(refreshSharedPortsWhenVisible, sharedRefreshIntervalMs);
   }
   else void refreshBrowserPorts();
 });
@@ -1215,11 +1260,17 @@ onMounted(() => {
   void refreshBrowserPorts();
   void refreshSharedPorts();
   window.addEventListener("keydown", handleGlobalShortcut, true);
+  window.addEventListener("focus", refreshSharedPortsWhenVisible);
+  document.addEventListener("visibilitychange", refreshSharedPortsWhenVisible);
 });
 
 onBeforeUnmount(() => {
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
+  window.clearInterval(sharedRefreshTimer);
+  window.clearTimeout(shareSettingsTimer);
   window.removeEventListener("keydown", handleGlobalShortcut, true);
+  window.removeEventListener("focus", refreshSharedPortsWhenVisible);
+  document.removeEventListener("visibilitychange", refreshSharedPortsWhenVisible);
   views.forEach((view) => view.clipboardCleanup?.());
   sessions.forEach((session) => void closeSession(session));
 });
@@ -1239,7 +1290,17 @@ onBeforeUnmount(() => {
 .serial-source-switch button { min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: #9caab4; cursor: pointer; }
 .serial-source-switch button.active { background: #283842; color: #e9f0f4; font-weight: 700; }
 .serial-share-settings { padding: 10px; display: grid; gap: 9px; border: 1px solid #30414b; border-radius: 8px; background: #11191f; }
-.serial-share-settings .serial-hint { margin: 0; }
+.serial-share-settings :deep(.n-checkbox__label) { color: #e2ebf0 !important; font-weight: 600; }
+.serial-share-settings :deep(.n-checkbox-box__border) { border-color: #718692 !important; }
+.serial-share-settings .serial-hint { margin: 0; color: #aebdc6; }
+.serial-share-status, .serial-shared-refresh-state { margin: 0; color: #b9c8d1; font-size: 12px; line-height: 1.5; }
+.serial-share-status { display: flex; align-items: center; gap: 7px; }
+.serial-share-status > span { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #d8a84f; box-shadow: 0 0 0 3px rgba(216, 168, 79, .12); }
+.serial-share-status.online { color: #82dba8; }
+.serial-share-status.online > span { background: #4fc583; box-shadow: 0 0 0 3px rgba(79, 197, 131, .14); }
+.serial-share-status.offline { color: #f0a0a0; }
+.serial-share-status.offline > span { background: #e26969; box-shadow: 0 0 0 3px rgba(226, 105, 105, .14); }
+.serial-shared-refresh-state { color: #b4c3cc; }
 .serial-field-heading { display: flex; align-items: center; justify-content: space-between; min-height: 24px; color: #c9d3da; font-size: 13px; font-weight: 700; }
 .serial-field-heading :deep(.n-button), .serial-tab-actions > :deep(.n-button) { color: #e1eaef; background: #2a3a44; border-color: #526671; }
 .serial-field-heading :deep(.n-button:hover), .serial-tab-actions > :deep(.n-button:hover) { color: #102027; background: #91bfbd; border-color: #91bfbd; }

@@ -422,7 +422,10 @@ export async function fetchBackendSerialPorts(): Promise<{ ports: BackendSerialP
 }
 
 export async function fetchBrowserSerialShares(): Promise<{ shares: BrowserSerialShare[] }> {
-  const { data } = await api.get<{ shares: BrowserSerialShare[] }>("/tools/serial/browser-shares");
+  const { data } = await api.get<{ shares: BrowserSerialShare[] }>("/tools/serial/browser-shares", {
+    params: { _: Date.now() },
+    headers: { "Cache-Control": "no-cache" },
+  });
   return data;
 }
 
