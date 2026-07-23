@@ -1,7 +1,6 @@
 #include "serial/serial_websocket.hpp"
 #include "logging/logger.hpp"
 
-#include <chrono>
 #include <stdexcept>
 #include <utility>
 
@@ -30,7 +29,6 @@ void SerialWebSocketController::handleNewConnection(const drogon::HttpRequestPtr
         connection->shutdown(drogon::CloseCode::kViolation, "Serial requires HTTPS");
         return;
     }
-    connection->setPingMessage("space-station-serial", std::chrono::seconds(20));
     connection->setContext(std::make_shared<ConnectionState>());
     const auto log_message = "Serial WebSocket opened: peer=" + request->peerAddr().toIpPort();
     logI(log_message.c_str());

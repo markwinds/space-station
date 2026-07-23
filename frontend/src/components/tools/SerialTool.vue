@@ -44,9 +44,25 @@
         打开串口
       </n-button>
 
+      <section v-if="views.length" class="serial-mobile-sessions" aria-label="已打开串口">
+        <div class="serial-mobile-sessions-title">
+          <strong>已打开串口</strong>
+          <span>{{ views.length }}</span>
+        </div>
+        <div class="serial-mobile-session-list">
+          <div v-for="view in views" :key="`mobile-${view.id}`" class="serial-mobile-session">
+            <button type="button" @click="activateView(view.id)">
+              <span class="serial-status-dot" :class="sessionFor(view)?.status" />
+              <span>{{ view.title }}</span>
+            </button>
+            <button type="button" aria-label="关闭串口" @click="closeView(view.id)">×</button>
+          </div>
+        </div>
+      </section>
+
       <div class="serial-rules">
         <strong>占用规则</strong>
-        <p>本程序内重复打开会共享同一连接；其他程序已占用时会显示系统返回的占用错误。最后一个视图关闭后才释放设备。</p>
+        <p>当前页面内每个串口只保留一个终端，重复打开会直接切换到已有标签。不同浏览器可以共享同一个后端串口，最后一个客户端退出后才释放设备。</p>
       </div>
     </aside>
 
@@ -77,11 +93,13 @@
             @recording="activeView && toggleRecording(activeView)"
             @settings="openTerminalSettings"
           />
-          <n-button size="tiny" secondary @click="duplicateActiveView">新视图</n-button>
           <n-button v-if="activeSession.status === 'error' || activeSession.status === 'closed'" size="tiny" secondary @click="reconnectActive">重连</n-button>
           <span class="serial-location">{{ activeSession.location === 'browser' ? '浏览器' : '服务器' }}</span>
           <span class="serial-status-label" :class="activeSession.status">{{ statusText(activeSession) }}</span>
           <terminal-renderer-badge v-if="activeView" class="serial-renderer" :renderer="activeView.renderer" />
+          <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
+            <n-button class="serial-mobile-more" secondary size="tiny">更多</n-button>
+          </n-dropdown>
         </div>
       </header>
 
@@ -103,7 +121,7 @@
       <section v-if="views.length === 0" class="serial-empty">
         <div>›_</div>
         <h1>打开一个串口开始通信</h1>
-        <p>接收到的数据会保留在会话缓冲区，新建共享视图也能看到已有内容。</p>
+        <p>每个串口对应一个终端标签，可以同时打开多个不同串口。</p>
         <n-button class="serial-empty-mobile" type="primary" @click="mobileSetup = true">选择串口</n-button>
       </section>
 
@@ -202,7 +220,7 @@
 </template>
 
 <script setup lang="ts">
-import { NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NModal, NSelect, useMessage } from "naive-ui";
+import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NInput, NInputNumber, NModal, NSelect, useMessage } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { fetchBackendSerialPorts, type BackendSerialPort } from "@/api";
 import WebTerminal from "../terminal/WebTerminal.vue";
@@ -241,11 +259,14 @@ interface SerialSession {
   status: SessionStatus;
   error: string;
   closing: boolean;
+  reconnecting: boolean;
   chunks: Uint8Array[];
   bufferedBytes: number;
   socket?: WebSocket;
   socketOpened: boolean;
   keepaliveTimer?: number;
+  retryTimer?: number;
+  viewers: number;
   browserPort?: SerialPort;
   reader?: ReadableStreamDefaultReader<Uint8Array>;
   readTask?: Promise<void>;
@@ -312,6 +333,23 @@ let browserSequence = 0;
 let searchInputTimer: number | undefined;
 
 const pinnedSnippets = computed(() => snippets.value.filter((snippet) => snippet.pinned !== false));
+const mobileActionOptions = computed(() => {
+  const view = activeView.value;
+  const session = activeSession.value;
+  if (!view || !session) return [];
+  const options: Array<{ label: string; key: string; disabled?: boolean }> = [];
+  if (session.status === "closed" || session.status === "error") options.push({ label: "重新连接", key: "reconnect" });
+  options.push(
+    { label: "搜索终端", key: "search" },
+    { label: "命令片段", key: "snippets" },
+    { label: view.recording ? "停止录制" : "开始录制", key: "recording" },
+    { label: "终端设置", key: "settings" },
+    { label: `位置：${session.location === "browser" ? "浏览器" : "服务器"}`, key: "location", disabled: true },
+    { label: `状态：${statusText(session)}`, key: "status", disabled: true },
+    { label: `渲染：${view.renderer === "webgl" ? "GPU" : "Canvas"}`, key: "renderer", disabled: true },
+  );
+  return options;
+});
 
 const storedSettings = (() => {
   try { return JSON.parse(localStorage.getItem("space-station:serial-settings") || "{}"); }
@@ -392,11 +430,12 @@ async function openSelectedPort() {
   const key = `${source.value}:${portId}`;
   const existing = sessions.get(key);
   if (existing) {
+    const existingView = views.find((view) => view.sessionKey === existing.key);
+    if (existingView) activateView(existingView.id);
     if (!settingsMatch(existing.settings, settings)) {
-      message.warning(`该串口已按 ${existing.settings.baudRate}-${existing.settings.dataBits}-${existing.settings.parity} 打开，请关闭全部视图后再修改参数。`);
+      message.warning(`已切换到现有终端；该串口使用 ${existing.settings.baudRate}-${existing.settings.dataBits}-${existing.settings.parity}，关闭后才能修改参数。`);
       return;
     }
-    await addView(existing);
     return;
   }
 
@@ -411,9 +450,11 @@ async function openSelectedPort() {
     status: "connecting",
     error: "",
     closing: false,
+    reconnecting: false,
     chunks: [],
     bufferedBytes: 0,
     socketOpened: false,
+    viewers: 0,
     browserPort: browserItem ? markRaw(browserItem.port) : undefined,
     writeChain: Promise.resolve(),
   });
@@ -459,16 +500,19 @@ async function openBrowserSession(session: SerialSession) {
   if (session.readTask === readTask) session.readTask = undefined;
   if (!session.closing) {
     session.status = "closed";
-    broadcastNotice(session, "\r\n\x1b[33m[串口读取已结束]\x1b[0m\r\n");
+    broadcastNotice(session, "\r\n\x1b[33m[串口读取已结束，按任意键重连]\x1b[0m\r\n");
   }
 }
 
-function openServerSession(session: SerialSession) {
+function openServerSession(session: SerialSession, attempt = 0) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const socket = markRaw(new WebSocket(`${protocol}//${window.location.host}/api/tools/serial/session`));
+  let transportError = false;
   socket.binaryType = "arraybuffer";
   session.socket = socket;
   session.socketOpened = false;
+  window.clearTimeout(session.retryTimer);
+  session.retryTimer = undefined;
   socket.onopen = () => {
     session.socketOpened = true;
     socket.send(JSON.stringify({ type: "open", port: session.portId, options: {
@@ -490,24 +534,41 @@ function openServerSession(session: SerialSession) {
       const payload = JSON.parse(String(event.data));
       if (payload.type === "opened") {
         session.status = "open";
+        session.viewers = Number(payload.viewers) || 1;
         broadcastNotice(session, `\r\n\x1b[36m[已连接服务器串口 ${session.name} · ${payload.viewers ?? 1} 个订阅]\x1b[0m\r\n`);
       } else if (payload.type === "state" && payload.status) {
         session.status = payload.status === "open" ? "open" : "closed";
+        session.viewers = Number(payload.viewers) || session.viewers;
       } else if (payload.type === "error") failSession(session, payload.message || "服务器串口连接失败");
     } catch { /* Ignore non-protocol text. */ }
   };
   socket.onerror = () => {
-    if (!session.error) failSession(session, session.socketOpened
-      ? "串口 WebSocket 连接异常中断，请检查网络或后端日志。"
-      : "串口 WebSocket 握手失败，请确认后端服务仍在运行并刷新服务器设备列表。");
+    transportError = true;
+    if (session.socketOpened && !session.error) failSession(session, "串口 WebSocket 连接异常中断，请检查网络或后端日志。");
   };
   socket.onclose = (event) => {
     window.clearInterval(session.keepaliveTimer);
     session.keepaliveTimer = undefined;
+    if (session.socket !== socket || session.closing) return;
+    if (!session.socketOpened && attempt < 2) {
+      session.status = "connecting";
+      session.error = "";
+      const delay = attempt === 0 ? 350 : 1000;
+      broadcastNotice(session, `\r\n\x1b[33m[WebSocket 握手未完成，${delay}ms 后自动重试 ${attempt + 1}/2]\x1b[0m\r\n`);
+      session.retryTimer = window.setTimeout(() => {
+        session.retryTimer = undefined;
+        if (!session.closing) openServerSession(session, attempt + 1);
+      }, delay);
+      return;
+    }
+    if (!session.socketOpened) {
+      failSession(session, `串口 WebSocket 握手失败（关闭代码 ${event.code}${transportError ? "，网络错误" : ""}），请检查访问地址、客户端证书或后端状态。`);
+      return;
+    }
     if (!session.closing && session.status !== "error") {
       session.status = "closed";
       const detail = event.reason ? `：${event.reason}` : event.code !== 1000 ? `（代码 ${event.code}）` : "";
-      broadcastNotice(session, `\r\n\x1b[33m[服务器串口连接已关闭${detail}]\x1b[0m\r\n`);
+      broadcastNotice(session, `\r\n\x1b[33m[服务器串口连接已关闭${detail}，按任意键重连]\x1b[0m\r\n`);
     }
   };
 }
@@ -515,7 +576,7 @@ function openServerSession(session: SerialSession) {
 function failSession(session: SerialSession, reason: string) {
   session.status = "error";
   session.error = reason;
-  broadcastNotice(session, `\r\n\x1b[31m[连接失败：${reason}]\x1b[0m\r\n`);
+  broadcastNotice(session, `\r\n\x1b[31m[连接失败：${reason}]\x1b[0m\r\n\x1b[33m[按任意键重连]\x1b[0m\r\n`);
 }
 
 function receiveData(session: SerialSession, input: Uint8Array) {
@@ -556,11 +617,10 @@ async function writeSession(session: SerialSession, data: Uint8Array) {
 }
 
 async function addView(session: SerialSession) {
-  const sameSessionCount = views.filter((view) => view.sessionKey === session.key).length;
   const view = reactive<SerialView>({
     id: crypto.randomUUID(),
     sessionKey: session.key,
-    title: sameSessionCount ? `${session.name} (${sameSessionCount + 1})` : session.name,
+    title: session.name,
     command: "",
     sendMode: "text",
     lineEnding: "none",
@@ -602,6 +662,11 @@ function handleTerminalReady(view: SerialView, event: WebTerminalReadyEvent) {
 function handleTerminalData(view: SerialView, data: string) {
   const session = sessions.get(view.sessionKey);
   if (!session) return;
+  if (session.status === "closed" || session.status === "error") {
+    void reconnectSession(session);
+    return;
+  }
+  if (session.status !== "open") return;
   void writeSession(session, new TextEncoder().encode(data)).catch((error) => message.error(errorMessage(error)));
 }
 
@@ -609,10 +674,6 @@ function activateView(viewId: string) {
   activeViewId.value = viewId;
   mobileSetup.value = false;
   nextTick(() => views.find((view) => view.id === viewId)?.terminalView?.fit());
-}
-
-function duplicateActiveView() {
-  if (activeSession.value) void addView(activeSession.value);
 }
 
 async function closeView(viewId: string) {
@@ -634,6 +695,8 @@ async function closeSession(session: SerialSession) {
   if (session.location === "server") {
     window.clearInterval(session.keepaliveTimer);
     session.keepaliveTimer = undefined;
+    window.clearTimeout(session.retryTimer);
+    session.retryTimer = undefined;
     const socket = session.socket;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "close" }));
     if (socket) {
@@ -654,13 +717,40 @@ async function closeSession(session: SerialSession) {
 async function reconnectActive() {
   const session = activeSession.value;
   if (!session) return;
-  await closeSession(session);
-  await startSession(session);
+  await reconnectSession(session);
+}
+
+async function reconnectSession(session: SerialSession) {
+  if (session.reconnecting || session.status === "open") return;
+  session.reconnecting = true;
+  session.error = "";
+  broadcastNotice(session, "\r\n\x1b[36m[正在重新连接串口…]\x1b[0m\r\n");
+  try {
+    const closing = closeSession(session);
+    session.status = "connecting";
+    await closing;
+    await startSession(session);
+  } finally {
+    session.reconnecting = false;
+  }
 }
 
 function sessionFor(view: SerialView) { return sessions.get(view.sessionKey); }
 function statusText(session: SerialSession) {
-  return session.status === "connecting" ? "连接中" : session.status === "open" ? `已连接 · ${views.filter((view) => view.sessionKey === session.key).length} 个视图` : session.status === "error" ? "连接失败" : "已断开";
+  if (session.status === "connecting") return "连接中";
+  if (session.status === "error") return "连接失败";
+  if (session.status === "closed") return "已断开";
+  return session.location === "server" ? `已连接 · ${session.viewers || 1} 个客户端` : "已连接";
+}
+
+function handleMobileAction(key: string) {
+  const view = activeView.value;
+  if (!view) return;
+  if (key === "reconnect") void reconnectActive();
+  else if (key === "search") openSearch();
+  else if (key === "snippets") showSnippets.value = true;
+  else if (key === "recording") toggleRecording(view);
+  else if (key === "settings") openTerminalSettings();
 }
 
 async function sendFromComposer(view: SerialView) {
@@ -913,6 +1003,7 @@ onBeforeUnmount(() => {
 .serial-rules { margin-top: auto; padding: 12px; border: 1px solid #2c3d47; border-radius: 8px; background: #11191f; }
 .serial-rules strong { font-size: 13px; }
 .serial-rules p { margin: 6px 0 0; color: #8fa0ad; font-size: 12px; line-height: 1.55; }
+.serial-mobile-sessions { display: none; }
 .serial-workspace { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .serial-search-bar { top: 55px; }
 .serial-tabs { min-height: 48px; display: flex; align-items: stretch; border-bottom: 1px solid #2c3942; background: #151d23; }
@@ -928,6 +1019,7 @@ onBeforeUnmount(() => {
 .serial-tab-actions { min-width: 0; flex: 0 0 auto; padding: 0 12px; display: flex; align-items: center; gap: 8px; }
 .serial-location, .serial-status-label { padding: 3px 8px; border-radius: 999px; background: #263640; color: #b9c8d1; font-size: 11px; white-space: nowrap; }
 .serial-renderer { order: 10; }
+.serial-mobile-more { display: none; }
 .serial-status-label.open { background: rgba(39, 135, 83, .26); color: #78d7a1; }
 .serial-status-label.error { background: rgba(169, 62, 62, .28); color: #f0a0a0; }
 .serial-mobile-menu { display: none; align-self: center; margin-left: 8px; }
@@ -967,10 +1059,21 @@ onBeforeUnmount(() => {
   .serial-app--session-open .serial-workspace { display: flex; }
   .serial-mobile-menu { display: inline-flex; }
   .serial-tabs { padding-top: env(safe-area-inset-top); min-height: calc(46px + env(safe-area-inset-top)); }
-  .serial-tab-actions .serial-location, .serial-tab-actions > button, .serial-desktop-actions { display: none; }
+  .serial-tab-list .serial-tab:not(.active) { display: none; }
+  .serial-tab-list .serial-tab.active { min-width: 0; max-width: none; flex: 1; }
+  .serial-tab-actions .serial-location, .serial-tab-actions > button:not(.serial-mobile-more), .serial-desktop-actions, .serial-status-label, .serial-renderer { display: none; }
   .serial-tab-actions { padding: 0 7px; }
-  .serial-status-label { max-width: 92px; overflow: hidden; text-overflow: ellipsis; }
-  .serial-tab { min-width: 112px; max-width: 165px; }
+  .serial-mobile-more { display: inline-flex; }
+  .serial-mobile-sessions { padding: 9px; display: grid; gap: 8px; border: 1px solid #34434d; border-radius: 8px; background: #1d262c; }
+  .serial-mobile-sessions-title { display: flex; align-items: center; justify-content: space-between; color: #b9c7cf; font-size: 12px; }
+  .serial-mobile-sessions-title span { min-width: 24px; padding: 1px 7px; border-radius: 999px; background: #30404a; color: #dce6eb; text-align: center; }
+  .serial-mobile-session-list { display: flex; gap: 7px; overflow-x: auto; scrollbar-width: none; }
+  .serial-mobile-session-list::-webkit-scrollbar { display: none; }
+  .serial-mobile-session { flex: 0 0 auto; display: flex; align-items: stretch; overflow: hidden; border: 1px solid #42535e; border-radius: 7px; background: #27343c; }
+  .serial-mobile-session > button { min-height: 34px; padding: 0 9px; display: flex; align-items: center; gap: 7px; border: 0; background: transparent; color: #e0e8ed; }
+  .serial-mobile-session > button:first-child { max-width: 170px; }
+  .serial-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .serial-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .serial-empty-mobile { display: inline-flex; }
   .serial-terminal { padding-left: 5px; }
   .serial-composer { padding-bottom: max(10px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
