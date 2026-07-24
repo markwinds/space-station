@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Drogon CONFIG REQUIRED)
+find_package(CURL CONFIG REQUIRED)
 find_package(c-ares CONFIG REQUIRED)
 find_package(libssh2 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
@@ -86,6 +87,7 @@ target_include_directories(space-station
 target_link_libraries(space-station
         PRIVATE
         Drogon::Drogon
+        CURL::libcurl
         c-ares::cares
         nlohmann_json::nlohmann_json
         unofficial::sqlite3::sqlite3
@@ -151,8 +153,9 @@ if (BUILD_TESTING)
     target_include_directories(terminal-plugin-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(terminal-plugin-test
             PRIVATE
-            Drogon::Drogon
+            CURL::libcurl
             nlohmann_json::nlohmann_json
+            OpenSSL::Crypto
             qjs
             Threads::Threads)
     add_test(NAME terminal-plugin-test COMMAND terminal-plugin-test)

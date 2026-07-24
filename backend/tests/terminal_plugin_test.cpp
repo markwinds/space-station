@@ -34,6 +34,20 @@ int main()
           const prefix = "@@PING";
           const suffix = "@@";
           function onTerminalData(event) {
+            if (event.data.includes("@@CRYPTO@@")) {
+              const encrypted = space.crypto.rsaEncryptPkcs1v15({
+                publicKey: `-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC9Ld9heac0L6TcpX6iM7okfjk7
+MsWg5Cygu5aLXpZLuT5sUXRPCr8VBwBoWi7/rBdttyIAkbcKBc70DeW8SYayqzbc
+t/T1cmVnRgNwPyUKDq7BR4l7nmR6/X8MVuXpJZ7f4Fm8qBg/n7PXUOe+utMiBf5G
+Aud3/R/DsOR1gzjlTQIDAQAB
+-----END PUBLIC KEY-----`,
+                data: "test",
+              });
+              const random = space.crypto.randomBytes(16);
+              space.terminal.write(`${encrypted.length}:${random.length}\r\n`);
+              return;
+            }
             const state = sessions.get(event.sessionId) || { buffered: "", seenIds: [] };
             state.buffered += event.data;
             while (true) {
@@ -90,6 +104,14 @@ int main()
     {
         std::unique_lock lock(mutex);
         const auto completed = condition.wait_for(lock, 3s, [&] { return written == "PONG\r\nPONG\r\n"; });
+        assert(completed);
+    }
+    service.OnOutput("session-1", "@@CRYPTO@@");
+    {
+        std::unique_lock lock(mutex);
+        const auto completed = condition.wait_for(lock, 3s, [&] {
+            return written == "PONG\r\nPONG\r\n172:16\r\n";
+        });
         assert(completed);
     }
     const auto status = service.ListPlugins();

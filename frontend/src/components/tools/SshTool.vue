@@ -902,13 +902,14 @@ function bindTerminalSocket(tab: TerminalTab, socket: WebSocket) {
   };
   socket.onerror = () => {
     if (tab.socket !== socket) return;
-    if (!tab.socketReady && scheduleAutomaticReconnect(tab, "WebSocket 握手异常")) return;
-    updateTab(tab, "error", "WebSocket 连接失败");
+    if (!tab.socketReady && scheduleAutomaticReconnect(tab)) return;
+    updateTab(tab, "error", "WebSocket 通道建立失败");
+    tab.terminal?.writeln("\r\n\x1b[31mWebSocket 通道建立失败，请检查访问地址、客户端证书或后端状态。\x1b[0m");
     showReconnectHint(tab);
   };
   socket.onclose = (event) => {
     if (tab.socket !== socket) return;
-    if (!tab.socketReady && scheduleAutomaticReconnect(tab, "WebSocket 握手中断")) return;
+    if (!tab.socketReady && scheduleAutomaticReconnect(tab)) return;
     if (tab.status !== "closed" && tab.status !== "error") {
       const reason = event.reason ? `：${event.reason}` : "";
       updateTab(tab, "closed", `连接已关闭（${event.code}）${reason}`);
@@ -1101,7 +1102,7 @@ function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
     message.warning(String(payload.message ?? "SSH 操作未完全成功"));
   } else if (payload.type === "host-key-mismatch" || payload.type === "error") {
     const errorText = String(payload.message ?? "SSH 连接失败");
-    if (payload.type === "error" && isTransientSshError(errorText) && scheduleAutomaticReconnect(tab, errorText)) return;
+    if (payload.type === "error" && isTransientSshError(errorText) && scheduleAutomaticReconnect(tab)) return;
     credentialCache.delete(tab.host.id);
     if (tab.usedStoredCredential && /authentication|认证/i.test(errorText)) {
       void deleteSshCredential(tab.host.id).then(() => {
@@ -1119,7 +1120,7 @@ function isTransientSshError(content: string) {
   return /无法连接 SSH 主机|DNS 解析超时|TCP 连接超时|SSH 握手(?:失败|超时)|socket|Unable to exchange encryption keys|Failure establishing SSH session/i.test(content);
 }
 
-function scheduleAutomaticReconnect(tab: TerminalTab, reason: string) {
+function scheduleAutomaticReconnect(tab: TerminalTab) {
   if (tab.automaticRetryCount >= 1 || !tabs.value.some((item) => item.id === tab.id)) return false;
   tab.automaticRetryCount += 1;
   const previousSocket = tab.socket;
@@ -1134,8 +1135,7 @@ function scheduleAutomaticReconnect(tab: TerminalTab, reason: string) {
     tab.pendingCredential ? { ...tab.pendingCredential } : { method: "stored", password: "", privateKey: "", passphrase: "" },
     tab.persistCredential,
   );
-  updateTab(tab, "connecting", `${reason}，正在自动重试…`);
-  tab.terminal?.writeln(`\r\n\x1b[33m${reason}，正在自动重试一次…\x1b[0m`);
+  updateTab(tab, "connecting", "正在建立连接…");
   window.setTimeout(() => {
     if (!tabs.value.some((item) => item.id === tab.id) || tab.socket !== previousSocket) return;
     const socket = createTerminalSocket();

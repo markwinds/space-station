@@ -2,9 +2,12 @@
 
 #include "logging/logger.hpp"
 
-#include <drogon/HttpClient.h>
-#include <drogon/HttpRequest.h>
-#include <drogon/HttpResponse.h>
+#include <curl/curl.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rand.h>
+#include <openssl/rsa.h>
 #include <quickjs.h>
 
 #include <algorithm>
@@ -17,6 +20,7 @@
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -65,12 +69,13 @@ struct PluginManifest
 
 struct HttpRequestSpec
 {
-    std::string origin;
-    std::string path;
+    std::string url;
     std::string host;
     std::string method = "GET";
     std::unordered_map<std::string, std::string> headers;
     std::string body;
+    std::string proxy;
+    bool verify_tls = true;
     std::chrono::milliseconds timeout{5000};
     std::size_t max_response_bytes = 1024 * 1024;
 };
@@ -79,7 +84,10 @@ struct HttpResponseData
 {
     int status = 0;
     std::unordered_map<std::string, std::string> headers;
+    std::unordered_map<std::string, std::vector<std::string>> header_values;
+    std::vector<std::string> set_cookies;
     std::string body;
+    std::string effective_url;
 };
 
 struct PluginEvent
@@ -210,8 +218,6 @@ bool HostAllowed(const std::vector<std::string>& patterns, const std::string& ho
 
 struct ParsedUrl
 {
-    std::string origin;
-    std::string path;
     std::string host;
 };
 
@@ -265,11 +271,7 @@ ParsedUrl ParseUrl(const std::string& url)
         throw std::runtime_error("HTTP URL 端口无效。");
     }
 
-    std::string path = path_start == std::string::npos ? "/" : url.substr(path_start);
-    if (path.front() == '?') path.insert(path.begin(), '/');
-    if (const auto fragment = path.find('#'); fragment != std::string::npos) path.erase(fragment);
-    if (path.empty()) path = "/";
-    return {scheme + "://" + authority, std::move(path), std::move(host)};
+    return {std::move(host)};
 }
 
 bool UnsafeHeader(const std::string& name)
@@ -279,14 +281,22 @@ bool UnsafeHeader(const std::string& name)
            lower == "transfer-encoding" || lower.starts_with("proxy-");
 }
 
-drogon::HttpMethod HttpMethod(const std::string& method)
+bool InvalidHeaderText(const std::string& name, const std::string& value)
 {
-    if (method == "GET") return drogon::Get;
-    if (method == "POST") return drogon::Post;
-    if (method == "PUT") return drogon::Put;
-    if (method == "PATCH") return drogon::Patch;
-    if (method == "DELETE") return drogon::Delete;
-    if (method == "HEAD") return drogon::Head;
+    if (name.empty() || name.find(':') != std::string::npos ||
+        name.find_first_of("\r\n") != std::string::npos ||
+        value.find_first_of("\r\n") != std::string::npos)
+        return true;
+    return std::any_of(name.begin(), name.end(), [](unsigned char character) {
+        return character <= 0x20 || character == 0x7f;
+    });
+}
+
+void ValidateHttpMethod(const std::string& method)
+{
+    if (method == "GET" || method == "POST" || method == "PUT" || method == "PATCH" ||
+        method == "DELETE" || method == "HEAD")
+        return;
     throw std::runtime_error("不支持的 HTTP 方法: " + method);
 }
 
@@ -324,6 +334,174 @@ int JsIntegerProperty(JSContext* context, JSValueConst object, const char* name,
     if (JS_ToInt32(context, &result, value) < 0) result = fallback;
     JS_FreeValue(context, value);
     return result;
+}
+
+bool JsBooleanProperty(JSContext* context, JSValueConst object, const char* name, bool fallback)
+{
+    auto value = JS_GetPropertyStr(context, object, name);
+    if (JS_IsUndefined(value) || JS_IsNull(value))
+    {
+        JS_FreeValue(context, value);
+        return fallback;
+    }
+    const auto result = JS_ToBool(context, value);
+    JS_FreeValue(context, value);
+    return result < 0 ? fallback : result != 0;
+}
+
+std::string OpenSslError()
+{
+    const auto code = ERR_get_error();
+    if (code == 0) return "未知 OpenSSL 错误";
+    char buffer[256]{};
+    ERR_error_string_n(code, buffer, sizeof(buffer));
+    return buffer;
+}
+
+std::string Base64Encode(const unsigned char* data, std::size_t size)
+{
+    if (size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("待编码数据过大。");
+    std::string encoded(4 * ((size + 2) / 3), '\0');
+    const auto written = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),
+                                         data,
+                                         static_cast<int>(size));
+    if (written < 0) throw std::runtime_error("Base64 编码失败。");
+    encoded.resize(static_cast<std::size_t>(written));
+    return encoded;
+}
+
+std::string TrimHttpValue(std::string value)
+{
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+struct CurlResponseContext
+{
+    HttpResponseData response;
+    std::size_t maximum_body_bytes = 0;
+    bool body_too_large = false;
+};
+
+std::size_t CurlWrite(char* data, std::size_t size, std::size_t count, void* opaque)
+{
+    auto* context = static_cast<CurlResponseContext*>(opaque);
+    const auto bytes = size * count;
+    if (bytes > context->maximum_body_bytes -
+                    std::min(context->maximum_body_bytes, context->response.body.size()))
+    {
+        context->body_too_large = true;
+        return 0;
+    }
+    context->response.body.append(data, bytes);
+    return bytes;
+}
+
+std::size_t CurlHeader(char* data, std::size_t size, std::size_t count, void* opaque)
+{
+    auto* context = static_cast<CurlResponseContext*>(opaque);
+    const auto bytes = size * count;
+    std::string line(data, bytes);
+    if (line.starts_with("HTTP/"))
+    {
+        context->response.headers.clear();
+        context->response.header_values.clear();
+        context->response.set_cookies.clear();
+        return bytes;
+    }
+    const auto colon = line.find(':');
+    if (colon == std::string::npos) return bytes;
+    auto name = Lower(TrimHttpValue(line.substr(0, colon)));
+    auto value = TrimHttpValue(line.substr(colon + 1));
+    if (name.empty()) return bytes;
+    context->response.header_values[name].push_back(value);
+    if (name == "set-cookie") context->response.set_cookies.push_back(value);
+    const auto found = context->response.headers.find(name);
+    if (found == context->response.headers.end()) context->response.headers.emplace(name, value);
+    else if (name != "set-cookie") found->second += ", " + value;
+    else found->second = value;
+    return bytes;
+}
+
+HttpResponseData PerformHttpRequest(const HttpRequestSpec& spec)
+{
+    static const auto curl_initialized = [] {
+        const auto result = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (result != CURLE_OK) throw std::runtime_error("libcurl 全局初始化失败。");
+        return true;
+    }();
+    (void)curl_initialized;
+
+    auto* handle = curl_easy_init();
+    if (!handle) throw std::runtime_error("无法创建 libcurl 请求。");
+    struct HandleGuard
+    {
+        CURL* value;
+        ~HandleGuard() { curl_easy_cleanup(value); }
+    } handle_guard{handle};
+
+    curl_slist* request_headers = nullptr;
+    struct HeaderGuard
+    {
+        curl_slist*& value;
+        ~HeaderGuard() { curl_slist_free_all(value); }
+    } header_guard{request_headers};
+    for (const auto& [name, value] : spec.headers)
+    {
+        const auto header = name + ": " + value;
+        auto* appended = curl_slist_append(request_headers, header.c_str());
+        if (!appended) throw std::runtime_error("无法分配 HTTP 请求头。");
+        request_headers = appended;
+    }
+
+    CurlResponseContext context;
+    context.maximum_body_bytes = spec.max_response_bytes;
+    char error_buffer[CURL_ERROR_SIZE]{};
+    curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, error_buffer);
+    curl_easy_setopt(handle, CURLOPT_URL, spec.url.c_str());
+    curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, static_cast<long>(spec.timeout.count()));
+    curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS,
+                     static_cast<long>(std::min(spec.timeout, std::chrono::milliseconds(10000)).count()));
+    curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "");
+    curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &CurlWrite);
+    curl_easy_setopt(handle, CURLOPT_WRITEDATA, &context);
+    curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, &CurlHeader);
+    curl_easy_setopt(handle, CURLOPT_HEADERDATA, &context);
+    curl_easy_setopt(handle, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+    curl_easy_setopt(handle, CURLOPT_HTTPHEADER, request_headers);
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, spec.verify_tls ? 1L : 0L);
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, spec.verify_tls ? 2L : 0L);
+    // 显式传空字符串会关闭环境变量中的代理，保证是否走代理完全由插件决定。
+    curl_easy_setopt(handle, CURLOPT_PROXY, spec.proxy.c_str());
+
+    if (spec.method == "HEAD") curl_easy_setopt(handle, CURLOPT_NOBODY, 1L);
+    else if (spec.method != "GET") curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, spec.method.c_str());
+    if (!spec.body.empty() || spec.method == "POST" || spec.method == "PUT" || spec.method == "PATCH")
+    {
+        curl_easy_setopt(handle, CURLOPT_POSTFIELDS, spec.body.data());
+        curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(spec.body.size()));
+    }
+
+    const auto result = curl_easy_perform(handle);
+    if (result != CURLE_OK)
+    {
+        if (context.body_too_large) throw std::runtime_error("HTTP 响应超过插件允许的大小。");
+        const auto detail = error_buffer[0] != '\0' ? error_buffer : curl_easy_strerror(result);
+        throw std::runtime_error("HTTP 请求失败: " + std::string(detail));
+    }
+    long status = 0;
+    curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &status);
+    context.response.status = static_cast<int>(status);
+    char* effective_url = nullptr;
+    curl_easy_getinfo(handle, CURLINFO_EFFECTIVE_URL, &effective_url);
+    if (effective_url) context.response.effective_url = effective_url;
+    return std::move(context.response);
 }
 } // namespace
 
@@ -552,37 +730,20 @@ class TerminalPluginService::Impl
         }
         if (!queue) throw std::runtime_error("插件服务已经停止。");
 
-        auto request = drogon::HttpRequest::newHttpRequest();
-        request->setPath(spec.path);
-        request->setMethod(HttpMethod(spec.method));
-        for (const auto& [name, value] : spec.headers) request->addHeader(name, value);
-        if (!spec.body.empty()) request->setBody(std::move(spec.body));
-        auto client = drogon::HttpClient::newHttpClient(spec.origin);
-        const auto timeout = static_cast<double>(spec.timeout.count()) / 1000.0;
-        const auto maximum_response_bytes = spec.max_response_bytes;
-        client->sendRequest(
-            request,
-            [queue, plugin_id, request_id, session_id, maximum_response_bytes](
-                drogon::ReqResult result, const drogon::HttpResponsePtr& response) {
+        std::thread(
+            [queue, plugin_id, request_id, session_id, spec = std::move(spec)]() mutable {
                 PluginEvent event;
                 event.type = PluginEvent::Type::HttpComplete;
                 event.plugin_id = plugin_id;
                 event.request_id = request_id;
                 event.session.id = session_id;
-                if (result != drogon::ReqResult::Ok || !response)
+                try
                 {
-                    event.error = "HTTP 请求失败: " + drogon::to_string(result);
+                    event.response = PerformHttpRequest(spec);
                 }
-                else if (response->body().size() > maximum_response_bytes)
+                catch (const std::exception& error)
                 {
-                    event.error = "HTTP 响应超过插件允许的大小。";
-                }
-                else
-                {
-                    event.response.status = static_cast<int>(response->statusCode());
-                    event.response.body.assign(response->body().data(), response->body().size());
-                    for (const auto& [name, value] : response->headers())
-                        event.response.headers.emplace(name, value);
+                    event.error = error.what();
                 }
                 {
                     std::lock_guard lock(queue->mutex);
@@ -590,8 +751,8 @@ class TerminalPluginService::Impl
                     queue->events.push_back(std::move(event));
                 }
                 queue->condition.notify_one();
-            },
-            timeout);
+            })
+            .detach();
     }
 
     std::string NextHttpRequestId(const std::string& plugin_id)
@@ -842,16 +1003,103 @@ class TerminalPluginService::Impl::Runtime
         return JS_UNDEFINED;
     }
 
+    static JSValue CryptoRandomBytes(JSContext* context,
+                                     JSValueConst,
+                                     int argument_count,
+                                     JSValueConst* arguments)
+    {
+        std::int32_t size = 0;
+        if (argument_count < 1 || JS_ToInt32(context, &size, arguments[0]) < 0 || size < 1 || size > 65536)
+            return JS_ThrowRangeError(context, "space.crypto.randomBytes(size) requires 1..65536");
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+        if (RAND_bytes(bytes.data(), size) != 1)
+            return JS_ThrowInternalError(context, "secure random generation failed: %s", OpenSslError().c_str());
+        return JS_NewUint8ArrayCopy(context, bytes.data(), bytes.size());
+    }
+
+    static JSValue CryptoRsaEncryptPkcs1v15(JSContext* context,
+                                            JSValueConst,
+                                            int argument_count,
+                                            JSValueConst* arguments)
+    {
+        if (argument_count < 1 || !JS_IsObject(arguments[0]))
+            return JS_ThrowTypeError(context,
+                                     "space.crypto.rsaEncryptPkcs1v15(options) requires an object");
+        try
+        {
+            const auto public_key = JsStringProperty(context, arguments[0], "publicKey").value_or("");
+            const auto data = JsStringProperty(context, arguments[0], "data").value_or("");
+            if (public_key.empty() || public_key.size() > 64 * 1024)
+                throw std::runtime_error("RSA 公钥不能为空且不能超过 64 KiB。");
+            if (data.size() > 64 * 1024) throw std::runtime_error("RSA 明文不能超过 64 KiB。");
+
+            auto* bio = BIO_new_mem_buf(public_key.data(), static_cast<int>(public_key.size()));
+            if (!bio) throw std::runtime_error("无法创建 RSA 公钥缓冲区。");
+            struct BioGuard
+            {
+                BIO* value;
+                ~BioGuard() { BIO_free(value); }
+            } bio_guard{bio};
+            auto* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
+            if (!key) throw std::runtime_error("RSA 公钥解析失败: " + OpenSslError());
+            struct KeyGuard
+            {
+                EVP_PKEY* value;
+                ~KeyGuard() { EVP_PKEY_free(value); }
+            } key_guard{key};
+            if (EVP_PKEY_base_id(key) != EVP_PKEY_RSA)
+                throw std::runtime_error("公钥不是 RSA 公钥。");
+
+            auto* key_context = EVP_PKEY_CTX_new(key, nullptr);
+            if (!key_context) throw std::runtime_error("无法创建 RSA 加密上下文。");
+            struct KeyContextGuard
+            {
+                EVP_PKEY_CTX* value;
+                ~KeyContextGuard() { EVP_PKEY_CTX_free(value); }
+            } key_context_guard{key_context};
+            if (EVP_PKEY_encrypt_init(key_context) <= 0 ||
+                EVP_PKEY_CTX_set_rsa_padding(key_context, RSA_PKCS1_PADDING) <= 0)
+                throw std::runtime_error("RSA PKCS#1 v1.5 初始化失败: " + OpenSslError());
+            std::size_t encrypted_size = 0;
+            if (EVP_PKEY_encrypt(key_context,
+                                 nullptr,
+                                 &encrypted_size,
+                                 reinterpret_cast<const unsigned char*>(data.data()),
+                                 data.size()) <= 0)
+                throw std::runtime_error("RSA 明文长度不适合当前公钥: " + OpenSslError());
+            std::vector<unsigned char> encrypted(encrypted_size);
+            if (EVP_PKEY_encrypt(key_context,
+                                 encrypted.data(),
+                                 &encrypted_size,
+                                 reinterpret_cast<const unsigned char*>(data.data()),
+                                 data.size()) <= 0)
+                throw std::runtime_error("RSA 加密失败: " + OpenSslError());
+            const auto encoded = Base64Encode(encrypted.data(), encrypted_size);
+            return JS_NewStringLen(context, encoded.data(), encoded.size());
+        }
+        catch (const std::exception& error)
+        {
+            return JS_ThrowInternalError(context, "%s", error.what());
+        }
+    }
+
     void InstallApi()
     {
         auto global = JS_GetGlobalObject(context_);
         auto space = JS_NewObject(context_);
         auto http = JS_NewObject(context_);
         auto terminal = JS_NewObject(context_);
+        auto crypto = JS_NewObject(context_);
         JS_SetPropertyStr(context_, http, "request", JS_NewCFunction(context_, &Runtime::HttpRequest, "request", 1));
         JS_SetPropertyStr(context_, terminal, "write", JS_NewCFunction(context_, &Runtime::TerminalWrite, "write", 1));
+        JS_SetPropertyStr(context_, crypto, "randomBytes",
+                          JS_NewCFunction(context_, &Runtime::CryptoRandomBytes, "randomBytes", 1));
+        JS_SetPropertyStr(context_, crypto, "rsaEncryptPkcs1v15",
+                          JS_NewCFunction(context_, &Runtime::CryptoRsaEncryptPkcs1v15,
+                                          "rsaEncryptPkcs1v15", 1));
         JS_SetPropertyStr(context_, space, "http", http);
         JS_SetPropertyStr(context_, space, "terminal", terminal);
+        JS_SetPropertyStr(context_, space, "crypto", crypto);
         JS_SetPropertyStr(context_, space, "log", JS_NewCFunction(context_, &Runtime::PluginLog, "log", 2));
         JS_SetPropertyStr(context_, global, "space", space);
         JS_FreeValue(context_, global);
@@ -868,19 +1116,21 @@ class TerminalPluginService::Impl::Runtime
         const auto parsed = ParseUrl(url);
         if (!HostAllowed(manifest_.allowed_hosts, parsed.host))
             throw std::runtime_error("HTTP 主机不在插件 allowedHosts 白名单中: " + parsed.host);
-        spec.origin = parsed.origin;
-        spec.path = parsed.path;
+        spec.url = url;
         spec.host = parsed.host;
         spec.method = Lower(JsStringProperty(context_, options, "method").value_or("get"));
         std::transform(spec.method.begin(), spec.method.end(), spec.method.begin(), [](unsigned char character) {
             return static_cast<char>(std::toupper(character));
         });
-        (void)HttpMethod(spec.method);
+        ValidateHttpMethod(spec.method);
         spec.body = JsStringProperty(context_, options, "body").value_or("");
         if (spec.body.size() > kMaximumRequestBodyBytes)
             throw std::runtime_error("HTTP 请求体不能超过 256 KiB。");
         spec.timeout = std::chrono::milliseconds(
             std::clamp(JsIntegerProperty(context_, options, "timeoutMs", 5000), 100, 30000));
+        spec.proxy = JsStringProperty(context_, options, "proxy").value_or("");
+        if (spec.proxy.size() > 4096) throw std::runtime_error("HTTP 代理地址不能超过 4096 字节。");
+        spec.verify_tls = JsBooleanProperty(context_, options, "verifyTls", true);
         spec.max_response_bytes = manifest_.max_response_bytes;
 
         auto headers = JS_GetPropertyStr(context_, options, "headers");
@@ -907,7 +1157,19 @@ class TerminalPluginService::Impl::Runtime
                 auto value = JS_GetProperty(context_, headers, properties[index].atom);
                 const auto value_text = JsString(context_, value);
                 if (name_text && value_text && !UnsafeHeader(name_text))
+                {
+                    if (InvalidHeaderText(name_text, *value_text))
+                    {
+                        if (name_text) JS_FreeCString(context_, name_text);
+                        JS_FreeValue(context_, value);
+                        for (std::uint32_t rest = index; rest < count; ++rest)
+                            JS_FreeAtom(context_, properties[rest].atom);
+                        js_free(context_, properties);
+                        JS_FreeValue(context_, headers);
+                        throw std::runtime_error("HTTP header 名称或内容无效。");
+                    }
                     spec.headers.emplace(name_text, *value_text);
+                }
                 if (name_text) JS_FreeCString(context_, name_text);
                 JS_FreeValue(context_, value);
                 JS_FreeAtom(context_, properties[index].atom);
@@ -960,10 +1222,28 @@ class TerminalPluginService::Impl::Runtime
         JS_SetPropertyStr(context_, object, "ok", JS_NewBool(context_, response.status >= 200 && response.status < 300));
         JS_SetPropertyStr(context_, object, "body",
                           JS_NewStringLen(context_, response.body.data(), response.body.size()));
+        JS_SetPropertyStr(context_, object, "url",
+                          JS_NewStringLen(context_, response.effective_url.data(), response.effective_url.size()));
         auto headers = JS_NewObject(context_);
         for (const auto& [name, value] : response.headers)
             JS_SetPropertyStr(context_, headers, name.c_str(), JS_NewStringLen(context_, value.data(), value.size()));
         JS_SetPropertyStr(context_, object, "headers", headers);
+        auto header_values = JS_NewObject(context_);
+        for (const auto& [name, values] : response.header_values)
+        {
+            auto array = JS_NewArray(context_);
+            for (std::uint32_t index = 0; index < values.size(); ++index)
+                JS_SetPropertyUint32(context_, array, index,
+                                     JS_NewStringLen(context_, values[index].data(), values[index].size()));
+            JS_SetPropertyStr(context_, header_values, name.c_str(), array);
+        }
+        JS_SetPropertyStr(context_, object, "headerValues", header_values);
+        auto set_cookies = JS_NewArray(context_);
+        for (std::uint32_t index = 0; index < response.set_cookies.size(); ++index)
+            JS_SetPropertyUint32(context_, set_cookies, index,
+                                 JS_NewStringLen(context_, response.set_cookies[index].data(),
+                                                response.set_cookies[index].size()));
+        JS_SetPropertyStr(context_, object, "setCookies", set_cookies);
         return object;
     }
 

@@ -788,7 +788,6 @@ function openServerSession(session: SerialSession, attempt = 0) {
       session.status = "connecting";
       session.error = "";
       const delay = attempt === 0 ? 350 : 1000;
-      broadcastNotice(session, `\r\n\x1b[33m[WebSocket 握手未完成，${delay}ms 后自动重试 ${attempt + 1}/2]\x1b[0m\r\n`);
       session.retryTimer = window.setTimeout(() => {
         session.retryTimer = undefined;
         if (!session.closing) openServerSession(session, attempt + 1);

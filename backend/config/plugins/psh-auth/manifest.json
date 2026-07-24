@@ -1,0 +1,22 @@
+{
+  "id": "psh-auth",
+  "name": "PSH 自动认证",
+  "enabled": false,
+  "entry": "index.js",
+  "transports": [
+    "serial",
+    "ssh",
+    "browser-serial"
+  ],
+  "targets": [
+    "*"
+  ],
+  "allowedHosts": [
+    "sso.hikvision.com",
+    "psh.hikvision.com.cn"
+  ],
+  "memoryLimitMiB": 8,
+  "executionTimeoutMs": 100,
+  "maxConcurrentRequests": 2,
+  "maxResponseBytes": 2097152
+}
