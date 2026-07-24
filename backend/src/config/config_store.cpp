@@ -550,9 +550,9 @@ nlohmann::json NormalizeHabit(const nlohmann::json& input)
              {"weekdays", weekdays},
              {"targetPerWeek", target_per_week},
          }},
-        {"reminderTime", JsonString(input, "reminderTime")},
         {"alternative", JsonString(input, "alternative", JsonString(input, "replacementAction"))},
         {"archived", JsonBool(input, "archived")},
+        {"archivedAt", JsonString(input, "archivedAt")},
         {"createdAt", JsonString(input, "createdAt")},
         {"updatedAt", JsonString(input, "updatedAt")},
     };
@@ -607,6 +607,7 @@ nlohmann::json NormalizeHabitState(const nlohmann::json& input)
         auto skipped = JsonBool(item, "skipped");
         auto occurrences = std::max(0, JsonInt(item, "occurrences", 0));
         auto replacements = std::max(0, JsonInt(item, "replacements", 0));
+        auto confirmed = JsonBool(item, "confirmed");
         if (legacy)
         {
             const auto status = JsonString(item, "status");
@@ -614,6 +615,7 @@ nlohmann::json NormalizeHabitState(const nlohmann::json& input)
             skipped = status == "skipped";
             occurrences = status == "occurred" ? std::max(1, JsonInt(item, "count", 1)) : 0;
             replacements = status == "replaced" ? 1 : 0;
+            confirmed = completed || skipped || occurrences > 0 || replacements > 0;
         }
 
         nlohmann::json log = {
@@ -623,6 +625,7 @@ nlohmann::json NormalizeHabitState(const nlohmann::json& input)
             {"skipped", completed ? false : skipped},
             {"occurrences", occurrences},
             {"replacements", replacements},
+            {"confirmed", confirmed || occurrences > 0 || replacements > 0},
             {"note", JsonString(item, "note")},
             {"updatedAt", JsonString(item, "updatedAt", JsonString(item, "createdAt"))},
         };

@@ -223,9 +223,9 @@ export interface Habit {
     weekdays: number[];
     targetPerWeek: number;
   };
-  reminderTime: string;
   alternative: string;
   archived: boolean;
+  archivedAt: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -237,6 +237,7 @@ export interface HabitLog {
   skipped: boolean;
   occurrences: number;
   replacements: number;
+  confirmed: boolean;
   note: string;
   updatedAt: string;
 }
