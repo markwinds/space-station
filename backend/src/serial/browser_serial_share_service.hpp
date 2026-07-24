@@ -7,11 +7,19 @@
 #include <string>
 #include <unordered_map>
 
+namespace spacestation::plugins
+{
+class TerminalPluginService;
+}
+
 namespace spacestation::serial
 {
 class BrowserSerialShareService
 {
   public:
+    explicit BrowserSerialShareService(plugins::TerminalPluginService* plugin_service = nullptr);
+    ~BrowserSerialShareService();
+
     nlohmann::json ListShares();
     void Publish(const std::string& share_id,
                  const std::string& name,
@@ -36,6 +44,7 @@ class BrowserSerialShareService
         std::string id;
         std::string name;
         std::string port_label;
+        std::string plugin_session_id;
         bool write_enabled = false;
         std::weak_ptr<drogon::WebSocketConnection> owner;
         std::unordered_map<std::string, std::weak_ptr<drogon::WebSocketConnection>> subscribers;
@@ -43,7 +52,9 @@ class BrowserSerialShareService
     };
 
     void BroadcastState(const std::string& share_id);
+    void PluginWrite(const std::string& share_id, std::string data);
 
+    plugins::TerminalPluginService* plugin_service_ = nullptr;
     std::mutex mutex_;
     std::unordered_map<std::string, Share> shares_;
     std::unordered_map<std::string, std::string> subscriptions_;

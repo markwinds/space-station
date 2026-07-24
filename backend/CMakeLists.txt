@@ -12,6 +12,7 @@ find_package(c-ares CONFIG REQUIRED)
 find_package(libssh2 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(qjs CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -65,6 +66,7 @@ add_executable(space-station
         src/config/config_store.cpp
         src/http/http_server.cpp
         src/logging/logger.cpp
+        src/plugins/terminal_plugin_service.cpp
         src/serial/serial_service.cpp
         src/serial/serial_websocket.cpp
         src/serial/browser_serial_share_service.cpp
@@ -89,6 +91,7 @@ target_link_libraries(space-station
         unofficial::sqlite3::sqlite3
         OpenSSL::Crypto
         libssh2::libssh2
+        qjs
         space-transfer-core)
 
 function(strip_release_executable target)
@@ -140,6 +143,19 @@ if (BUILD_TESTING)
             unofficial::sqlite3::sqlite3
             OpenSSL::Crypto)
     add_test(NAME authenticator-totp-test COMMAND authenticator-totp-test)
+
+    add_executable(terminal-plugin-test
+            tests/terminal_plugin_test.cpp
+            src/plugins/terminal_plugin_service.cpp
+            src/logging/logger.cpp)
+    target_include_directories(terminal-plugin-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(terminal-plugin-test
+            PRIVATE
+            Drogon::Drogon
+            nlohmann_json::nlohmann_json
+            qjs
+            Threads::Threads)
+    add_test(NAME terminal-plugin-test COMMAND terminal-plugin-test)
 endif ()
 
 if (WIN32)

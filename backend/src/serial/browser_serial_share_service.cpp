@@ -1,6 +1,7 @@
 #include "serial/browser_serial_share_service.hpp"
 
 #include "logging/logger.hpp"
+#include "plugins/terminal_plugin_service.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -27,27 +28,51 @@ bool ValidId(const std::string& value)
 }
 } // namespace
 
+BrowserSerialShareService::BrowserSerialShareService(plugins::TerminalPluginService* plugin_service)
+    : plugin_service_(plugin_service)
+{
+}
+
+BrowserSerialShareService::~BrowserSerialShareService()
+{
+    if (!plugin_service_) return;
+    std::vector<std::string> plugin_sessions;
+    {
+        std::lock_guard lock(mutex_);
+        for (const auto& [ignored, share] : shares_)
+            if (!share.plugin_session_id.empty()) plugin_sessions.push_back(share.plugin_session_id);
+    }
+    for (const auto& session_id : plugin_sessions) plugin_service_->UnregisterSession(session_id);
+}
+
 nlohmann::json BrowserSerialShareService::ListShares()
 {
     auto result = nlohmann::json::array();
-    std::lock_guard lock(mutex_);
-    for (auto iterator = shares_.begin(); iterator != shares_.end();)
+    std::vector<std::string> stale_plugin_sessions;
     {
-        const auto owner = iterator->second.owner.lock();
-        if (!owner || !owner->connected())
+        std::lock_guard lock(mutex_);
+        for (auto iterator = shares_.begin(); iterator != shares_.end();)
         {
-            for (const auto& [subscription_id, ignored] : iterator->second.subscribers)
-                subscriptions_.erase(subscription_id);
-            iterator = shares_.erase(iterator);
-            continue;
+            const auto owner = iterator->second.owner.lock();
+            if (!owner || !owner->connected())
+            {
+                for (const auto& [subscription_id, ignored] : iterator->second.subscribers)
+                    subscriptions_.erase(subscription_id);
+                if (!iterator->second.plugin_session_id.empty())
+                    stale_plugin_sessions.push_back(iterator->second.plugin_session_id);
+                iterator = shares_.erase(iterator);
+                continue;
+            }
+            result.push_back({{"id", iterator->second.id},
+                              {"name", iterator->second.name},
+                              {"portLabel", iterator->second.port_label},
+                              {"writeEnabled", iterator->second.write_enabled},
+                              {"viewers", iterator->second.subscribers.size()}});
+            ++iterator;
         }
-        result.push_back({{"id", iterator->second.id},
-                          {"name", iterator->second.name},
-                          {"portLabel", iterator->second.port_label},
-                          {"writeEnabled", iterator->second.write_enabled},
-                          {"viewers", iterator->second.subscribers.size()}});
-        ++iterator;
     }
+    if (plugin_service_)
+        for (const auto& session_id : stale_plugin_sessions) plugin_service_->UnregisterSession(session_id);
     return {{"shares", std::move(result)}};
 }
 
@@ -59,21 +84,38 @@ void BrowserSerialShareService::Publish(const std::string& share_id,
 {
     if (!ValidId(share_id)) throw std::runtime_error("共享标识无效。");
     if (name.empty() || name.size() > 120) throw std::runtime_error("共享名称不能为空且不能超过 120 个字符。");
-    std::lock_guard lock(mutex_);
-    const auto found = shares_.find(share_id);
-    if (found != shares_.end())
+    std::string replaced_plugin_session;
+    std::string plugin_session_id;
     {
-        const auto current_owner = found->second.owner.lock();
-        if (current_owner && current_owner->connected() && current_owner != owner)
-            throw std::runtime_error("该浏览器串口共享标识已经被占用。");
+        std::lock_guard lock(mutex_);
+        const auto found = shares_.find(share_id);
+        if (found != shares_.end())
+        {
+            const auto current_owner = found->second.owner.lock();
+            if (current_owner && current_owner->connected() && current_owner != owner)
+                throw std::runtime_error("该浏览器串口共享标识已经被占用。");
+            replaced_plugin_session = found->second.plugin_session_id;
+        }
+        Share share;
+        share.id = share_id;
+        share.name = name;
+        share.port_label = port_label.substr(0, 200);
+        share.write_enabled = write_enabled;
+        share.owner = owner;
+        if (plugin_service_)
+        {
+            plugin_session_id = NextSubscriptionId();
+            share.plugin_session_id = plugin_session_id;
+        }
+        shares_[share_id] = std::move(share);
     }
-    Share share;
-    share.id = share_id;
-    share.name = name;
-    share.port_label = port_label.substr(0, 200);
-    share.write_enabled = write_enabled;
-    share.owner = owner;
-    shares_[share_id] = std::move(share);
+    if (plugin_service_)
+    {
+        if (!replaced_plugin_session.empty()) plugin_service_->UnregisterSession(replaced_plugin_session);
+        plugin_service_->RegisterSession(
+            plugin_session_id, "browser-serial", share_id,
+            [this, share_id](std::string data) { PluginWrite(share_id, std::move(data)); });
+    }
     const auto log_message = "Browser serial share published: " + share_id;
     logI(log_message.c_str());
 }
@@ -130,11 +172,13 @@ void BrowserSerialShareService::OwnerData(const std::string& share_id,
     if (data.empty()) return;
     if (data.size() > kMaximumMessageBytes) throw std::runtime_error("单次共享串口数据不能超过 1 MiB。");
     std::vector<drogon::WebSocketConnectionPtr> subscribers;
+    std::string plugin_session_id;
     {
         std::lock_guard lock(mutex_);
         const auto found = shares_.find(share_id);
         if (found == shares_.end() || found->second.owner.lock() != owner)
             throw std::runtime_error("当前连接不是该共享串口的拥有者。");
+        plugin_session_id = found->second.plugin_session_id;
         found->second.backlog.append(data);
         if (found->second.backlog.size() > kMaximumBacklogBytes)
             found->second.backlog.erase(0, found->second.backlog.size() - kMaximumBacklogBytes);
@@ -152,7 +196,23 @@ void BrowserSerialShareService::OwnerData(const std::string& share_id,
             }
         }
     }
+    if (plugin_service_ && !plugin_session_id.empty()) plugin_service_->OnOutput(plugin_session_id, data);
     for (const auto& subscriber : subscribers) subscriber->send(data, drogon::WebSocketMessageType::Binary);
+}
+
+void BrowserSerialShareService::PluginWrite(const std::string& share_id, std::string data)
+{
+    if (data.empty()) return;
+    if (data.size() > kMaximumMessageBytes) throw std::runtime_error("插件单次串口发送不能超过 1 MiB。");
+    drogon::WebSocketConnectionPtr owner;
+    {
+        std::lock_guard lock(mutex_);
+        const auto share = shares_.find(share_id);
+        if (share == shares_.end()) throw std::runtime_error("浏览器串口共享已经离线。");
+        owner = share->second.owner.lock();
+    }
+    if (!owner || !owner->connected()) throw std::runtime_error("浏览器串口拥有者已经离线。");
+    owner->send(std::move(data), drogon::WebSocketMessageType::Binary);
 }
 
 void BrowserSerialShareService::SubscriberWrite(const std::string& subscription_id, std::string data)
@@ -177,10 +237,12 @@ void BrowserSerialShareService::Unpublish(const std::string& share_id,
                                           const drogon::WebSocketConnectionPtr& owner)
 {
     std::vector<drogon::WebSocketConnectionPtr> subscribers;
+    std::string plugin_session_id;
     {
         std::lock_guard lock(mutex_);
         const auto found = shares_.find(share_id);
         if (found == shares_.end() || found->second.owner.lock() != owner) return;
+        plugin_session_id = found->second.plugin_session_id;
         for (const auto& [subscription_id, weak_connection] : found->second.subscribers)
         {
             subscriptions_.erase(subscription_id);
@@ -188,6 +250,7 @@ void BrowserSerialShareService::Unpublish(const std::string& share_id,
         }
         shares_.erase(found);
     }
+    if (plugin_service_ && !plugin_session_id.empty()) plugin_service_->UnregisterSession(plugin_session_id);
     const auto event = nlohmann::json({{"type", "unavailable"}, {"message", "浏览器串口拥有者已经停止共享。"}}).dump();
     for (const auto& subscriber : subscribers) subscriber->send(event);
 }

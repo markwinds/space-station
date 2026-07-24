@@ -2,6 +2,7 @@
 
 #include "authenticator/authenticator_service.hpp"
 #include "config/config_store.hpp"
+#include "plugins/terminal_plugin_service.hpp"
 #include "serial/serial_service.hpp"
 #include "serial/browser_serial_share_service.hpp"
 #include "ssh/sftp_service.hpp"
@@ -51,6 +52,7 @@ class HttpServer
     ConfigStore& config_store_;
     authenticator::AuthenticatorService authenticator_service_;
     transfer::TransferManager transfer_manager_;
+    plugins::TerminalPluginService terminal_plugin_service_;
     serial::SerialService serial_service_;
     serial::BrowserSerialShareService browser_serial_share_service_;
     ssh::SftpService sftp_service_;

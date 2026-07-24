@@ -1,6 +1,7 @@
 #include "serial/serial_service.hpp"
 
 #include "logging/logger.hpp"
+#include "plugins/terminal_plugin_service.hpp"
 
 #include <algorithm>
 #include <array>
@@ -235,12 +236,30 @@ class SerialService::Session : public std::enable_shared_from_this<Session>
     Session(std::string port, SerialOptions options) : port_(std::move(port)), options_(std::move(options))
     {
         device_.Open(port_, options_);
+    }
+
+    void Start(plugins::TerminalPluginService* plugin_service)
+    {
+        plugin_service_ = plugin_service;
         running_ = true;
+        if (plugin_service_)
+        {
+            plugin_session_id_ = "serial:" + port_ + ":" + NextId();
+            plugin_service_->RegisterSession(
+                plugin_session_id_, "serial", port_,
+                [weak = weak_from_this()](std::string data) {
+                    const auto session = weak.lock();
+                    if (!session) throw std::runtime_error("串口会话已经关闭。");
+                    session->QueueWrite(std::move(data));
+                });
+        }
         worker_ = std::jthread([this](std::stop_token token) { Run(token); });
     }
 
     ~Session()
     {
+        if (plugin_service_ && !plugin_session_id_.empty())
+            plugin_service_->UnregisterSession(plugin_session_id_);
         worker_.request_stop();
         condition_.notify_all();
         if (worker_.joinable()) worker_.join();
@@ -303,6 +322,8 @@ class SerialService::Session : public std::enable_shared_from_this<Session>
             if (count > 0)
             {
                 std::string data(buffer.data(), static_cast<std::size_t>(count));
+                if (plugin_service_ && !plugin_session_id_.empty())
+                    plugin_service_->OnOutput(plugin_session_id_, data);
                 std::vector<drogon::WebSocketConnectionPtr> connections;
                 {
                     std::lock_guard lock(mutex_);
@@ -384,7 +405,9 @@ class SerialService::Session : public std::enable_shared_from_this<Session>
     }
 
     std::string port_;
+    std::string plugin_session_id_;
     SerialOptions options_;
+    plugins::TerminalPluginService* plugin_service_ = nullptr;
     NativeSerialPort device_;
     std::jthread worker_;
     std::atomic<bool> running_{false};
@@ -396,7 +419,10 @@ class SerialService::Session : public std::enable_shared_from_this<Session>
     std::string backlog_;
 };
 
-SerialService::SerialService() = default;
+SerialService::SerialService(plugins::TerminalPluginService* plugin_service)
+    : plugin_service_(plugin_service)
+{
+}
 SerialService::~SerialService() = default;
 
 nlohmann::json SerialService::ListPorts() const
@@ -429,6 +455,7 @@ std::string SerialService::Attach(const std::string& port,
         {
             if (found != sessions_.end()) sessions_.erase(found);
             session = std::make_shared<Session>(port, options);
+            session->Start(plugin_service_);
             sessions_[port] = session;
             const auto log_message = "Serial port opened: " + port;
             logI(log_message.c_str());

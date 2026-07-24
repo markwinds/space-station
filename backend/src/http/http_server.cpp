@@ -88,7 +88,7 @@ drogon::ContentType StaticAssetContentType(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 11> hashed_asset_prefixes{
+    const std::array<std::string_view, 12> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/TimeManagerTool-",
         "/assets/HabitTool-",
@@ -97,6 +97,7 @@ const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
         "/assets/TransferTool-",
         "/assets/SshTool-",
         "/assets/SerialTool-",
+        "/assets/TerminalPluginTool-",
         "/assets/AuthenticatorTool-",
         "/assets/WebTerminal-",
         "/assets/_plugin-vue_export-helper-",
@@ -444,6 +445,9 @@ HttpServer::HttpServer(ConfigStore& config_store, AppConfig config)
       config_store_(config_store),
       authenticator_service_(config_store),
       transfer_manager_(config_store),
+      terminal_plugin_service_(std::filesystem::path(config.data_path) / "plugins"),
+      serial_service_(&terminal_plugin_service_),
+      browser_serial_share_service_(&terminal_plugin_service_),
       sftp_service_(config_store)
 {
     RegisterRoutes();
@@ -467,6 +471,7 @@ void HttpServer::Start()
     drogon::app().enableBrotli(true);
     drogon::app().disableSigtermHandling();
     EnsureTlsCertificate(certificate_path_, private_key_path_);
+    terminal_plugin_service_.Start();
     if (http_enabled_)
     {
         AddAllAddressListeners([this](const std::string& ip) {
@@ -503,6 +508,7 @@ void HttpServer::Stop()
     {
         server_thread_.join();
     }
+    terminal_plugin_service_.Stop();
 }
 
 std::string HttpServer::UiUrl() const
@@ -517,7 +523,8 @@ void HttpServer::RegisterRoutes()
     browser_serial_share_websocket_controller_ =
         std::make_shared<serial::BrowserSerialShareWebSocketController>(browser_serial_share_service_);
     drogon::app().registerController(browser_serial_share_websocket_controller_);
-    ssh_websocket_controller_ = std::make_shared<ssh::SshWebSocketController>(config_store_);
+    ssh_websocket_controller_ =
+        std::make_shared<ssh::SshWebSocketController>(config_store_, terminal_plugin_service_);
     drogon::app().registerController(ssh_websocket_controller_);
 
     drogon::app().registerHandler(
@@ -563,6 +570,101 @@ void HttpServer::RegisterRoutes()
             callback(response);
         },
         {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/plugins",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            callback(JsonResponse(terminal_plugin_service_.ListPlugins()));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/plugins/reload",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                terminal_plugin_service_.Reload();
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k500InternalServerError));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/plugins/effective",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            const auto transport = req->getParameter("transport");
+            const auto target = req->getParameter("target");
+            if (transport.empty() || target.empty())
+            {
+                callback(JsonResponse({{"ok", false}, {"message", "transport 和 target 不能为空。"}},
+                                      drogon::k400BadRequest));
+                return;
+            }
+            auto response = JsonResponse(terminal_plugin_service_.ListEffectivePlugins(transport, target));
+            response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+            callback(response);
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/plugins/{1}",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               const std::string& plugin_id) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                callback(JsonResponse(terminal_plugin_service_.GetPlugin(plugin_id)));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/plugins/{1}",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               const std::string& plugin_id) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                terminal_plugin_service_.SavePlugin(plugin_id, body.value("manifest", nlohmann::json::object()),
+                                                     body.value("source", ""));
+                callback(JsonResponse({{"ok", true}, {"plugin", terminal_plugin_service_.GetPlugin(plugin_id)}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/plugins/{1}",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               const std::string& plugin_id) {
+            if (!RequireSecureRequest(req, callback)) return;
+            try
+            {
+                terminal_plugin_service_.DeletePlugin(plugin_id);
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Delete});
 
     drogon::app().registerHandler(
         "/api/tools/authenticator/entries",

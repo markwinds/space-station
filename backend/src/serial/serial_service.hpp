@@ -8,6 +8,11 @@
 #include <string>
 #include <unordered_map>
 
+namespace spacestation::plugins
+{
+class TerminalPluginService;
+}
+
 namespace spacestation::serial
 {
 struct SerialOptions
@@ -26,7 +31,7 @@ struct SerialOptions
 class SerialService
 {
   public:
-    SerialService();
+    explicit SerialService(plugins::TerminalPluginService* plugin_service = nullptr);
     ~SerialService();
 
     nlohmann::json ListPorts() const;
@@ -45,6 +50,7 @@ class SerialService
     };
 
     mutable std::mutex mutex_;
+    plugins::TerminalPluginService* plugin_service_ = nullptr;
     std::unordered_map<std::string, std::shared_ptr<Session>> sessions_;
     std::unordered_map<std::string, Subscription> subscriptions_;
 };

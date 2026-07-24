@@ -2,6 +2,7 @@
 #include "ssh/network_utils.hpp"
 
 #include "logging/logger.hpp"
+#include "plugins/terminal_plugin_service.hpp"
 
 #include <libssh2.h>
 #include <openssl/evp.h>
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cerrno>
 #include <cstring>
@@ -33,6 +35,14 @@ namespace
 using namespace std::chrono_literals;
 using Deadline = std::chrono::steady_clock::time_point;
 constexpr auto kConnectionTimeout = 15s;
+
+std::string NextPluginSessionId(const std::string& host_id)
+{
+    static std::atomic<std::uint64_t> counter{0};
+    return "ssh:" + host_id + ":" +
+           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+           std::to_string(++counter);
+}
 
 Deadline NewDeadline()
 {
@@ -354,8 +364,10 @@ int Authenticate(LIBSSH2_SESSION* session,
 }
 } // namespace
 
-SshSession::SshSession(ConfigStore& config_store, drogon::WebSocketConnectionPtr connection)
-    : config_store_(config_store), connection_(std::move(connection))
+SshSession::SshSession(ConfigStore& config_store,
+                       drogon::WebSocketConnectionPtr connection,
+                       plugins::TerminalPluginService* plugin_service)
+    : config_store_(config_store), plugin_service_(plugin_service), connection_(std::move(connection))
 {
 }
 
@@ -370,6 +382,17 @@ void SshSession::Start(SshConnectOptions options)
     {
         SendEvent({{"type", "error"}, {"message", "当前终端已经开始连接。"}});
         return;
+    }
+    if (plugin_service_)
+    {
+        plugin_session_id_ = NextPluginSessionId(options.host_id);
+        plugin_service_->RegisterSession(
+            plugin_session_id_, "ssh", options.host_id,
+            [weak = weak_from_this()](std::string data) {
+                const auto session = weak.lock();
+                if (!session) throw std::runtime_error("SSH 会话已经关闭。");
+                session->Write(std::move(data));
+            });
     }
     worker_ = std::jthread([this, options = std::move(options)](std::stop_token token) mutable {
         Run(token, std::move(options));
@@ -410,13 +433,17 @@ void SshSession::ConfirmHostKey(bool trusted)
 
 void SshSession::Stop()
 {
-    if (!worker_.joinable())
+    if (worker_.joinable())
     {
-        return;
+        worker_.request_stop();
+        condition_.notify_all();
+        worker_.join();
     }
-    worker_.request_stop();
-    condition_.notify_all();
-    worker_.join();
+    if (plugin_service_ && !plugin_session_id_.empty())
+    {
+        plugin_service_->UnregisterSession(plugin_session_id_);
+        plugin_session_id_.clear();
+    }
 }
 
 void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
@@ -723,6 +750,8 @@ void SshSession::SendEvent(const nlohmann::json& event) const
 
 void SshSession::SendOutput(const char* data, std::size_t size) const
 {
+    if (plugin_service_ && !plugin_session_id_.empty())
+        plugin_service_->OnOutput(plugin_session_id_, std::string(data, size));
     if (const auto connection = connection_.lock(); connection && connection->connected())
     {
         connection->send(data, size, drogon::WebSocketMessageType::Binary);

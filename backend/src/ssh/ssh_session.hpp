@@ -8,10 +8,16 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string>
 #include <thread>
+
+namespace spacestation::plugins
+{
+class TerminalPluginService;
+}
 
 namespace spacestation::ssh
 {
@@ -32,10 +38,12 @@ struct SshConnectOptions
     int rows = 30;
 };
 
-class SshSession
+class SshSession : public std::enable_shared_from_this<SshSession>
 {
   public:
-    SshSession(ConfigStore& config_store, drogon::WebSocketConnectionPtr connection);
+    SshSession(ConfigStore& config_store,
+               drogon::WebSocketConnectionPtr connection,
+               plugins::TerminalPluginService* plugin_service = nullptr);
     ~SshSession();
 
     SshSession(const SshSession&) = delete;
@@ -67,6 +75,8 @@ class SshSession
     void SendOutput(const char* data, std::size_t size) const;
 
     ConfigStore& config_store_;
+    plugins::TerminalPluginService* plugin_service_ = nullptr;
+    std::string plugin_session_id_;
     std::weak_ptr<drogon::WebSocketConnection> connection_;
     std::jthread worker_;
     std::mutex mutex_;

@@ -114,6 +114,11 @@
             @recording="activeView && toggleRecording(activeView)"
             @settings="openTerminalSettings"
           />
+          <terminal-plugin-entry
+            :transport="activePluginContext.transport"
+            :target="activePluginContext.target"
+            :unavailable-hint="activePluginContext.hint"
+          />
           <n-button v-if="activeSession.status === 'error' || activeSession.status === 'closed'" size="tiny" secondary @click="reconnectActive">重连</n-button>
           <span class="serial-location">{{ locationText(activeSession.location) }}</span>
           <span class="serial-status-label" :class="activeSession.status">{{ statusText(activeSession) }}</span>
@@ -252,6 +257,7 @@ import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
 import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
+import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
 import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
@@ -447,6 +453,20 @@ const selectedPortAvailable = computed(() => source.value === "browser"
   : source.value === "shared" ? Boolean(sharedPortId.value) : Boolean(serverPortId.value));
 const activeView = computed(() => views.find((view) => view.id === activeViewId.value));
 const activeSession = computed(() => activeView.value ? sessions.get(activeView.value.sessionKey) : undefined);
+const activePluginContext = computed(() => {
+  const session = activeSession.value;
+  if (!session) return { transport: undefined, target: undefined, hint: "当前没有打开终端。" };
+  if (session.location === "server") return { transport: "serial", target: session.portId, hint: "" };
+  if (session.location === "shared") return { transport: "browser-serial", target: session.portId, hint: "" };
+  if (session.shareId && (session.sharing || browserShareSettings.enabled)) {
+    return { transport: "browser-serial", target: session.shareId, hint: "" };
+  }
+  return {
+    transport: undefined,
+    target: undefined,
+    hint: "纯浏览器本地串口不会把数据交给后端插件；开启共享后即可使用。",
+  };
+});
 
 function browserPortLabel(port: SerialPort, index: number) {
   const info = port.getInfo();

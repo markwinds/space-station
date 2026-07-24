@@ -1,0 +1,13 @@
+{
+  "id": "http-trigger-example",
+  "name": "HTTP 触发器示例",
+  "enabled": false,
+  "entry": "index.js",
+  "transports": ["serial"],
+  "targets": ["*"],
+  "allowedHosts": ["api.example.com"],
+  "memoryLimitMiB": 8,
+  "executionTimeoutMs": 50,
+  "maxConcurrentRequests": 2,
+  "maxResponseBytes": 1048576
+}

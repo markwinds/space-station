@@ -14,6 +14,7 @@ const TransferTool = defineAsyncComponent(() => import("@/components/tools/Trans
 const SshTool = defineAsyncComponent(() => import("@/components/tools/SshTool.vue"));
 const SerialTool = defineAsyncComponent(() => import("@/components/tools/SerialTool.vue"));
 const AuthenticatorTool = defineAsyncComponent(() => import("@/components/tools/AuthenticatorTool.vue"));
+const TerminalPluginTool = defineAsyncComponent(() => import("@/components/tools/TerminalPluginTool.vue"));
 
 const router = createRouter({
   history: createWebHistory("/web/"),
@@ -108,6 +109,15 @@ const router = createRouter({
         tool: findTool("serial"),
         component: SerialTool,
         hideHeader: true,
+      },
+    },
+    {
+      path: "/tools/terminal-plugins",
+      name: "terminal-plugins",
+      component: ToolView,
+      props: {
+        tool: findTool("terminalPlugins"),
+        component: TerminalPluginTool,
       },
     },
     {

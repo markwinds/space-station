@@ -105,15 +105,24 @@
             v-if="activePane === 'terminal'"
             class="ssh-desktop-action"
             :recording="activeTab.recording"
-            :renderer="activeTab.renderer"
             @search="openSearch"
             @snippets="openSnippets"
             @recording="toggleRecording(activeTab)"
+          />
+          <terminal-plugin-entry
+            v-if="activePane === 'terminal'"
+            transport="ssh"
+            :target="activeTab.host.id"
           />
           <span class="ssh-status-text" :class="activeTab.status">{{ activeTab.message }}</span>
           <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
             <n-button class="ssh-mobile-more" secondary size="tiny">更多</n-button>
           </n-dropdown>
+          <terminal-renderer-badge
+            v-if="activePane === 'terminal'"
+            class="ssh-desktop-action ssh-renderer-status"
+            :renderer="activeTab.renderer"
+          />
         </div>
       </div>
 
@@ -429,6 +438,8 @@ import WebTerminal from "../terminal/WebTerminal.vue";
 import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
 import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
+import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
+import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import {
   clampTerminalDecimal as clampDecimal,
@@ -477,6 +488,8 @@ interface TerminalTab {
   searchResultLimited: boolean;
   clipboardCleanup?: () => void;
   reconnectHintShown: boolean;
+  socketReady: boolean;
+  automaticRetryCount: number;
 }
 
 interface CommandSnippet { id: string; name: string; command: string; pinned?: boolean }
@@ -851,6 +864,8 @@ async function openTerminal(
     searchResultCount: 0,
     searchResultLimited: false,
     reconnectHintShown: false,
+    socketReady: false,
+    automaticRetryCount: 0,
   };
   // The backend sends `ready` immediately after the WebSocket handshake. Bind
   // handlers before rendering the terminal so a fast first connection cannot
@@ -887,11 +902,13 @@ function bindTerminalSocket(tab: TerminalTab, socket: WebSocket) {
   };
   socket.onerror = () => {
     if (tab.socket !== socket) return;
+    if (!tab.socketReady && scheduleAutomaticReconnect(tab, "WebSocket 握手异常")) return;
     updateTab(tab, "error", "WebSocket 连接失败");
     showReconnectHint(tab);
   };
   socket.onclose = (event) => {
     if (tab.socket !== socket) return;
+    if (!tab.socketReady && scheduleAutomaticReconnect(tab, "WebSocket 握手中断")) return;
     if (tab.status !== "closed" && tab.status !== "error") {
       const reason = event.reason ? `：${event.reason}` : "";
       updateTab(tab, "closed", `连接已关闭（${event.code}）${reason}`);
@@ -1057,6 +1074,7 @@ function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
   }
   const payload = JSON.parse(String(event.data)) as Record<string, unknown>;
   if (payload.type === "ready") {
+    tab.socketReady = true;
     tab.connectPayload.columns = tab.terminal?.cols ?? 100;
     tab.connectPayload.rows = tab.terminal?.rows ?? 30;
     tab.socket.send(JSON.stringify(tab.connectPayload));
@@ -1082,17 +1100,49 @@ function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
   } else if (payload.type === "warning") {
     message.warning(String(payload.message ?? "SSH 操作未完全成功"));
   } else if (payload.type === "host-key-mismatch" || payload.type === "error") {
+    const errorText = String(payload.message ?? "SSH 连接失败");
+    if (payload.type === "error" && isTransientSshError(errorText) && scheduleAutomaticReconnect(tab, errorText)) return;
     credentialCache.delete(tab.host.id);
-    if (tab.usedStoredCredential && /authentication|认证/i.test(String(payload.message ?? ""))) {
+    if (tab.usedStoredCredential && /authentication|认证/i.test(errorText)) {
       void deleteSshCredential(tab.host.id).then(() => {
         const host = hosts.value.find((item) => item.id === tab.host.id);
         if (host) host.hasCredential = false;
       });
     }
-    updateTab(tab, "error", String(payload.message ?? "SSH 连接失败"));
-    tab.terminal?.writeln(`\r\n\x1b[31m${String(payload.message ?? "SSH 连接失败")}\x1b[0m`);
+    updateTab(tab, "error", errorText);
+    tab.terminal?.writeln(`\r\n\x1b[31m${errorText}\x1b[0m`);
     showReconnectHint(tab);
   }
+}
+
+function isTransientSshError(content: string) {
+  return /无法连接 SSH 主机|DNS 解析超时|TCP 连接超时|SSH 握手(?:失败|超时)|socket|Unable to exchange encryption keys|Failure establishing SSH session/i.test(content);
+}
+
+function scheduleAutomaticReconnect(tab: TerminalTab, reason: string) {
+  if (tab.automaticRetryCount >= 1 || !tabs.value.some((item) => item.id === tab.id)) return false;
+  tab.automaticRetryCount += 1;
+  const previousSocket = tab.socket;
+  previousSocket.onopen = null;
+  previousSocket.onmessage = null;
+  previousSocket.onerror = null;
+  previousSocket.onclose = null;
+  if (previousSocket.readyState === WebSocket.OPEN || previousSocket.readyState === WebSocket.CONNECTING) previousSocket.close();
+  tab.socketReady = false;
+  tab.connectPayload = buildConnectPayload(
+    tab.host,
+    tab.pendingCredential ? { ...tab.pendingCredential } : { method: "stored", password: "", privateKey: "", passphrase: "" },
+    tab.persistCredential,
+  );
+  updateTab(tab, "connecting", `${reason}，正在自动重试…`);
+  tab.terminal?.writeln(`\r\n\x1b[33m${reason}，正在自动重试一次…\x1b[0m`);
+  window.setTimeout(() => {
+    if (!tabs.value.some((item) => item.id === tab.id) || tab.socket !== previousSocket) return;
+    const socket = createTerminalSocket();
+    tab.socket = socket;
+    bindTerminalSocket(tab, socket);
+  }, 250);
+  return true;
 }
 
 function showReconnectHint(tab: TerminalTab) {
@@ -1206,6 +1256,8 @@ function reconnectTab(tab: TerminalTab) {
   tab.connectPayload = buildConnectPayload(tab.host, credential, tab.persistCredential);
   tab.usedStoredCredential = credential.method === "stored";
   tab.reconnectHintShown = false;
+  tab.socketReady = false;
+  tab.automaticRetryCount = 0;
   updateTab(tab, "connecting", "正在重新连接…");
   tab.terminal?.writeln("\r\n\x1b[36m正在重新连接，文件传输状态将继续保留…\x1b[0m");
   const socket = createTerminalSocket();

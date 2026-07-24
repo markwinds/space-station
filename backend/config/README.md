@@ -9,3 +9,6 @@ space-transfer-client --config transfer-client.json /path/to/another-file.bin
 ```
 
 服务端 TLS 监听仅允许 TLS 1.3，并要求客户端证书。普通端口默认关闭，不提供传输加密或客户端身份认证。
+
+终端 JavaScript 插件的目录结构、清单字段和运行时 API 见
+[`terminal-plugins.md`](terminal-plugins.md)。插件也可以在 Web 端“终端插件”工具中管理。

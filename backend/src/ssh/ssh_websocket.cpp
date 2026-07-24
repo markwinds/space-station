@@ -13,7 +13,9 @@ void SendError(const drogon::WebSocketConnectionPtr& connection, const std::stri
 }
 } // namespace
 
-SshWebSocketController::SshWebSocketController(ConfigStore& config_store) : config_store_(config_store)
+SshWebSocketController::SshWebSocketController(ConfigStore& config_store,
+                                               plugins::TerminalPluginService& plugin_service)
+    : config_store_(config_store), plugin_service_(plugin_service)
 {
 }
 
@@ -159,7 +161,7 @@ void SshWebSocketController::HandleConnect(const drogon::WebSocketConnectionPtr&
         SendError(connection, "主机、用户名和认证凭据不能为空。");
         return;
     }
-    auto session = std::make_shared<SshSession>(config_store_, connection);
+    auto session = std::make_shared<SshSession>(config_store_, connection, &plugin_service_);
     connection->setContext(session);
     session->Start(std::move(options));
 }

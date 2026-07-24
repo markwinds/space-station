@@ -10,7 +10,7 @@ namespace spacestation::ssh
 class SshWebSocketController : public drogon::WebSocketController<SshWebSocketController, false>
 {
   public:
-    explicit SshWebSocketController(ConfigStore& config_store);
+    SshWebSocketController(ConfigStore& config_store, plugins::TerminalPluginService& plugin_service);
 
     void handleNewMessage(const drogon::WebSocketConnectionPtr& connection,
                           std::string&& message,
@@ -27,5 +27,6 @@ class SshWebSocketController : public drogon::WebSocketController<SshWebSocketCo
     void HandleConnect(const drogon::WebSocketConnectionPtr& connection, const nlohmann::json& message);
 
     ConfigStore& config_store_;
+    plugins::TerminalPluginService& plugin_service_;
 };
 } // namespace spacestation::ssh

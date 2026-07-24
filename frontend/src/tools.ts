@@ -9,9 +9,10 @@ import {
   SwapHorizontalOutline,
   TerminalOutline,
   HardwareChipOutline,
+  ExtensionPuzzleOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "runtime";
+export type ToolId = "jsonFormatter" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -95,6 +96,14 @@ export const tools: ToolDefinition[] = [
     category: "Device",
     icon: HardwareChipOutline,
     path: "/tools/serial",
+  },
+  {
+    id: "terminalPlugins",
+    title: "终端插件",
+    description: "管理串口与 SSH 的后端 JavaScript 自动化",
+    category: "Automation",
+    icon: ExtensionPuzzleOutline,
+    path: "/tools/terminal-plugins",
   },
   {
     id: "runtime",

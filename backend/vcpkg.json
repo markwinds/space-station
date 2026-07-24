@@ -7,6 +7,7 @@
     "drogon",
     "libssh2",
     "nlohmann-json",
+    "quickjs-ng",
     "sqlite3",
     "zlib"
   ]

@@ -378,6 +378,48 @@ export interface BrowserSerialShare {
   viewers: number;
 }
 
+export interface TerminalPluginManifest {
+  id: string;
+  name: string;
+  enabled: boolean;
+  entry: string;
+  transports: Array<"serial" | "ssh" | "browser-serial">;
+  targets: string[];
+  allowedHosts: string[];
+  memoryLimitMiB: number;
+  executionTimeoutMs: number;
+  maxConcurrentRequests: number;
+  maxResponseBytes: number;
+}
+
+export interface TerminalPluginStatus {
+  directory: string;
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  loaded: boolean;
+  transports?: string[];
+  targets?: string[];
+  allowedHosts?: string[];
+  error?: string;
+}
+
+export interface TerminalPluginListResponse {
+  directory: string;
+  plugins: TerminalPluginStatus[];
+}
+
+export interface EffectiveTerminalPluginResponse {
+  transport: string;
+  target: string;
+  plugins: TerminalPluginStatus[];
+}
+
+export interface TerminalPluginDetail {
+  manifest: TerminalPluginManifest;
+  source: string;
+}
+
 export interface AuthenticatorEntry {
   id: string;
   name: string;
@@ -411,6 +453,16 @@ const api = axios.create({
   timeout: 10000,
 });
 
+async function terminalPluginRequest<T>(request: () => Promise<T>): Promise<T> {
+  try {
+    return await request();
+  } catch (error) {
+    if (!axios.isAxiosError(error) || error.response) throw error;
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    return request();
+  }
+}
+
 export async function fetchHealth(): Promise<HealthResponse> {
   const { data } = await api.get<HealthResponse>("/health");
   return data;
@@ -427,6 +479,41 @@ export async function fetchBrowserSerialShares(): Promise<{ shares: BrowserSeria
     headers: { "Cache-Control": "no-cache" },
   });
   return data;
+}
+
+export async function fetchTerminalPlugins(): Promise<TerminalPluginListResponse> {
+  const { data } = await terminalPluginRequest(() => api.get<TerminalPluginListResponse>("/tools/terminal/plugins", {
+    params: { _: Date.now() },
+  }));
+  return data;
+}
+
+export async function fetchEffectiveTerminalPlugins(
+  transport: string,
+  target: string,
+): Promise<EffectiveTerminalPluginResponse> {
+  const { data } = await terminalPluginRequest(() => api.get<EffectiveTerminalPluginResponse>(
+    "/tools/terminal/plugins/effective",
+    { params: { transport, target, _: Date.now() } },
+  ));
+  return data;
+}
+
+export async function fetchTerminalPlugin(pluginId: string): Promise<TerminalPluginDetail> {
+  const { data } = await terminalPluginRequest(() => api.get<TerminalPluginDetail>(`/tools/terminal/plugins/${encodeURIComponent(pluginId)}`));
+  return data;
+}
+
+export async function saveTerminalPlugin(pluginId: string, detail: TerminalPluginDetail): Promise<void> {
+  await terminalPluginRequest(() => api.put(`/tools/terminal/plugins/${encodeURIComponent(pluginId)}`, detail));
+}
+
+export async function deleteTerminalPlugin(pluginId: string): Promise<void> {
+  await terminalPluginRequest(() => api.delete(`/tools/terminal/plugins/${encodeURIComponent(pluginId)}`));
+}
+
+export async function reloadTerminalPlugins(): Promise<void> {
+  await terminalPluginRequest(() => api.post("/tools/terminal/plugins/reload"));
 }
 
 export async function fetchAuthenticatorEntries(): Promise<AuthenticatorEntriesResponse> {
