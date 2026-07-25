@@ -25,10 +25,13 @@ class BrowserSerialShareService
                  const std::string& name,
                  const std::string& port_label,
                  bool write_enabled,
+                 bool discoverable,
+                 const std::string& plugin_target,
                  const drogon::WebSocketConnectionPtr& owner);
     void Update(const std::string& share_id,
                 const std::string& name,
                 bool write_enabled,
+                bool discoverable,
                 const drogon::WebSocketConnectionPtr& owner);
     std::string Subscribe(const std::string& share_id, const drogon::WebSocketConnectionPtr& connection);
     void OwnerData(const std::string& share_id,
@@ -45,7 +48,9 @@ class BrowserSerialShareService
         std::string name;
         std::string port_label;
         std::string plugin_session_id;
+        std::string plugin_target;
         bool write_enabled = false;
+        bool discoverable = false;
         std::weak_ptr<drogon::WebSocketConnection> owner;
         std::unordered_map<std::string, std::weak_ptr<drogon::WebSocketConnection>> subscribers;
         std::string backlog;

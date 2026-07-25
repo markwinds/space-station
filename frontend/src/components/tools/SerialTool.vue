@@ -273,6 +273,7 @@ interface SerialSettings {
 interface BrowserPortItem {
   id: string;
   label: string;
+  pluginTarget: string;
   port: SerialPort;
 }
 
@@ -299,6 +300,8 @@ interface SerialSession {
   relayRetryTimer?: number;
   relayRetryAttempt?: number;
   shareId?: string;
+  pluginTarget?: string;
+  bridgeConnected: boolean;
   sharing: boolean;
   readOnlyHintShown: boolean;
   browserPort?: SerialPort;
@@ -453,14 +456,14 @@ const activePluginContext = computed(() => {
   const session = activeSession.value;
   if (!session) return { transport: undefined, target: undefined, hint: "当前没有打开终端。" };
   if (session.location === "server") return { transport: "serial", target: session.portId, hint: "" };
-  if (session.location === "shared") return { transport: "browser-serial", target: session.portId, hint: "" };
-  if (session.shareId && (session.sharing || browserShareSettings.enabled)) {
-    return { transport: "browser-serial", target: session.shareId, hint: "" };
+  if (session.location === "shared") return { transport: "browser-serial", target: session.pluginTarget || session.portId, hint: "" };
+  if (session.shareId && session.bridgeConnected) {
+    return { transport: "browser-serial", target: session.pluginTarget || session.shareId, hint: "" };
   }
   return {
     transport: undefined,
     target: undefined,
-    hint: "纯浏览器本地串口不会把数据交给后端插件；开启共享后即可使用。",
+    hint: "后端插件通道正在连接；本地串口不受影响。",
   };
 });
 
@@ -470,11 +473,21 @@ function browserPortLabel(port: SerialPort, index: number) {
   return `${ids} · 串口 ${index + 1}`;
 }
 
+function browserPluginTarget(port: SerialPort, index: number) {
+  const info = port.getInfo();
+  if (info.usbVendorId !== undefined) {
+    const vendor = info.usbVendorId.toString(16).padStart(4, "0");
+    const product = (info.usbProductId ?? 0).toString(16).padStart(4, "0");
+    return `browser-usb:${vendor}:${product}`;
+  }
+  return `browser-port:${index + 1}`;
+}
+
 function registerBrowserPorts(ports: SerialPort[]) {
   browserPorts.value = ports.map((port, index) => {
     let id = browserIds.get(port);
     if (!id) { id = `browser-${++browserSequence}`; browserIds.set(port, id); }
-    return { id, label: browserPortLabel(port, index), port };
+    return { id, label: browserPortLabel(port, index), pluginTarget: browserPluginTarget(port, index), port };
   });
   if (!browserPorts.value.some((item) => item.id === browserPortId.value)) browserPortId.value = browserPorts.value[0]?.id ?? null;
 }
@@ -562,9 +575,11 @@ async function openSelectedPort() {
     socketOpened: false,
     viewers: 0,
     writeEnabled: sharedItem?.writeEnabled ?? true,
+    bridgeConnected: false,
     sharing: false,
     readOnlyHintShown: false,
-    shareId: source.value === "browser" && browserShareSettings.enabled ? crypto.randomUUID() : sharedItem?.id,
+    shareId: source.value === "browser" ? crypto.randomUUID() : sharedItem?.id,
+    pluginTarget: browserItem?.pluginTarget ?? sharedItem?.pluginTarget,
     browserPort: browserItem ? markRaw(browserItem.port) : undefined,
     writeChain: Promise.resolve(),
   });
@@ -591,7 +606,7 @@ async function openBrowserSession(session: SerialSession) {
   await session.browserPort.open({ ...session.settings, bufferSize: 1024 * 1024 });
   session.status = "open";
   broadcastNotice(session, `\r\n\x1b[36m[已连接浏览器串口 ${session.name}]\x1b[0m\r\n`);
-  if (browserShareSettings.enabled && session.shareId) openBrowserShareOwner(session);
+  if (session.shareId) openBrowserPluginBridge(session);
   const readTask = (async () => {
     if (!session.browserPort?.readable) return;
     const reader = session.browserPort.readable.getReader();
@@ -614,7 +629,7 @@ async function openBrowserSession(session: SerialSession) {
   await readTask;
   if (session.readTask === readTask) session.readTask = undefined;
   if (!session.closing) {
-    closeBrowserShareOwner(session);
+    closeBrowserPluginBridge(session);
     session.status = "closed";
     broadcastNotice(session, "\r\n\x1b[33m[串口读取已结束，按任意键重连]\x1b[0m\r\n");
   }
@@ -625,7 +640,7 @@ function websocketUrl(path: string) {
   return `${protocol}//${window.location.host}${path}`;
 }
 
-function openBrowserShareOwner(session: SerialSession) {
+function openBrowserPluginBridge(session: SerialSession) {
   if (!session.shareId) return;
   if (session.relaySocket?.readyState === WebSocket.OPEN || session.relaySocket?.readyState === WebSocket.CONNECTING) return;
   window.clearTimeout(session.relayRetryTimer);
@@ -640,6 +655,8 @@ function openBrowserShareOwner(session: SerialSession) {
       name: browserShareSettings.name.trim() || session.name,
       portLabel: session.name,
       writeEnabled: browserShareSettings.writeEnabled,
+      discoverable: browserShareSettings.enabled,
+      pluginTarget: session.pluginTarget || session.shareId,
     }));
     window.clearInterval(session.relayKeepaliveTimer);
     session.relayKeepaliveTimer = window.setInterval(() => {
@@ -648,7 +665,7 @@ function openBrowserShareOwner(session: SerialSession) {
   };
   socket.onmessage = (event) => {
     if (event.data instanceof ArrayBuffer) {
-      void writeSession(session, new Uint8Array(event.data)).catch((error) => broadcastNotice(session, `\r\n\x1b[31m[远程写入失败：${errorMessage(error)}]\x1b[0m\r\n`));
+      void writeSession(session, new Uint8Array(event.data)).catch((error) => broadcastNotice(session, `\r\n\x1b[31m[插件或远程写入失败：${errorMessage(error)}]\x1b[0m\r\n`));
       return;
     }
     if (event.data instanceof Blob) {
@@ -658,31 +675,43 @@ function openBrowserShareOwner(session: SerialSession) {
     try {
       const payload = JSON.parse(String(event.data));
       if (payload.type === "published") {
-        session.sharing = true;
+        session.bridgeConnected = true;
+        session.sharing = payload.discoverable === true;
         session.relayRetryAttempt = 0;
-        broadcastNotice(session, `\r\n\x1b[36m[已共享为“${browserShareSettings.name.trim() || session.name}” · ${browserShareSettings.writeEnabled ? "允许远程写入" : "只读"}]\x1b[0m\r\n`);
+        if (session.sharing) broadcastNotice(session, `\r\n\x1b[36m[已共享为“${browserShareSettings.name.trim() || session.name}” · ${browserShareSettings.writeEnabled ? "允许远程写入" : "只读"}]\x1b[0m\r\n`);
       } else if (payload.type === "share-state") {
+        const wasSharing = session.sharing;
+        session.bridgeConnected = true;
+        session.sharing = payload.discoverable === true;
         session.viewers = Number(payload.viewers) || 0;
+        if (!wasSharing && session.sharing) {
+          broadcastNotice(session, `\r\n\x1b[36m[已共享为“${browserShareSettings.name.trim() || session.name}” · ${browserShareSettings.writeEnabled ? "允许远程写入" : "只读"}]\x1b[0m\r\n`);
+        } else if (wasSharing && !session.sharing) {
+          broadcastNotice(session, "\r\n\x1b[33m[已停止客户端共享，后端插件继续运行]\x1b[0m\r\n");
+        }
       } else if (payload.type === "error") {
+        session.bridgeConnected = false;
         session.sharing = false;
-        broadcastNotice(session, `\r\n\x1b[31m[共享失败：${payload.message || "未知错误"}]\x1b[0m\r\n`);
+        broadcastNotice(session, `\r\n\x1b[31m[后端插件通道失败：${payload.message || "未知错误"}；本地串口仍可使用]\x1b[0m\r\n`);
       }
     } catch { /* Ignore non-protocol text. */ }
   };
-  socket.onerror = () => { session.sharing = false; };
+  socket.onerror = () => { session.bridgeConnected = false; session.sharing = false; };
   socket.onclose = () => {
     window.clearInterval(session.relayKeepaliveTimer);
     session.relayKeepaliveTimer = undefined;
     if (session.relaySocket === socket) session.relaySocket = undefined;
-    if (session.sharing && !session.closing) broadcastNotice(session, "\r\n\x1b[33m[浏览器串口共享通道已断开，本地串口仍可使用]\x1b[0m\r\n");
+    const wasSharing = session.sharing;
+    session.bridgeConnected = false;
+    if (wasSharing && !session.closing) broadcastNotice(session, "\r\n\x1b[33m[浏览器串口共享通道已断开，本地串口仍可使用]\x1b[0m\r\n");
     session.sharing = false;
-    if (!session.closing && session.status === "open" && browserShareSettings.enabled) {
+    if (!session.closing && session.status === "open") {
       const attempt = (session.relayRetryAttempt ?? 0) + 1;
       session.relayRetryAttempt = attempt;
       const delay = Math.min(10000, 1000 * (2 ** Math.min(attempt - 1, 3)));
       session.relayRetryTimer = window.setTimeout(() => {
         session.relayRetryTimer = undefined;
-        if (!session.closing && session.status === "open" && browserShareSettings.enabled) openBrowserShareOwner(session);
+        if (!session.closing && session.status === "open") openBrowserPluginBridge(session);
       }, delay);
     }
   };
@@ -946,13 +975,13 @@ async function closeSession(session: SerialSession) {
     session.socket = undefined;
     return;
   }
-  closeBrowserShareOwner(session);
+  closeBrowserPluginBridge(session);
   await session.reader?.cancel().catch(() => undefined);
   await session.readTask?.catch(() => undefined);
   await session.browserPort?.close().catch(() => undefined);
 }
 
-function closeBrowserShareOwner(session: SerialSession) {
+function closeBrowserPluginBridge(session: SerialSession) {
   window.clearInterval(session.relayKeepaliveTimer);
   session.relayKeepaliveTimer = undefined;
   window.clearTimeout(session.relayRetryTimer);
@@ -967,6 +996,7 @@ function closeBrowserShareOwner(session: SerialSession) {
     relay.close();
   }
   session.relaySocket = undefined;
+  session.bridgeConnected = false;
   session.sharing = false;
   session.viewers = 0;
 }
@@ -1237,18 +1267,17 @@ watch(browserShareSettings, (value) => {
   shareSettingsTimer = window.setTimeout(() => {
     sessions.forEach((session) => {
       if (session.location !== "browser" || session.status !== "open" || session.closing) return;
-      if (browserShareSettings.enabled) {
-        if (session.sharing && session.relaySocket?.readyState === WebSocket.OPEN) {
-          session.relaySocket.send(JSON.stringify({
-            type: "update",
-            name: browserShareSettings.name.trim() || session.name,
-            writeEnabled: browserShareSettings.writeEnabled,
-          }));
-        } else {
-          session.shareId ||= crypto.randomUUID();
-          openBrowserShareOwner(session);
-        }
-      } else closeBrowserShareOwner(session);
+      if (session.bridgeConnected && session.relaySocket?.readyState === WebSocket.OPEN) {
+        session.relaySocket.send(JSON.stringify({
+          type: "update",
+          name: browserShareSettings.name.trim() || session.name,
+          writeEnabled: browserShareSettings.writeEnabled,
+          discoverable: browserShareSettings.enabled,
+        }));
+      } else {
+        session.shareId ||= crypto.randomUUID();
+        openBrowserPluginBridge(session);
+      }
     });
   }, 250);
 }, { deep: true });

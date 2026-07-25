@@ -375,6 +375,7 @@ export interface BrowserSerialShare {
   id: string;
   name: string;
   portLabel: string;
+  pluginTarget?: string;
   writeEnabled: boolean;
   viewers: number;
 }

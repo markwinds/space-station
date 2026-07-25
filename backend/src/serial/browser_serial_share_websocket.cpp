@@ -67,8 +67,11 @@ void BrowserSerialShareWebSocketController::handleNewMessage(const drogon::WebSo
             state->role = "owner";
             state->share_id = payload.value("shareId", "");
             service_.Publish(state->share_id, payload.value("name", ""), payload.value("portLabel", ""),
-                             payload.value("writeEnabled", false), connection);
-            connection->send(nlohmann::json({{"type", "published"}, {"shareId", state->share_id}}).dump());
+                             payload.value("writeEnabled", false), payload.value("discoverable", true),
+                             payload.value("pluginTarget", state->share_id), connection);
+            connection->send(nlohmann::json({{"type", "published"},
+                                             {"shareId", state->share_id},
+                                             {"discoverable", payload.value("discoverable", true)}}).dump());
         }
         else if (action == "subscribe")
         {
@@ -80,7 +83,8 @@ void BrowserSerialShareWebSocketController::handleNewMessage(const drogon::WebSo
         else if (action == "update")
         {
             if (state->role != "owner") throw std::runtime_error("只有共享拥有者可以修改共享设置。");
-            service_.Update(state->share_id, payload.value("name", ""), payload.value("writeEnabled", false), connection);
+            service_.Update(state->share_id, payload.value("name", ""), payload.value("writeEnabled", false),
+                            payload.value("discoverable", true), connection);
         }
         else throw std::runtime_error("未知的共享串口操作。");
     }
