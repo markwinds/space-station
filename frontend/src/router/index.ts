@@ -5,7 +5,8 @@ import JsonFormatterTool from "@/components/tools/JsonFormatterTool.vue";
 import RuntimeSettings from "@/components/settings/RuntimeSettings.vue";
 import HomeView from "@/views/HomeView.vue";
 import ToolView from "@/views/ToolView.vue";
-import { findTool } from "@/tools";
+import { findTool, tools } from "@/tools";
+import { recordRecentTool } from "@/toolPreferences";
 
 const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/TimeManagerTool.vue"));
 const HabitTool = defineAsyncComponent(() => import("@/components/tools/HabitTool.vue"));
@@ -150,8 +151,10 @@ router.onError((error) => {
   window.location.reload();
 });
 
-router.afterEach(() => {
+router.afterEach((to) => {
   sessionStorage.removeItem("space-station:chunk-reload");
+  const tool = tools.find((item) => item.path === to.path && item.id !== "runtime");
+  if (tool && !tool.disabled) recordRecentTool(tool.id);
 });
 
 export default router;
