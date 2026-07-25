@@ -2,7 +2,7 @@
   <n-popover trigger="click" placement="bottom-end" :show-arrow="false" @update:show="handleShow">
     <template #trigger>
       <n-button secondary size="tiny" :loading="loading" aria-label="查看当前终端插件">
-        插件 {{ available ? plugins.length : "—" }}
+        插件 {{ plugins.length }}
       </n-button>
     </template>
     <section class="terminal-plugin-popover">
