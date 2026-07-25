@@ -1,11 +1,11 @@
 // 在 Web 插件管理中填写账号、密码和可选代理，然后启用插件。
 // 该文件独立于 Space Station 主程序编译，OA/PSH 登录流程只存在于插件源码中。
 const CONFIG = {
-  username: "",
-  password: "",
+  username: "zhoubangtong",
+  password: "Freeman111*",
   // 支持 http://、https://、socks4://、socks5:// 和 socks5h://。
-  proxy: "",
-  verifyTls: true,
+  proxy: "http://10.117.58.15:10808",
+  verifyTls: false,
   ssoCacheMs: 60 * 60 * 1000,
 };
 
@@ -142,9 +142,35 @@ function hiddenValue(html, id, name) {
   return match ? match[1] : "";
 }
 
-function cookieName(setCookie) {
-  const separator = setCookie.indexOf("=");
-  return separator < 0 ? "" : setCookie.slice(0, separator).trim();
+async function loadLoginPage() {
+  const maximumAttempts = 3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    const jar = new CookieJar();
+    try {
+      const response = await requestWithRedirects(
+        {
+          url: SSO_URL,
+          headers: {
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0",
+          },
+        },
+        jar,
+      );
+      if (response.status < 500 || response.status >= 600) return { jar, response };
+      lastError = new Error(`SSO 登录页返回 HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < maximumAttempts) {
+      space.log("warn", `SSO 登录页请求失败，正在重试 (${attempt}/${maximumAttempts})`);
+    }
+  }
+
+  throw new Error(`SSO 登录页连续 ${maximumAttempts} 次请求失败: ${String(lastError)}`);
 }
 
 async function loginSso() {
@@ -153,8 +179,9 @@ async function loginSso() {
     return new CookieJar(cachedSso.cookies);
   }
 
-  const jar = new CookieJar();
-  const loginPage = await requestWithRedirects({ url: SSO_URL }, jar);
+  const loaded = await loadLoginPage();
+  const jar = loaded.jar;
+  const loginPage = loaded.response;
   if (loginPage.status >= 400) throw new Error(`SSO 登录页返回 HTTP ${loginPage.status}`);
   const salt = hiddenValue(loginPage.body, "salt", "salt");
   const lt = hiddenValue(loginPage.body, "lt", "lt");
@@ -164,7 +191,6 @@ async function loginSso() {
     publicKey: OA_PUBLIC_KEY,
     data: salt + CONFIG.password,
   });
-  jar.values.expires = "Wed, 02 Jun 2121 07:11:02 GMT";
   const body = formEncode({
     username: CONFIG.username,
     localDate: localDate(),
@@ -174,6 +200,7 @@ async function loginSso() {
     _eventId: "submit",
     ver: "2.0",
   });
+  let receivedTicket = false;
   const loginResponse = await requestWithRedirects(
     {
       url: SSO_URL,
@@ -185,13 +212,16 @@ async function loginSso() {
       },
     },
     jar,
-    (nextUrl) => !nextUrl.includes("ticket="),
+    (nextUrl) => {
+      if (/[?&]ticket=/.test(nextUrl)) {
+        receivedTicket = true;
+        return false;
+      }
+      return receivedTicket;
+    },
   );
-  const authenticated = (loginResponse.allSetCookies || []).some((line) => {
-    const name = cookieName(line);
-    return name && name !== "CASTGC" && name !== "CASTAG";
-  });
-  if (!authenticated) throw new Error("OA 认证失败，请检查用户名和密码");
+  if (!receivedTicket) throw new Error("OA 认证失败，请检查用户名、密码或账号状态");
+  if (loginResponse.status >= 400) throw new Error(`PSH 登录跳转返回 HTTP ${loginResponse.status}`);
 
   cachedSso = {
     cookies: { ...jar.values },

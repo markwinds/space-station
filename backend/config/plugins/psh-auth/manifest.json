@@ -1,7 +1,7 @@
 {
   "id": "psh-auth",
   "name": "PSH 自动认证",
-  "enabled": false,
+  "enabled": true,
   "entry": "index.js",
   "transports": [
     "serial",
