@@ -1,5 +1,5 @@
 <template>
-  <div ref="mountElement" class="web-terminal__mount" />
+  <div ref="mountElement" class="web-terminal__mount" :style="{ backgroundColor: props.background }" />
 </template>
 
 <script setup lang="ts">
@@ -594,9 +594,15 @@ defineExpose(terminalHandle);
 
 <style scoped>
 .web-terminal__mount { width: 100%; height: 100%; min-width: 0; min-height: 0; }
-.web-terminal__mount :deep(.xterm) { height: 100%; }
+.web-terminal__mount :deep(.xterm) {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 4px 5px 5px;
+  background-color: inherit;
+}
 .web-terminal__mount :deep(.xterm) { touch-action: pan-y; }
 .web-terminal__mount :deep(.xterm-viewport) {
+  background-color: inherit !important;
   overflow-y: auto !important;
   overscroll-behavior-y: contain;
   touch-action: pan-y;

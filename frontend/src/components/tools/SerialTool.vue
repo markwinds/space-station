@@ -162,10 +162,6 @@
             :font-size="terminalSettings.fontSize"
             :line-height="terminalSettings.lineHeight"
             :letter-spacing="terminalSettings.letterSpacing"
-            background="#0d1318"
-            foreground="#d7e0e7"
-            cursor="#8ec5c3"
-            selection-background="#315063"
             @ready="handleTerminalReady(view, $event)"
             @data="handleTerminalData(view, $event)"
             @renderer="view.renderer = $event"
@@ -1358,8 +1354,7 @@ onBeforeUnmount(() => {
 .serial-empty p { margin: 0; color: #83939e; }
 .serial-empty-mobile { display: none; margin-top: 18px; }
 .serial-terminal-section { position: relative; min-height: 0; flex: 1; display: flex; flex-direction: column; }
-.serial-terminal { min-height: 0; flex: 1; padding: 8px 5px 3px 10px; overflow: hidden; background: #0d1318; }
-.serial-terminal :deep(.xterm) { height: 100%; }
+.serial-terminal { min-height: 0; flex: 1; overflow: hidden; background: #101418; }
 .serial-error { padding: 8px 12px; border-top: 1px solid #653b3b; background: #3a2222; color: #f3b3b3; font-size: 13px; }
 .serial-command-toolbar { padding: 7px 12px; display: flex; align-items: center; gap: 7px; border-top: 1px solid #2c3942; background: #151d23; }
 .serial-command-toolbar :deep(.n-button) { color: #dbe5ea; }
@@ -1404,7 +1399,6 @@ onBeforeUnmount(() => {
   .serial-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .serial-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .serial-empty-mobile { display: inline-flex; }
-  .serial-terminal { padding-left: 5px; }
   .serial-composer { padding-bottom: max(10px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
   .serial-command { order: -1; flex-basis: 100%; }
   .serial-send-mode { flex: 1; }

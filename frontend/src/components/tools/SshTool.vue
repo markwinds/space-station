@@ -1712,8 +1712,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-status-text.error { border-color: #814751; color: #f08a95; background: #381d22; }
 .ssh-status-text.closed { border-color: #56616a; color: #a8b2ba; background: #252c31; }
 .ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
-.ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; padding: 8px 8px 12px; overflow: hidden; background: #101418; }
-.ssh-terminal :deep(.xterm) { height: 100%; }
+.ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; overflow: hidden; background: #101418; }
 .ssh-terminal :deep(.xterm) { touch-action: pan-y; }
 .ssh-terminal :deep(.xterm-viewport) { overflow-y: auto !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .ssh-welcome { display: grid; place-content: center; justify-items: center; color: #788690; text-align: center; }
