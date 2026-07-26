@@ -1,15 +1,41 @@
 <template>
   <div class="terminal-command-panel">
     <div class="terminal-command-toolbar">
-      <n-button secondary size="tiny" @click="$emit('toggleQuick')">
-        {{ showQuick ? '隐藏快捷片段' : '显示快捷片段' }}
+      <n-button
+        class="terminal-command-toggle"
+        :class="{ active: showComposer }"
+        secondary
+        size="tiny"
+        :aria-pressed="showComposer"
+        @click="$emit('toggleComposer')"
+      >
+        <span class="terminal-command-toggle__mark">&gt;_</span>
+        {{ showComposer ? hideLabel : showLabel }}
       </n-button>
+      <n-button
+        class="terminal-command-toggle"
+        :class="{ active: showQuick }"
+        secondary
+        size="tiny"
+        :aria-pressed="showQuick"
+        @click="$emit('toggleQuick')"
+      >⚡ 片段</n-button>
       <div v-if="showQuick" class="terminal-quick-snippets">
-        <n-button v-for="snippet in snippets" :key="snippet.id" secondary size="tiny" @click="$emit('sendSnippet', snippet)">{{ snippet.name }}</n-button>
+        <n-button
+          v-for="snippet in snippets"
+          :key="snippet.id"
+          class="terminal-snippet-chip"
+          :class="{ 'terminal-snippet-chip--run': snippet.action !== 'insert' }"
+          secondary
+          size="tiny"
+          :title="snippet.action === 'insert' ? `插入：${snippet.command}` : `立即执行：${snippet.command}`"
+          @click="$emit('useSnippet', snippet)"
+        >
+          {{ snippet.name }}<span v-if="snippet.action !== 'insert'" aria-hidden="true">↵</span>
+        </n-button>
         <span v-if="snippets.length === 0">暂无快捷片段</span>
       </div>
-      <n-button text size="tiny" @click="$emit('manageSnippets')">管理片段</n-button>
-      <n-button text size="tiny" @click="$emit('toggleComposer')">{{ showComposer ? hideLabel : showLabel }}</n-button>
+      <n-button class="terminal-manage-snippets" text size="tiny" @click="$emit('manageSnippets')">管理</n-button>
     </div>
     <div v-if="showComposer" class="terminal-command-composer"><slot name="composer" /></div>
   </div>
@@ -18,7 +44,13 @@
 <script setup lang="ts">
 import { NButton } from "naive-ui";
 
-export interface TerminalCommandSnippet { id: string; name: string; command: string; pinned?: boolean }
+export interface TerminalCommandSnippet {
+  id: string;
+  name: string;
+  command: string;
+  pinned?: boolean;
+  action: "insert" | "run";
+}
 
 withDefaults(defineProps<{
   showQuick: boolean;
@@ -32,7 +64,7 @@ defineEmits<{
   toggleQuick: [];
   manageSnippets: [];
   toggleComposer: [];
-  sendSnippet: [snippet: TerminalCommandSnippet];
+  useSnippet: [snippet: TerminalCommandSnippet];
 }>();
 </script>
 
@@ -40,12 +72,21 @@ defineEmits<{
 .terminal-command-panel { display: grid; border-top: 1px solid #34414b; background: #171e23; }
 .terminal-command-toolbar { min-width: 0; padding: 7px 9px; display: flex; align-items: center; gap: 7px; }
 .terminal-command-toolbar :deep(.n-button) { color: #dce6eb; border-color: #50616c; background: #2c3941; }
+.terminal-command-toolbar :deep(.terminal-command-toggle.active) { border-color: #74aaa6; background: #31504f; color: #efffff; }
+.terminal-command-toggle__mark { font-family: "SFMono-Regular", Consolas, monospace; font-weight: 800; }
 .terminal-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
 .terminal-quick-snippets > span { align-self: center; color: #83939e; font-size: 12px; }
+.terminal-quick-snippets :deep(.terminal-snippet-chip) { flex: 0 0 auto; max-width: 180px; }
+.terminal-quick-snippets :deep(.terminal-snippet-chip .n-button__content) { min-width: 0; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-quick-snippets :deep(.terminal-snippet-chip--run) { border-color: #6c6045; color: #ecd08e; }
+.terminal-manage-snippets { flex: 0 0 auto; }
 .terminal-command-composer { padding: 0 9px 9px; }
 @media (max-width: 760px) {
-  .terminal-command-toolbar { flex-wrap: wrap; }
-  .terminal-quick-snippets { order: 3; flex-basis: 100%; }
+  .terminal-command-toolbar { padding: 6px; flex-wrap: wrap; gap: 5px; }
+  .terminal-command-toolbar :deep(.n-button) { min-height: 32px; }
+  .terminal-quick-snippets { order: 3; flex-basis: 100%; padding-top: 1px; scrollbar-width: none; }
+  .terminal-quick-snippets::-webkit-scrollbar { display: none; }
+  .terminal-manage-snippets { margin-left: auto; }
   .terminal-command-composer { padding-bottom: max(9px, env(safe-area-inset-bottom)); }
 }
 </style>

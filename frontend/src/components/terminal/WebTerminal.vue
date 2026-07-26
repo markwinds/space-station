@@ -1,5 +1,19 @@
 <template>
-  <div ref="mountElement" class="web-terminal__mount" :style="{ backgroundColor: props.background }" />
+  <div class="web-terminal__root" :style="{ backgroundColor: props.background }">
+    <div ref="mountElement" class="web-terminal__mount" />
+    <div
+      v-if="mobileSelectionToolbar"
+      class="web-terminal__selection-toolbar"
+      :style="{ left: `${mobileSelectionToolbar.left}px`, top: `${mobileSelectionToolbar.top}px` }"
+      role="toolbar"
+      aria-label="终端文本选择"
+      @pointerdown.stop
+      @touchstart.stop
+    >
+      <button type="button" @click="copyMobileSelection">{{ mobileCopyLabel }}</button>
+      <button type="button" @click="clearMobileSelection">取消</button>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -11,6 +25,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { onBeforeUnmount, onMounted, ref } from "vue";
+import { writeClipboard } from "@/utils/clipboard";
 import type {
   TerminalRenderer,
   WebTerminalHandle,
@@ -58,6 +73,8 @@ const emit = defineEmits<{
 }>();
 
 const mountElement = ref<HTMLElement>();
+const mobileSelectionToolbar = ref<{ left: number; top: number }>();
+const mobileCopyLabel = ref("复制");
 let terminal: Terminal | undefined;
 let fitAddon: FitAddon | undefined;
 let searchAddon: SearchAddon | undefined;
@@ -68,6 +85,7 @@ let resizeFrame = 0;
 let fitStabilizeFrame = 0;
 let appearanceFrame = 0;
 let touchCleanup: (() => void) | undefined;
+let mobileCopyLabelTimer = 0;
 let searchWorker: Worker | undefined;
 let searchCountTimer = 0;
 let searchCountRequestId = 0;
@@ -412,6 +430,27 @@ function getElement() {
   return mountElement.value;
 }
 
+function clearMobileSelection() {
+  window.clearTimeout(mobileCopyLabelTimer);
+  mobileCopyLabel.value = "复制";
+  mobileSelectionToolbar.value = undefined;
+  terminal?.clearSelection();
+}
+
+async function copyMobileSelection() {
+  const selection = terminal?.getSelection() ?? "";
+  if (!selection) {
+    clearMobileSelection();
+    return;
+  }
+  const copied = await writeClipboard(selection);
+  mobileCopyLabel.value = copied ? "已复制" : "复制失败";
+  window.clearTimeout(mobileCopyLabelTimer);
+  mobileCopyLabelTimer = window.setTimeout(() => {
+    mobileCopyLabel.value = "复制";
+  }, 1200);
+}
+
 const terminalHandle: WebTerminalHandle = {
   write,
   writeln,
@@ -426,43 +465,226 @@ const terminalHandle: WebTerminalHandle = {
 };
 
 function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
+  const longPressDelay = 480;
   let startY: number | null = null;
+  let startX: number | null = null;
   let lastY: number | null = null;
+  let lastX: number | null = null;
+  let lastMoveAt = 0;
   let remainder = 0;
+  let velocityY = 0;
   let scrolling = false;
-  const touchStart = (event: TouchEvent) => {
-    startY = event.touches.length === 1 ? event.touches[0].clientY : null;
-    lastY = startY;
-    remainder = 0;
-    scrolling = false;
+  let selecting = false;
+  let selectionStart = 0;
+  let selectionEnd = 0;
+  let longPressTimer = 0;
+  let momentumFrame = 0;
+
+  const cancelMomentum = () => {
+    window.cancelAnimationFrame(momentumFrame);
+    momentumFrame = 0;
+    velocityY = 0;
   };
-  const touchMove = (event: TouchEvent) => {
-    if (lastY === null || event.touches.length !== 1) return;
-    const currentY = event.touches[0].clientY;
-    if (!scrolling && startY !== null && Math.abs(currentY - startY) < 6) return;
-    scrolling = true;
-    remainder += lastY - currentY;
-    lastY = currentY;
+  const cancelLongPress = () => {
+    window.clearTimeout(longPressTimer);
+    longPressTimer = 0;
+  };
+  const bufferCellFromPoint = (clientX: number, clientY: number) => {
+    const screen = element.querySelector<HTMLElement>(".xterm-screen");
+    const bounds = screen?.getBoundingClientRect() ?? element.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return undefined;
+    const column = Math.max(0, Math.min(instance.cols - 1, Math.floor((clientX - bounds.left) / bounds.width * instance.cols)));
+    const viewportRow = Math.max(0, Math.min(instance.rows - 1, Math.floor((clientY - bounds.top) / bounds.height * instance.rows)));
+    return { column, row: instance.buffer.active.viewportY + viewportRow };
+  };
+  const hasTextAt = (row: number, column: number) => {
+    const line = instance.buffer.active.getLine(row);
+    let textColumn = column;
+    let cell = line?.getCell(textColumn);
+    // A double-width CJK/emoji cell is followed by a zero-width continuation
+    // cell. Treat both columns as text so a long press selects the whole word.
+    while (textColumn > 0 && cell?.getWidth() === 0) {
+      textColumn -= 1;
+      cell = line?.getCell(textColumn);
+    }
+    return Boolean(cell?.getChars().trim());
+  };
+  const wordRangeAt = (clientX: number, clientY: number) => {
+    const position = bufferCellFromPoint(clientX, clientY);
+    if (!position) return undefined;
+    let column = position.column;
+    const line = instance.buffer.active.getLine(position.row);
+    while (column > 0 && line?.getCell(column)?.getWidth() === 0) column -= 1;
+    let firstColumn = column;
+    let lastColumn = column;
+    if (hasTextAt(position.row, column)) {
+      while (firstColumn > 0 && hasTextAt(position.row, firstColumn - 1)) firstColumn -= 1;
+      while (lastColumn + 1 < instance.cols && hasTextAt(position.row, lastColumn + 1)) lastColumn += 1;
+    }
+    const rowOffset = position.row * instance.cols;
+    return { start: rowOffset + firstColumn, end: rowOffset + lastColumn };
+  };
+  const selectRange = (start: number, end: number) => {
+    const first = Math.min(start, end);
+    const last = Math.max(start, end);
+    instance.select(first % instance.cols, Math.floor(first / instance.cols), last - first + 1);
+  };
+  const showSelectionToolbar = (clientX: number, clientY: number) => {
+    const bounds = element.getBoundingClientRect();
+    const left = Math.max(58, Math.min(bounds.width - 58, clientX - bounds.left));
+    const pointY = clientY - bounds.top;
+    const top = pointY >= 58 ? pointY - 48 : Math.min(bounds.height - 40, pointY + 24);
+    mobileSelectionToolbar.value = { left, top: Math.max(8, top) };
+  };
+  const beginSelection = (clientX: number, clientY: number) => {
+    const range = wordRangeAt(clientX, clientY);
+    if (!range) return;
+    selecting = true;
+    scrolling = false;
+    velocityY = 0;
+    selectionStart = range.start;
+    selectionEnd = range.end;
+    selectRange(selectionStart, selectionEnd);
+    showSelectionToolbar(clientX, clientY);
+  };
+  const extendSelection = (clientX: number, clientY: number) => {
+    const position = bufferCellFromPoint(clientX, clientY);
+    if (!position) return;
+    const current = position.row * instance.cols + position.column;
+    selectRange(current < selectionStart ? selectionEnd : selectionStart, current);
+    mobileSelectionToolbar.value = undefined;
+  };
+  const scrollPixels = (pixels: number) => {
+    remainder += pixels;
     const lineHeight = Math.max(12, element.clientHeight / Math.max(1, instance.rows));
     const lines = Math.trunc(remainder / lineHeight);
-    if (lines !== 0) {
-      instance.scrollLines(lines);
-      remainder -= lines * lineHeight;
+    if (lines === 0) return true;
+    const previousViewportY = instance.buffer.active.viewportY;
+    instance.scrollLines(lines);
+    remainder -= lines * lineHeight;
+    if (instance.buffer.active.viewportY !== previousViewportY) return true;
+    // Do not keep animating against the top or bottom of the scrollback buffer.
+    remainder = 0;
+    return false;
+  };
+  const startMomentum = () => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      remainder = 0;
+      velocityY = 0;
+      return;
     }
+    velocityY = Math.max(-2.4, Math.min(2.4, velocityY));
+    if (Math.abs(velocityY) < 0.04) {
+      remainder = 0;
+      velocityY = 0;
+      return;
+    }
+    let previousFrameAt = performance.now();
+    const step = (now: number) => {
+      const elapsed = Math.min(34, Math.max(1, now - previousFrameAt));
+      previousFrameAt = now;
+      const moved = scrollPixels(velocityY * elapsed);
+      const speed = Math.max(0, Math.abs(velocityY) - 0.0035 * elapsed);
+      velocityY = Math.sign(velocityY) * speed;
+      if (!moved || speed < 0.02) {
+        momentumFrame = 0;
+        remainder = 0;
+        velocityY = 0;
+        return;
+      }
+      momentumFrame = window.requestAnimationFrame(step);
+    };
+    momentumFrame = window.requestAnimationFrame(step);
+  };
+  const touchStart = (event: TouchEvent) => {
+    cancelMomentum();
+    cancelLongPress();
+    if (mobileSelectionToolbar.value) clearMobileSelection();
+    const touch = event.touches.length === 1 ? event.touches[0] : undefined;
+    startX = touch?.clientX ?? null;
+    startY = touch?.clientY ?? null;
+    lastX = startX;
+    lastY = startY;
+    lastMoveAt = performance.now();
+    remainder = 0;
+    scrolling = false;
+    selecting = false;
+    if (touch && window.matchMedia("(max-width: 760px)").matches) {
+      const touchX = touch.clientX;
+      const touchY = touch.clientY;
+      longPressTimer = window.setTimeout(() => beginSelection(touchX, touchY), longPressDelay);
+    }
+  };
+  const touchMove = (event: TouchEvent) => {
+    if (lastY === null || lastX === null || event.touches.length !== 1) return;
+    const currentX = event.touches[0].clientX;
+    const currentY = event.touches[0].clientY;
+    if (selecting) {
+      lastX = currentX;
+      lastY = currentY;
+      extendSelection(currentX, currentY);
+      event.preventDefault();
+      return;
+    }
+    const now = performance.now();
+    const deltaY = lastY - currentY;
+    const elapsed = Math.min(64, Math.max(1, now - lastMoveAt));
+    lastX = currentX;
+    lastY = currentY;
+    lastMoveAt = now;
+    if (!scrolling) {
+      const distance = startX === null || startY === null ? 0 : Math.hypot(currentX - startX, currentY - startY);
+      if (distance < 6) return;
+      cancelLongPress();
+      scrolling = true;
+    }
+    const sampledVelocity = deltaY / elapsed;
+    velocityY = velocityY !== 0 && Math.sign(sampledVelocity) === Math.sign(velocityY)
+      ? velocityY * 0.65 + sampledVelocity * 0.35
+      : sampledVelocity;
+    scrollPixels(deltaY);
     event.preventDefault();
   };
   const resetTouch = () => {
+    cancelMomentum();
+    cancelLongPress();
+    if (selecting) clearMobileSelection();
+    startX = null;
     startY = null;
+    lastX = null;
     lastY = null;
+    lastMoveAt = 0;
     remainder = 0;
     scrolling = false;
+    selecting = false;
   };
   const touchEnd = () => {
+    cancelLongPress();
     // xterm's hidden textarea is not focused reliably by a canvas tap in iOS
     // Safari. Focusing while the touch gesture is still active also lets the
     // software keyboard open. Do not steal focus after an intentional scroll.
-    if (!scrolling) instance.focus();
-    resetTouch();
+    if (selecting) {
+      if (lastX !== null && lastY !== null) showSelectionToolbar(lastX, lastY);
+      startX = null;
+      startY = null;
+      lastX = null;
+      lastY = null;
+      selecting = false;
+      return;
+    }
+    if (!scrolling) {
+      instance.focus();
+      resetTouch();
+      return;
+    }
+    const continueScrolling = performance.now() - lastMoveAt < 100;
+    startX = null;
+    startY = null;
+    lastX = null;
+    lastY = null;
+    scrolling = false;
+    if (continueScrolling) startMomentum();
+    else resetTouch();
   };
   const pointerDown = (event: PointerEvent) => {
     if (event.pointerType !== "touch") instance.focus();
@@ -473,6 +695,8 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
   element.addEventListener("touchend", touchEnd, { passive: true, capture: true });
   element.addEventListener("touchcancel", resetTouch, { passive: true, capture: true });
   touchCleanup = () => {
+    cancelMomentum();
+    cancelLongPress();
     element.removeEventListener("pointerdown", pointerDown, true);
     element.removeEventListener("touchstart", touchStart, true);
     element.removeEventListener("touchmove", touchMove, true);
@@ -599,6 +823,7 @@ onBeforeUnmount(() => {
   window.cancelAnimationFrame(fitStabilizeFrame);
   window.cancelAnimationFrame(appearanceFrame);
   window.clearTimeout(searchCountTimer);
+  window.clearTimeout(mobileCopyLabelTimer);
   searchCountRequestId += 1;
   searchWorker?.terminate();
   searchWorker = undefined;
@@ -613,6 +838,14 @@ defineExpose(terminalHandle);
 </script>
 
 <style scoped>
+.web-terminal__root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
 .web-terminal__mount { width: 100%; height: 100%; min-width: 0; min-height: 0; }
 .web-terminal__mount :deep(.xterm) {
   box-sizing: border-box;
@@ -627,5 +860,38 @@ defineExpose(terminalHandle);
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
+}
+.web-terminal__selection-toolbar {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  gap: 1px;
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  background: rgba(32, 38, 44, 0.96);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(10px);
+}
+.web-terminal__selection-toolbar button {
+  min-width: 58px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  color: #f4f6f8;
+  background: transparent;
+  font: 500 13px/1 system-ui, sans-serif;
+}
+.web-terminal__selection-toolbar button + button { border-left: 1px solid rgba(255, 255, 255, 0.12); }
+.web-terminal__selection-toolbar button:active { background: rgba(255, 255, 255, 0.12); }
+
+@media (max-width: 760px) {
+  .web-terminal__mount :deep(.xterm),
+  .web-terminal__mount :deep(.xterm-viewport),
+  .web-terminal__mount :deep(.xterm-screen) {
+    touch-action: none;
+    -webkit-touch-callout: none;
+  }
 }
 </style>

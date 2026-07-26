@@ -1,5 +1,5 @@
 <template>
-  <div class="serial-app" :class="{ 'serial-app--session-open': activeView && !mobileSetup }">
+  <div class="serial-app" :class="{ 'serial-app--session-open': activeView && !mobileSetup }" :style="mobileViewportStyle">
     <aside class="serial-sidebar">
       <div class="serial-brand">
         <router-link to="/" aria-label="返回首页">SS</router-link>
@@ -177,7 +177,7 @@
             @toggle-quick="showQuickSnippets = !showQuickSnippets"
             @manage-snippets="showSnippets = true"
             @toggle-composer="toggleCommandComposer"
-            @send-snippet="sendSnippet(view, $event)"
+            @use-snippet="useSnippet(view, $event)"
           >
             <template #composer><div class="serial-composer">
             <n-select v-model:value="view.sendMode" class="serial-send-mode" :options="sendModeOptions" size="small" />
@@ -200,12 +200,16 @@
       <div class="serial-snippet-editor">
         <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查询版本" />
         <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="要发送的文本或 HEX" />
+        <n-select v-model:value="snippetDraft.action" :options="snippetActionOptions" />
         <n-checkbox v-model:checked="snippetDraft.pinned">显示为快捷按钮</n-checkbox>
         <n-button type="primary" @click="saveSnippet">{{ editingSnippetId ? '保存修改' : '添加片段' }}</n-button>
       </div>
       <div class="serial-snippet-list">
         <div v-for="snippet in snippets" :key="snippet.id" class="serial-snippet-row">
-          <button type="button" @click="activeView && sendSnippet(activeView, snippet)"><strong>{{ snippet.name }}</strong><code>{{ snippet.command }}</code></button>
+          <button type="button" @click="activeView && useSnippet(activeView, snippet)">
+            <span class="serial-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '发送' }}</small></span>
+            <code>{{ snippet.command }}</code>
+          </button>
           <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
           <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
         </div>
@@ -257,6 +261,7 @@ import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
 import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
+import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 
 type Location = "browser" | "shared" | "server";
 type SessionStatus = "connecting" | "open" | "closed" | "error";
@@ -334,9 +339,18 @@ interface SerialView {
   recordingLimitReached: boolean;
 }
 
-interface CommandSnippet { id: string; name: string; command: string; pinned?: boolean }
+type SnippetAction = "insert" | "run";
+
+interface CommandSnippet {
+  id: string;
+  name: string;
+  command: string;
+  pinned?: boolean;
+  action: SnippetAction;
+}
 
 const message = useMessage();
+const { mobileViewportStyle } = useMobileVisualViewport();
 const dialogStyle = { width: "min(680px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 32px)" };
 const source = ref<Location>("server");
 const browserSupported = "serial" in navigator;
@@ -365,7 +379,12 @@ const searchIndexEditing = ref(false);
 const searchInput = ref<{ focus: () => void } | null>(null);
 const showSnippets = ref(false);
 const snippets = ref<CommandSnippet[]>(loadSnippets());
-const snippetDraft = reactive({ name: "", command: "", pinned: true });
+const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; action: SnippetAction }>({
+  name: "",
+  command: "",
+  pinned: true,
+  action: "insert",
+});
 const editingSnippetId = ref("");
 const showQuickSnippets = ref(localStorage.getItem("serial-show-quick-snippets") !== "false");
 const showRecordingOptions = ref(false);
@@ -377,6 +396,10 @@ let searchInputTimer: number | undefined;
 let sharedRefreshTimer: number | undefined;
 let shareSettingsTimer: number | undefined;
 const sharedRefreshIntervalMs = 2000;
+const snippetActionOptions = [
+  { label: "插入发送框，可编辑后发送", value: "insert" },
+  { label: "点击后立即发送", value: "run" },
+];
 
 const storedBrowserShareSettings = (() => {
   try { return JSON.parse(localStorage.getItem("space-station:browser-serial-share") || "{}"); }
@@ -1155,20 +1178,39 @@ function toggleCommandComposer() {
 }
 
 function loadSnippets(): CommandSnippet[] {
-  try { return JSON.parse(localStorage.getItem("serial-command-snippets") || "[]") as CommandSnippet[]; }
-  catch { return []; }
+  try {
+    const value = JSON.parse(localStorage.getItem("serial-command-snippets") || "[]") as Array<Partial<CommandSnippet>>;
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.command === "string")
+      .map((item) => ({
+        id: item.id!,
+        name: item.name!,
+        command: item.command!,
+        pinned: item.pinned !== false,
+        action: item.action === "insert" ? "insert" : "run",
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function persistSnippets() { localStorage.setItem("serial-command-snippets", JSON.stringify(snippets.value)); }
 
 function resetSnippetDraft() {
   editingSnippetId.value = "";
-  Object.assign(snippetDraft, { name: "", command: "", pinned: true });
+  Object.assign(snippetDraft, { name: "", command: "", pinned: true, action: "insert" });
 }
 
 function saveSnippet() {
   if (!snippetDraft.name.trim() || !snippetDraft.command.trim()) { message.warning("名称和内容不能为空"); return; }
-  const value = { id: editingSnippetId.value || crypto.randomUUID(), name: snippetDraft.name.trim(), command: snippetDraft.command, pinned: snippetDraft.pinned };
+  const value: CommandSnippet = {
+    id: editingSnippetId.value || crypto.randomUUID(),
+    name: snippetDraft.name.trim(),
+    command: snippetDraft.command,
+    pinned: snippetDraft.pinned,
+    action: snippetDraft.action,
+  };
   if (editingSnippetId.value) snippets.value = snippets.value.map((item) => item.id === editingSnippetId.value ? value : item);
   else snippets.value.push(value);
   persistSnippets();
@@ -1177,7 +1219,12 @@ function saveSnippet() {
 
 function editSnippet(snippet: CommandSnippet) {
   editingSnippetId.value = snippet.id;
-  Object.assign(snippetDraft, { name: snippet.name, command: snippet.command, pinned: snippet.pinned !== false });
+  Object.assign(snippetDraft, {
+    name: snippet.name,
+    command: snippet.command,
+    pinned: snippet.pinned !== false,
+    action: snippet.action,
+  });
 }
 
 function deleteSnippet(id: string) {
@@ -1186,10 +1233,10 @@ function deleteSnippet(id: string) {
   if (editingSnippetId.value === id) resetSnippetDraft();
 }
 
-async function sendSnippet(view: SerialView, snippet: CommandSnippet) {
+async function useSnippet(view: SerialView, snippet: CommandSnippet) {
   view.command = snippet.command;
   showSnippets.value = false;
-  await sendFromComposer(view);
+  if (snippet.action === "run") await sendFromComposer(view);
 }
 
 function appendRecording(view: SerialView, data: Uint8Array) {
@@ -1395,9 +1442,12 @@ onBeforeUnmount(() => {
 .serial-line-ending { width: 100px; flex: 0 0 auto; }
 .serial-snippet-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
 .serial-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
+.serial-snippet-editor > :last-child { grid-column: 2; }
 .serial-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
 .serial-snippet-row { padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #dce3e7; border-radius: 7px; }
 .serial-snippet-row > button { min-width: 0; flex: 1; display: grid; gap: 3px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.serial-snippet-title { display: flex; align-items: center; gap: 7px; }
+.serial-snippet-title small { padding: 1px 6px; border-radius: 999px; background: #e8eef1; color: #64737d; font-size: 10px; }
 .serial-snippet-row code { overflow: hidden; color: #687783; text-overflow: ellipsis; white-space: nowrap; }
 .serial-recording-options, .serial-setting-switches { display: grid; gap: 12px; }
 .serial-recording-options p { margin: 0; color: #687783; font-size: 12px; }
@@ -1405,7 +1455,17 @@ onBeforeUnmount(() => {
 .serial-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 760px) {
-  .serial-app { grid-template-columns: 1fr; }
+  .serial-app {
+    position: fixed;
+    top: var(--terminal-visual-top, 0px);
+    left: var(--terminal-visual-left, 0px);
+    width: var(--terminal-visual-width, 100%);
+    max-width: var(--terminal-visual-width, 100%);
+    height: var(--terminal-visual-height, 100dvh);
+    max-height: var(--terminal-visual-height, 100dvh);
+    grid-template-columns: 1fr;
+    overflow: hidden;
+  }
   .serial-sidebar { width: 100%; border-right: 0; padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom)); }
   .serial-app--session-open .serial-sidebar { display: none; }
   .serial-workspace { display: none; }

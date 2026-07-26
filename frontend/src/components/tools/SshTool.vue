@@ -1,5 +1,5 @@
 <template>
-  <div class="ssh-app" :class="{ 'ssh-app--terminal-open': activeTabId }">
+  <div class="ssh-app" :class="{ 'ssh-app--terminal-open': activeTabId }" :style="mobileViewportStyle">
     <aside class="ssh-sidebar">
       <div class="ssh-brand-row">
         <router-link class="ssh-home" to="/" aria-label="返回首页">SS</router-link>
@@ -205,6 +205,14 @@
           @renderer="updateRenderer(tab, $event)"
           @search-results="updateSearchResults(tab, $event)"
         />
+        <terminal-special-key-bar
+          :ctrl="tab.ctrlModifier"
+          :alt="tab.altModifier"
+          :disabled="tab.status !== 'connected'"
+          @key="sendSpecialKey(tab, $event)"
+          @modifier="toggleTerminalModifier(tab, $event)"
+          @focus="tab.terminal?.focus()"
+        />
         <terminal-command-panel
           :show-quick="showQuickSnippets"
           :show-composer="terminalSettings.showCommandComposer"
@@ -212,18 +220,26 @@
           @toggle-quick="toggleQuickSnippets"
           @manage-snippets="openSnippets"
           @toggle-composer="toggleCommandComposer"
-          @send-snippet="sendSnippet($event, false)"
+          @use-snippet="useSnippet(tab, $event, false)"
         >
           <template #composer><div class="ssh-command-editor">
             <n-input
-              v-model:value="commandDraft"
+              v-model:value="tab.commandDraft"
               type="textarea"
               :autosize="{ minRows: 1, maxRows: 4 }"
               placeholder="输入要发送的命令，Ctrl/⌘ + Enter 发送"
-              enterkeyhint="send"
-              @keydown="handleCommandKeydown"
+              enterkeyhint="enter"
+              @keydown="handleCommandKeydown(tab, $event)"
             />
-            <n-button type="primary" :disabled="!commandDraft.trim()" @click="sendCommand">发送</n-button>
+            <n-dropdown
+              trigger="click"
+              :options="commandHistoryOptions(tab)"
+              :disabled="tab.commandHistory.length === 0"
+              @select="selectCommandHistory(tab, $event)"
+            >
+              <n-button secondary :disabled="tab.commandHistory.length === 0">历史</n-button>
+            </n-dropdown>
+            <n-button type="primary" :disabled="!tab.commandDraft.trim()" @click="sendCommand(tab)">发送</n-button>
           </div></template>
         </terminal-command-panel>
       </div>
@@ -332,6 +348,7 @@
       <div class="ssh-snippet-editor">
         <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查看磁盘" />
         <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="df -h" />
+        <n-select v-model:value="snippetDraft.action" :options="snippetActionOptions" />
         <n-checkbox v-model:checked="snippetDraft.pinned">显示为终端快捷按钮</n-checkbox>
         <div class="ssh-snippet-editor-actions">
           <n-button v-if="editingSnippetId" @click="cancelSnippetEdit">取消编辑</n-button>
@@ -340,7 +357,10 @@
       </div>
       <div class="ssh-snippet-list">
         <div v-for="snippet in snippets" :key="snippet.id" class="ssh-snippet-row">
-          <button type="button" @click="sendSnippet(snippet)"><strong>{{ snippet.name }}</strong><code>{{ snippet.command }}</code></button>
+          <button type="button" @click="activeTab && useSnippet(activeTab, snippet)">
+            <span class="ssh-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '执行' }}</small></span>
+            <code>{{ snippet.command }}</code>
+          </button>
           <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
           <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
         </div>
@@ -464,9 +484,11 @@ import WebTerminal from "../terminal/WebTerminal.vue";
 import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
 import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
+import TerminalSpecialKeyBar from "../terminal/TerminalSpecialKeyBar.vue";
 import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
+import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 import {
   clampTerminalDecimal as clampDecimal,
   clampTerminalInteger as clampNumber,
@@ -484,6 +506,22 @@ import type {
 } from "../terminal/WebTerminal.types";
 
 type ConnectionStatus = "connecting" | "authenticating" | "connected" | "closed" | "error";
+type TerminalModifier = "ctrl" | "alt";
+type TerminalSpecialKey =
+  | "escape"
+  | "tab"
+  | "arrowLeft"
+  | "arrowDown"
+  | "arrowUp"
+  | "arrowRight"
+  | "home"
+  | "end"
+  | "pageUp"
+  | "pageDown"
+  | "pipe"
+  | "slash"
+  | "dash"
+  | "tilde";
 
 interface TerminalTab {
   id: string;
@@ -516,9 +554,21 @@ interface TerminalTab {
   reconnectHintShown: boolean;
   socketReady: boolean;
   automaticRetryCount: number;
+  commandDraft: string;
+  commandHistory: string[];
+  ctrlModifier: boolean;
+  altModifier: boolean;
 }
 
-interface CommandSnippet { id: string; name: string; command: string; pinned?: boolean }
+type SnippetAction = "insert" | "run";
+
+interface CommandSnippet {
+  id: string;
+  name: string;
+  command: string;
+  pinned?: boolean;
+  action: SnippetAction;
+}
 
 type TerminalSettings = TerminalPreferences;
 
@@ -539,6 +589,7 @@ interface FingerprintRequest {
 type ClipboardReadState = PermissionState | "checking" | "available" | "unsupported" | "insecure";
 
 const message = useMessage();
+const { mobileViewportStyle } = useMobileVisualViewport();
 const hosts = ref<SshHost[]>([]);
 const tabs = ref<TerminalTab[]>([]);
 const activeTabId = ref("");
@@ -556,9 +607,13 @@ const searchIndexEditing = ref(false);
 const searchInput = ref<{ focus: () => void } | null>(null);
 const showSnippets = ref(false);
 const snippets = ref<CommandSnippet[]>(loadSnippets());
-const snippetDraft = reactive({ name: "", command: "", pinned: true });
+const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; action: SnippetAction }>({
+  name: "",
+  command: "",
+  pinned: true,
+  action: "insert",
+});
 const editingSnippetId = ref("");
-const commandDraft = ref("");
 const showQuickSnippets = ref(localStorage.getItem("ssh-show-quick-snippets") !== "false");
 const configurationInput = ref<HTMLInputElement | null>(null);
 const showPortForwards = ref(false);
@@ -605,6 +660,10 @@ const hostScrollbarTheme = {
   railColor: "#151b20",
 };
 const searchHighlightLimit = 1000;
+const snippetActionOptions = [
+  { label: "插入输入框，可编辑后发送", value: "insert" },
+  { label: "点击后立即执行", value: "run" },
+];
 const collapsedHostSectionsKey = "space-station:ssh-collapsed-host-sections";
 const collapsedHostSections = ref<Set<string>>(loadCollapsedHostSections());
 let hostSaveQueue: Promise<void> = Promise.resolve();
@@ -974,6 +1033,10 @@ async function openTerminal(
     reconnectHintShown: false,
     socketReady: false,
     automaticRetryCount: 0,
+    commandDraft: "",
+    commandHistory: [],
+    ctrlModifier: false,
+    altModifier: false,
   };
   // The backend sends `ready` immediately after the WebSocket handshake. Bind
   // handlers before rendering the terminal so a fast first connection cannot
@@ -1059,7 +1122,73 @@ function handleTerminalData(tab: TerminalTab, data: string) {
     reconnectTab(tab);
     return;
   }
-  if (tab.socket.readyState === WebSocket.OPEN) tab.socket.send(new TextEncoder().encode(data));
+  if (tab.socket.readyState === WebSocket.OPEN) {
+    tab.socket.send(new TextEncoder().encode(applyTerminalModifiers(tab, data)));
+  }
+}
+
+function applyTerminalModifiers(tab: TerminalTab, data: string) {
+  const useCtrl = tab.ctrlModifier;
+  const useAlt = tab.altModifier;
+  tab.ctrlModifier = false;
+  tab.altModifier = false;
+  const result = useCtrl ? controlCharacter(data) : data;
+  return useAlt ? `\x1b${result}` : result;
+}
+
+function controlCharacter(data: string) {
+  if (data.length !== 1) return data;
+  if (data === "/") return "\x1f";
+  if (data === "?") return "\x7f";
+  const code = data.toUpperCase().charCodeAt(0);
+  return code >= 64 && code <= 95 ? String.fromCharCode(code - 64) : data;
+}
+
+function toggleTerminalModifier(tab: TerminalTab, modifier: TerminalModifier) {
+  if (modifier === "ctrl") tab.ctrlModifier = !tab.ctrlModifier;
+  else tab.altModifier = !tab.altModifier;
+  tab.terminal?.focus();
+}
+
+function sendSpecialKey(tab: TerminalTab, key: TerminalSpecialKey) {
+  if (tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") return;
+  const useCtrl = tab.ctrlModifier;
+  const useAlt = tab.altModifier;
+  tab.ctrlModifier = false;
+  tab.altModifier = false;
+
+  const arrowFinal = ({
+    arrowLeft: "D",
+    arrowDown: "B",
+    arrowUp: "A",
+    arrowRight: "C",
+  } as Partial<Record<TerminalSpecialKey, string>>)[key];
+  let data = "";
+  if (arrowFinal) {
+    if (useCtrl || useAlt) {
+      const modifier = useCtrl && useAlt ? 7 : useCtrl ? 5 : 3;
+      data = `\x1b[1;${modifier}${arrowFinal}`;
+    } else {
+      data = tab.terminal?.modes.applicationCursorKeysMode ? `\x1bO${arrowFinal}` : `\x1b[${arrowFinal}`;
+    }
+  } else {
+    data = ({
+      escape: "\x1b",
+      tab: "\t",
+      home: "\x1b[H",
+      end: "\x1b[F",
+      pageUp: "\x1b[5~",
+      pageDown: "\x1b[6~",
+      pipe: "|",
+      slash: "/",
+      dash: "-",
+      tilde: "~",
+    } as Partial<Record<TerminalSpecialKey, string>>)[key] || "";
+    if (useCtrl) data = controlCharacter(data);
+    if (useAlt) data = `\x1b${data}`;
+  }
+  if (data) tab.socket.send(new TextEncoder().encode(data));
+  tab.terminal?.focus();
 }
 
 function handleTerminalResize(tab: TerminalTab, event: WebTerminalResizeEvent) {
@@ -1282,6 +1411,10 @@ function updateTab(tab: TerminalTab, status: ConnectionStatus, statusMessage: st
   if (!reactiveTab) return;
   reactiveTab.status = status;
   reactiveTab.message = statusMessage;
+  if (status !== "connected") {
+    reactiveTab.ctrlModifier = false;
+    reactiveTab.altModifier = false;
+  }
 }
 
 function activateTab(id: string) {
@@ -1574,8 +1707,23 @@ function saveTerminalSettings() {
 }
 
 function loadSnippets(): CommandSnippet[] {
-  try { return JSON.parse(localStorage.getItem("ssh-command-snippets") || "[]") as CommandSnippet[]; }
-  catch { return []; }
+  try {
+    const value = JSON.parse(localStorage.getItem("ssh-command-snippets") || "[]") as Array<Partial<CommandSnippet>>;
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.command === "string")
+      .map((item) => ({
+        id: item.id!,
+        name: item.name!,
+        command: item.command!,
+        pinned: item.pinned !== false,
+        // Existing snippets executed immediately. Preserve that behavior while
+        // new snippets default to the safer insert-and-review mode.
+        action: item.action === "insert" ? "insert" : "run",
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function persistSnippets() {
@@ -1589,6 +1737,7 @@ function saveSnippet() {
     name: snippetDraft.name.trim(),
     command: snippetDraft.command.trim(),
     pinned: snippetDraft.pinned,
+    action: snippetDraft.action,
   };
   if (editingSnippetId.value) snippets.value = snippets.value.map((snippet) => snippet.id === editingSnippetId.value ? value : snippet);
   else snippets.value.push(value);
@@ -1602,12 +1751,17 @@ function openSnippets() {
 
 function editSnippet(snippet: CommandSnippet) {
   editingSnippetId.value = snippet.id;
-  Object.assign(snippetDraft, { name: snippet.name, command: snippet.command, pinned: snippet.pinned !== false });
+  Object.assign(snippetDraft, {
+    name: snippet.name,
+    command: snippet.command,
+    pinned: snippet.pinned !== false,
+    action: snippet.action,
+  });
 }
 
 function cancelSnippetEdit() {
   editingSnippetId.value = "";
-  Object.assign(snippetDraft, { name: "", command: "", pinned: true });
+  Object.assign(snippetDraft, { name: "", command: "", pinned: true, action: "insert" });
 }
 
 function deleteSnippet(id: string) {
@@ -1616,10 +1770,21 @@ function deleteSnippet(id: string) {
   persistSnippets();
 }
 
-function sendSnippet(snippet: CommandSnippet, closeModal = true) {
-  const tab = activeTab.value;
-  if (!tab || tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") return message.warning("SSH 尚未连接");
+function useSnippet(tab: TerminalTab, snippet: CommandSnippet, closeModal = true) {
+  if (snippet.action === "insert") {
+    tab.commandDraft = snippet.command;
+    if (!terminalSettings.showCommandComposer) {
+      terminalSettings.showCommandComposer = true;
+      terminalSettingsDraft.showCommandComposer = true;
+      saveTerminalPreferences(terminalSettings);
+    }
+    if (closeModal) showSnippets.value = false;
+    nextTick(() => tab.terminalView?.fit());
+    return;
+  }
+  if (tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") return message.warning("SSH 尚未连接");
   tab.socket.send(new TextEncoder().encode(`${snippet.command}\n`));
+  rememberCommand(tab, snippet.command);
   if (closeModal) showSnippets.value = false;
   tab.terminal?.focus();
 }
@@ -1639,23 +1804,39 @@ function toggleCommandComposer() {
   nextTick(() => activeTab.value?.terminalView?.fit());
 }
 
-function sendCommand() {
-  const tab = activeTab.value;
-  const command = commandDraft.value.trimEnd();
+function sendCommand(tab: TerminalTab) {
+  const command = tab.commandDraft.trimEnd();
   if (!command) return;
-  if (!tab || tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") {
+  if (tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") {
     message.warning("SSH 尚未连接");
     return;
   }
   tab.socket.send(new TextEncoder().encode(`${command}\n`));
-  commandDraft.value = "";
+  rememberCommand(tab, command);
+  tab.commandDraft = "";
   tab.terminal?.focus();
 }
 
-function handleCommandKeydown(event: KeyboardEvent) {
+function rememberCommand(tab: TerminalTab, command: string) {
+  tab.commandHistory = [command, ...tab.commandHistory.filter((item) => item !== command)].slice(0, 30);
+}
+
+function commandHistoryOptions(tab: TerminalTab) {
+  return tab.commandHistory.map((command, index) => ({
+    key: String(index),
+    label: command.replace(/\s+/g, " ").slice(0, 64),
+  }));
+}
+
+function selectCommandHistory(tab: TerminalTab, key: string | number) {
+  const command = tab.commandHistory[Number(key)];
+  if (command !== undefined) tab.commandDraft = command;
+}
+
+function handleCommandKeydown(tab: TerminalTab, event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();
-    sendCommand();
+    sendCommand(tab);
   }
 }
 
@@ -1673,7 +1854,11 @@ async function importConfiguration(event: Event) {
     const importedHosts = data.hosts.map((host) => ({ ...host, hasCredential: false }));
     await enqueueHostSave(importedHosts);
     hosts.value = importedHosts;
-    if (Array.isArray(data.snippets)) snippets.value = data.snippets;
+    if (Array.isArray(data.snippets)) {
+      snippets.value = data.snippets
+        .filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.command === "string")
+        .map((item) => ({ ...item, action: item.action === "insert" ? "insert" : "run" }));
+    }
     if (data.terminalSettings) {
       terminalSettings.scrollbackLines = clampNumber(data.terminalSettings.scrollbackLines, 1000, 500000, terminalSettings.scrollbackLines);
       terminalSettings.recordingMaxMiB = clampNumber(data.terminalSettings.recordingMaxMiB, 1, 500, terminalSettings.recordingMaxMiB);
@@ -1831,7 +2016,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-status-text.connecting, .ssh-status-text.authenticating { border-color: #816b35; color: #e4c36e; background: #382e18; }
 .ssh-status-text.error { border-color: #814751; color: #f08a95; background: #381d22; }
 .ssh-status-text.closed { border-color: #56616a; color: #a8b2ba; background: #252c31; }
-.ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
+.ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
 .ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; overflow: hidden; background: #101418; }
 .ssh-terminal :deep(.xterm) { touch-action: pan-y; }
 .ssh-terminal :deep(.xterm-viewport) { overflow-y: auto !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
@@ -1856,14 +2041,16 @@ function disposeTab(tab: TerminalTab) {
 .ssh-command-toolbar :deep(.n-button) { color: #dce6eb; border-color: #50616c; background: #2c3941; }
 .ssh-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; }
 .ssh-quick-snippets > span { align-self: center; color: #71808b; font-size: 12px; }
-.ssh-command-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 8px; }
+.ssh-command-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: stretch; gap: 8px; }
 .ssh-command-editor :deep(textarea) { font-family: "SFMono-Regular", Consolas, monospace; }
 .ssh-snippet-editor { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
 .ssh-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
-.ssh-snippet-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.ssh-snippet-editor-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
 .ssh-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
 .ssh-snippet-row { padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #e3e7ea; border-radius: 6px; }
 .ssh-snippet-row > button:first-child { min-width: 0; flex: 1; display: grid; gap: 4px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.ssh-snippet-title { display: flex; align-items: center; gap: 7px; }
+.ssh-snippet-title small { padding: 1px 6px; border-radius: 999px; background: #e8eef1; color: #64737d; font-size: 10px; }
 .ssh-snippet-row code { overflow: hidden; color: #687783; text-overflow: ellipsis; white-space: nowrap; }
 .ssh-forward-form { margin-top: 14px; display: grid; grid-template-columns: 1fr 130px; gap: 10px; }
 .ssh-forward-form > :last-child { grid-column: 2; }
@@ -1881,8 +2068,18 @@ function disposeTab(tab: TerminalTab) {
 .ssh-fingerprint dt { color: #637382; }
 .ssh-fingerprint dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
 :global(.ssh-dialog) { --ssh-dialog-width: min(560px, calc(100vw - 32px)); }
-@media (max-width: 720px) {
-  .ssh-app { width: 100%; max-width: 100%; height: 100dvh; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+@media (max-width: 760px) {
+  .ssh-app {
+    position: fixed;
+    top: var(--terminal-visual-top, 0px);
+    left: var(--terminal-visual-left, 0px);
+    width: var(--terminal-visual-width, 100%);
+    max-width: var(--terminal-visual-width, 100%);
+    height: var(--terminal-visual-height, 100dvh);
+    max-height: var(--terminal-visual-height, 100dvh);
+    grid-template-columns: minmax(0, 1fr);
+    overflow: hidden;
+  }
   .ssh-sidebar {
     width: 100%;
     padding:
@@ -1894,7 +2091,7 @@ function disposeTab(tab: TerminalTab) {
   }
   .ssh-app:not(.ssh-app--terminal-open) .ssh-workspace { display: none; }
   .ssh-app--terminal-open .ssh-sidebar { display: none; }
-  .ssh-workspace { box-sizing: border-box; width: 100%; height: 100dvh; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .ssh-workspace { box-sizing: border-box; width: 100%; height: 100%; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
   .ssh-tabs { grid-template-columns: minmax(0, 1fr) auto; }
   .ssh-tab-list .ssh-tab:not(.active) { display: none; }
   .ssh-tab-list .ssh-tab.active { min-width: 0; max-width: none; flex: 1; }
@@ -1921,7 +2118,7 @@ function disposeTab(tab: TerminalTab) {
   .ssh-forward-form > :last-child { grid-column: 1; }
   .ssh-command-toolbar { flex-wrap: wrap; }
   .ssh-quick-snippets { order: 3; flex-basis: 100%; }
-  .ssh-command-editor { grid-template-columns: minmax(0, 1fr) 64px; }
+  .ssh-command-editor { grid-template-columns: minmax(0, 1fr) auto 64px; gap: 6px; }
   :global(.ssh-dialog) {
     --ssh-dialog-width: 100vw;
     max-width: 100vw;
