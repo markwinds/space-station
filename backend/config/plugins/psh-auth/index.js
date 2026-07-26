@@ -7,6 +7,7 @@ const CONFIG = {
   proxy: "http://10.117.58.15:10808",
   verifyTls: false,
   ssoCacheMs: 60 * 60 * 1000,
+  tokenCacheEntries: 256,
 };
 
 const SSO_URL =
@@ -20,6 +21,10 @@ p/AR1kFcd2UFEGaW1QIDAQAB
 -----END PUBLIC KEY-----`;
 
 const sessions = new Map();
+// A challenge always maps to the same PSH token. Keep the bounded cache in
+// plugin memory so repeated prompts do not need another OA/PSH request and no
+// generated token is written to the plugin source or configuration database.
+const tokenCache = new Map();
 let cachedSso = null;
 
 class CookieJar {
@@ -231,6 +236,13 @@ async function loginSso() {
 }
 
 async function getPshToken(challenge) {
+  const cachedToken = tokenCache.get(challenge);
+  if (cachedToken) {
+    // Refresh insertion order so frequently used entries survive eviction.
+    tokenCache.delete(challenge);
+    tokenCache.set(challenge, cachedToken);
+    return cachedToken;
+  }
   const jar = await loginSso();
   const response = await requestWithRedirects(
     {
@@ -253,6 +265,10 @@ async function getPshToken(challenge) {
   }
   const token = typeof payload.data === "string" ? payload.data.replace(/\r?\n/g, "") : "";
   if (token.length !== 172) throw new Error("PSH 服务返回的口令格式无效");
+  tokenCache.set(challenge, token);
+  while (tokenCache.size > Math.max(1, CONFIG.tokenCacheEntries)) {
+    tokenCache.delete(tokenCache.keys().next().value);
+  }
   return token;
 }
 
