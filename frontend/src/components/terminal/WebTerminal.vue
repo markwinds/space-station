@@ -426,15 +426,21 @@ const terminalHandle: WebTerminalHandle = {
 };
 
 function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
+  let startY: number | null = null;
   let lastY: number | null = null;
   let remainder = 0;
+  let scrolling = false;
   const touchStart = (event: TouchEvent) => {
-    lastY = event.touches.length === 1 ? event.touches[0].clientY : null;
+    startY = event.touches.length === 1 ? event.touches[0].clientY : null;
+    lastY = startY;
     remainder = 0;
+    scrolling = false;
   };
   const touchMove = (event: TouchEvent) => {
     if (lastY === null || event.touches.length !== 1) return;
     const currentY = event.touches[0].clientY;
+    if (!scrolling && startY !== null && Math.abs(currentY - startY) < 6) return;
+    scrolling = true;
     remainder += lastY - currentY;
     lastY = currentY;
     const lineHeight = Math.max(12, element.clientHeight / Math.max(1, instance.rows));
@@ -445,19 +451,33 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     }
     event.preventDefault();
   };
-  const touchEnd = () => {
+  const resetTouch = () => {
+    startY = null;
     lastY = null;
     remainder = 0;
+    scrolling = false;
   };
+  const touchEnd = () => {
+    // xterm's hidden textarea is not focused reliably by a canvas tap in iOS
+    // Safari. Focusing while the touch gesture is still active also lets the
+    // software keyboard open. Do not steal focus after an intentional scroll.
+    if (!scrolling) instance.focus();
+    resetTouch();
+  };
+  const pointerDown = (event: PointerEvent) => {
+    if (event.pointerType !== "touch") instance.focus();
+  };
+  element.addEventListener("pointerdown", pointerDown, { passive: true, capture: true });
   element.addEventListener("touchstart", touchStart, { passive: true, capture: true });
   element.addEventListener("touchmove", touchMove, { passive: false, capture: true });
   element.addEventListener("touchend", touchEnd, { passive: true, capture: true });
-  element.addEventListener("touchcancel", touchEnd, { passive: true, capture: true });
+  element.addEventListener("touchcancel", resetTouch, { passive: true, capture: true });
   touchCleanup = () => {
+    element.removeEventListener("pointerdown", pointerDown, true);
     element.removeEventListener("touchstart", touchStart, true);
     element.removeEventListener("touchmove", touchMove, true);
     element.removeEventListener("touchend", touchEnd, true);
-    element.removeEventListener("touchcancel", touchEnd, true);
+    element.removeEventListener("touchcancel", resetTouch, true);
   };
 }
 

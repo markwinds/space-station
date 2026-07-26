@@ -46,26 +46,52 @@
             暂无主机
             <n-button text type="primary" @click="openHostEditor()">添加第一台</n-button>
           </div>
-          <button
-            v-for="host in filteredHosts"
-            :key="host.id"
-            class="ssh-host"
-            type="button"
-            @click="openCredentials(host)"
-            @contextmenu.prevent="openHostEditor(host)"
-          >
-            <span class="ssh-host-icon">{{ host.name.slice(0, 1).toUpperCase() }}</span>
-            <span class="ssh-host-copy">
-              <strong>{{ host.name }}</strong>
-              <small>
-                {{ host.username }}@{{ host.host }}:{{ host.port }}
-                <template v-if="jumpHostName(host)"> · 经 {{ jumpHostName(host) }}</template>
-              </small>
-            </span>
-            <n-button class="ssh-edit-button" secondary circle size="small" aria-label="编辑主机" @click.stop="openHostEditor(host)">
-              <template #icon><n-icon><CreateOutline /></n-icon></template>
-            </n-button>
-          </button>
+          <section v-for="section in hostSections" :key="section.key" class="ssh-host-section">
+            <button
+              class="ssh-host-section-title"
+              type="button"
+              :aria-expanded="!isHostSectionCollapsed(section.key)"
+              @click="toggleHostSection(section.key)"
+            >
+              <span>{{ section.label }}</span>
+              <span class="ssh-host-section-meta">
+                <small>{{ section.hosts.length }}</small>
+                <n-icon class="ssh-host-section-chevron" :class="{ collapsed: isHostSectionCollapsed(section.key) }" size="14"><ChevronDownOutline /></n-icon>
+              </span>
+            </button>
+            <div v-show="!isHostSectionCollapsed(section.key)" class="ssh-host-section-items">
+              <div
+                v-for="host in section.hosts"
+                :key="`${section.key}-${host.id}`"
+                class="ssh-host"
+                @contextmenu.prevent="openHostEditor(host)"
+              >
+                <button class="ssh-host-main" type="button" @click="openCredentials(host)">
+                  <span class="ssh-host-icon">{{ host.name.slice(0, 1).toUpperCase() }}</span>
+                  <span class="ssh-host-copy">
+                    <strong>{{ host.name }}</strong>
+                    <small>
+                      {{ host.username }}@{{ host.host }}:{{ host.port }}
+                      <template v-if="jumpHostName(host)"> · 经 {{ jumpHostName(host) }}</template>
+                    </small>
+                  </span>
+                </button>
+                <button
+                  class="ssh-favorite-button"
+                  :class="{ active: host.favorite }"
+                  type="button"
+                  :aria-label="host.favorite ? '取消收藏' : '收藏主机'"
+                  :title="host.favorite ? '取消收藏' : '收藏主机'"
+                  @click="toggleHostFavorite(host)"
+                >
+                  <n-icon size="16"><component :is="host.favorite ? Star : StarOutline" /></n-icon>
+                </button>
+                <n-button class="ssh-edit-button" secondary circle size="small" aria-label="编辑主机" @click="openHostEditor(host)">
+                  <template #icon><n-icon><CreateOutline /></n-icon></template>
+                </n-button>
+              </div>
+            </div>
+          </section>
         </div>
       </n-scrollbar>
     </aside>
@@ -401,7 +427,7 @@
 
 <script setup lang="ts">
 import type { Terminal } from "@xterm/xterm";
-import { AddOutline, CloseOutline, CreateOutline, MenuOutline } from "@vicons/ionicons5";
+import { AddOutline, ChevronDownOutline, CloseOutline, CreateOutline, MenuOutline, Star, StarOutline } from "@vicons/ionicons5";
 import {
   NAlert,
   NButton,
@@ -579,11 +605,43 @@ const hostScrollbarTheme = {
   railColor: "#151b20",
 };
 const searchHighlightLimit = 1000;
+const collapsedHostSectionsKey = "space-station:ssh-collapsed-host-sections";
+const collapsedHostSections = ref<Set<string>>(loadCollapsedHostSections());
+let hostSaveQueue: Promise<void> = Promise.resolve();
 
 const filteredHosts = computed(() => {
   const query = keyword.value.trim().toLowerCase();
   if (!query) return hosts.value;
-  return hosts.value.filter((host) => [host.name, host.host, host.username, host.group].some((part) => part.toLowerCase().includes(query)));
+  return hosts.value.filter((host) => [host.name, host.host, host.username, host.group || ""].some((part) => part.toLowerCase().includes(query)));
+});
+const hostSections = computed(() => {
+  const query = keyword.value.trim();
+  if (query) return filteredHosts.value.length
+    ? [{ key: "search", label: "搜索结果", hosts: filteredHosts.value }]
+    : [];
+
+  const sections: Array<{ key: string; label: string; hosts: SshHost[] }> = [];
+  const favorites = hosts.value.filter((host) => host.favorite);
+  if (favorites.length) sections.push({ key: "favorites", label: "收藏", hosts: favorites });
+
+  const recent = hosts.value
+    .filter((host) => host.lastUsedAt)
+    .slice()
+    .sort((left, right) => Date.parse(right.lastUsedAt || "") - Date.parse(left.lastUsedAt || ""))
+    .slice(0, 5);
+  if (recent.length) sections.push({ key: "recent", label: "最近使用", hosts: recent });
+
+  const groups = new Map<string, SshHost[]>();
+  for (const host of hosts.value) {
+    const group = host.group?.trim() || "未分组";
+    const items = groups.get(group) || [];
+    items.push(host);
+    groups.set(group, items);
+  }
+  Array.from(groups.entries())
+    .sort(([left], [right]) => left === "未分组" ? 1 : right === "未分组" ? -1 : left.localeCompare(right, "zh-CN"))
+    .forEach(([label, items]) => sections.push({ key: `group:${label}`, label, hosts: items }));
+  return sections;
 });
 const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeTabId.value));
 const jumpHostOptions = computed(() => hosts.value
@@ -658,7 +716,56 @@ onBeforeUnmount(() => {
 });
 
 function emptyHost(): SshHost {
-  return { id: "", name: "", host: "", port: 22, username: "root", group: "", hostKeySha256: "", useAgent: false, jumpHostId: "" };
+  return { id: "", name: "", host: "", port: 22, username: "root", group: "", hostKeySha256: "", useAgent: false, jumpHostId: "", favorite: false, lastUsedAt: "" };
+}
+
+function loadCollapsedHostSections() {
+  try {
+    const value = JSON.parse(localStorage.getItem(collapsedHostSectionsKey) || "[]");
+    return new Set<string>(Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function isHostSectionCollapsed(key: string) {
+  return collapsedHostSections.value.has(key);
+}
+
+function toggleHostSection(key: string) {
+  const next = new Set(collapsedHostSections.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  collapsedHostSections.value = next;
+  localStorage.setItem(collapsedHostSectionsKey, JSON.stringify(Array.from(next)));
+}
+
+function createId() {
+  return window.crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function enqueueHostSave(snapshot = hosts.value.map((host) => ({ ...host }))) {
+  const operation = hostSaveQueue.then(() => saveSshHosts(snapshot));
+  hostSaveQueue = operation.catch(() => undefined);
+  return operation;
+}
+
+async function toggleHostFavorite(host: SshHost) {
+  const previous = Boolean(host.favorite);
+  host.favorite = !previous;
+  try {
+    await enqueueHostSave();
+  } catch (error) {
+    host.favorite = previous;
+    message.error(error instanceof Error ? error.message : "收藏状态保存失败");
+  }
+}
+
+function markHostUsed(host: SshHost) {
+  host.lastUsedAt = new Date().toISOString();
+  void enqueueHostSave().catch((error) => {
+    console.warn("SSH recent host save failed", error);
+  });
 }
 
 function jumpHostName(host: SshHost) {
@@ -691,7 +798,7 @@ async function saveHost() {
   try {
     const value: SshHost = {
       ...hostDraft,
-      id: editingId.value || crypto.randomUUID(),
+      id: editingId.value || createId(),
       name: hostDraft.name.trim(),
       host: hostDraft.host.trim(),
       username: hostDraft.username.trim(),
@@ -710,7 +817,7 @@ async function saveHost() {
       message.warning("当前只支持单层跳板，所选跳板机自身不能再配置跳板机");
       return;
     }
-    await saveSshHosts(next);
+    await enqueueHostSave(next);
     hosts.value = next;
     showHostEditor.value = false;
   } catch (error) {
@@ -723,7 +830,7 @@ async function saveHost() {
 async function deleteHost() {
   if (!window.confirm(`确定删除 SSH 主机“${hostDraft.name}”吗？保存的凭据也会一并删除。`)) return;
   const next = hosts.value.filter((host) => host.id !== editingId.value);
-  await saveSshHosts(next);
+  await enqueueHostSave(next);
   hosts.value = next;
   showHostEditor.value = false;
 }
@@ -743,6 +850,7 @@ async function forgetCredential() {
 }
 
 function openCredentials(host: SshHost) {
+  markHostUsed(host);
   if (host.useAgent) {
     openTerminal(host, { method: "agent", password: "", privateKey: "", passphrase: "" }, false, false);
     return;
@@ -839,7 +947,7 @@ async function openTerminal(
   rememberCredential: boolean,
   persistCredential: boolean,
 ) {
-  const id = crypto.randomUUID();
+  const id = createId();
   const socket = createTerminalSocket();
   const tab: TerminalTab = {
     id,
@@ -1477,7 +1585,7 @@ function persistSnippets() {
 function saveSnippet() {
   if (!snippetDraft.name.trim() || !snippetDraft.command.trim()) return message.warning("名称和命令不能为空");
   const value: CommandSnippet = {
-    id: editingSnippetId.value || crypto.randomUUID(),
+    id: editingSnippetId.value || createId(),
     name: snippetDraft.name.trim(),
     command: snippetDraft.command.trim(),
     pinned: snippetDraft.pinned,
@@ -1563,7 +1671,7 @@ async function importConfiguration(event: Event) {
     const data = JSON.parse(await file.text()) as { hosts?: SshHost[]; snippets?: CommandSnippet[]; terminalSettings?: Partial<TerminalSettings> };
     if (!Array.isArray(data.hosts)) throw new Error("配置中缺少主机列表");
     const importedHosts = data.hosts.map((host) => ({ ...host, hasCredential: false }));
-    await saveSshHosts(importedHosts);
+    await enqueueHostSave(importedHosts);
     hosts.value = importedHosts;
     if (Array.isArray(data.snippets)) snippets.value = data.snippets;
     if (data.terminalSettings) {
@@ -1660,22 +1768,34 @@ function disposeTab(tab: TerminalTab) {
 :global(body.ssh-page-lock),
 :global(body.ssh-page-lock #app),
 :global(body.ssh-page-lock .app-shell) { margin: 0; overflow: hidden; background: #101418; }
-.ssh-app { height: 100dvh; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); overflow: hidden; background: #101418; color: #d8dee9; }
+.ssh-app { height: 100dvh; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); overflow: hidden; background: #101418; color: #d8dee9; }
 .ssh-sidebar { box-sizing: border-box; min-width: 0; min-height: 0; height: 100%; padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; border-right: 1px solid #27313a; background: #171d22; }
 .ssh-brand-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .ssh-brand-row strong, .ssh-brand-row small { display: block; }
 .ssh-brand-row small { margin-top: 2px; color: #7f8d99; font-size: 11px; }
 .ssh-home { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: #79a8a5; color: #101418; font-weight: 900; text-decoration: none; }
 .ssh-host-scroll { min-height: 0; flex: 1 1 0; }
-.ssh-host-list { min-height: 100%; padding-right: 9px; display: flex; flex-direction: column; gap: 5px; }
-.ssh-host { width: 100%; flex: 0 0 auto; padding: 9px; display: grid; grid-template-columns: 34px minmax(0, 1fr) 30px; align-items: center; gap: 9px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.ssh-host-list { min-height: 100%; padding-right: 9px; display: flex; flex-direction: column; gap: 12px; }
+.ssh-host-section { display: grid; gap: 5px; }
+.ssh-host-section-title { width: 100%; min-height: 24px; padding: 0 5px; display: flex; align-items: center; justify-content: space-between; border: 0; border-radius: 5px; background: transparent; color: #a7b5be; font-size: 11px; font-weight: 800; letter-spacing: .04em; cursor: pointer; }
+.ssh-host-section-title:hover { background: #202930; color: #d4dee4; }
+.ssh-host-section-title small { min-width: 22px; padding: 1px 6px; border-radius: 999px; background: #26323a; color: #8797a2; font-size: 10px; text-align: center; }
+.ssh-host-section-meta { display: flex; align-items: center; gap: 4px; }
+.ssh-host-section-chevron { transition: transform .16s ease; }
+.ssh-host-section-chevron.collapsed { transform: rotate(-90deg); }
+.ssh-host-section-items { display: grid; gap: 5px; }
+.ssh-host { width: 100%; flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 28px 30px; align-items: center; gap: 4px; border-radius: 7px; background: transparent; color: inherit; }
 .ssh-host:hover { background: #222b32; }
+.ssh-host-main { min-width: 0; padding: 9px; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 9px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .ssh-host-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; background: #293740; color: #9fc4c2; font-weight: 800; }
 .ssh-host-copy { min-width: 0; }
 .ssh-host-copy strong, .ssh-host-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ssh-host-copy small { margin-top: 3px; color: #83919c; font-size: 11px; }
 .ssh-edit-button { color: #c8d4dc; background: #2b3740; }
 .ssh-edit-button:hover { color: #101418; background: #9bc7c4; }
+.ssh-favorite-button { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 999px; background: transparent; color: #697984; cursor: pointer; }
+.ssh-favorite-button:hover { background: #303c45; color: #d6b35e; }
+.ssh-favorite-button.active { color: #e0b84e; }
 .ssh-empty { padding: 28px 8px; display: grid; justify-items: center; gap: 8px; color: #7f8d99; font-size: 13px; }
 .ssh-workspace { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); }
 .ssh-tabs { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid #27313a; background: #151a1f; overflow: hidden; }

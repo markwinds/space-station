@@ -86,6 +86,8 @@ int main()
                 {"port", 22},
                 {"username", "jump-user"},
                 {"useAgent", true},
+                {"favorite", true},
+                {"lastUsedAt", "2026-07-26T12:34:56.000Z"},
             },
             {
                 {"id", "target-1"},
@@ -99,6 +101,8 @@ int main()
         const auto hosts = store.LoadSshHosts();
         Expect(hosts.size() == 2, "SSH hosts were not saved");
         Expect(hosts[0].value("useAgent", false), "SSH agent setting was not persisted");
+        Expect(hosts[0].value("favorite", false), "SSH favorite setting was not persisted");
+        Expect(hosts[0].value("lastUsedAt", "") == "2026-07-26T12:34:56.000Z", "SSH recent-use timestamp was not persisted");
         Expect(hosts[1].value("jumpHostId", "") == "jump-1", "jump host setting was not persisted");
 
         ExpectThrows([&] {

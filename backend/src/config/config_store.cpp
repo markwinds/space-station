@@ -916,6 +916,8 @@ void ConfigStore::SaveSshHosts(const nlohmann::json& json)
                 {"hostKeySha256", item.value("hostKeySha256", "")},
                 {"useAgent", item.value("useAgent", false)},
                 {"jumpHostId", item.value("jumpHostId", "")},
+                {"favorite", item.value("favorite", false)},
+                {"lastUsedAt", item.value("lastUsedAt", "")},
             });
         }
     }

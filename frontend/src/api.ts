@@ -277,6 +277,8 @@ export interface SshHost {
   hasCredential?: boolean;
   useAgent?: boolean;
   jumpHostId?: string;
+  favorite?: boolean;
+  lastUsedAt?: string;
 }
 
 export interface SftpItem {

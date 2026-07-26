@@ -27,6 +27,7 @@
     "@types/node": "^22.15.3",
     "@vitejs/plugin-vue": "^5.2.4",
     "rollup-plugin-visualizer": "^7.0.1",
+    "terser": "^5.49.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vue-tsc": "^2.2.10"

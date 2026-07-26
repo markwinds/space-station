@@ -4,6 +4,12 @@ import { defineConfig } from "vite";
 import { visualizer } from "rollup-plugin-visualizer";
 
 export default defineConfig(({ mode }) => ({
+  build: {
+    // esbuild 0.25 can drop xterm 6's local DECRQM enum declaration when
+    // minifying the combined chunk, causing Vim's mode query to crash the
+    // terminal parser with `ReferenceError: i is not defined`.
+    minify: "terser",
+  },
   plugins: [
     vue(),
     mode === "analyze" &&

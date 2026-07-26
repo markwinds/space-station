@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #ifdef _WIN32
@@ -623,6 +624,16 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         {
             throw std::runtime_error(LastSessionError(session.get(), "无法创建 SSH Channel。"));
         }
+        // Interactive programs may emit terminal control sequences through the
+        // SSH extended-data (stderr) stream. Merge it into the normal stream so
+        // full-screen applications such as Vim cannot stall behind an unread
+        // extended-data window.
+        if (Retry(socket.value, session.get(), stop_token, NewDeadline(), "配置 SSH 终端输出超时。", [&] {
+                return libssh2_channel_handle_extended_data2(channel.get(), LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE);
+            }) != 0)
+        {
+            throw std::runtime_error(LastSessionError(session.get(), "无法配置 SSH 终端输出。"));
+        }
         options.columns = ClampTerminalSize(options.columns, 100);
         options.rows = ClampTerminalSize(options.rows, 30);
         if (Retry(socket.value, session.get(), stop_token, NewDeadline(), "请求 SSH PTY 超时。", [&] {
@@ -645,6 +656,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
 
         std::string pending_input;
         std::size_t pending_offset = 0;
+        std::optional<std::pair<int, int>> pending_resize;
         std::array<char, 32768> output{};
         auto last_keepalive = std::chrono::steady_clock::now();
         while (!stop_token.stop_requested() && !libssh2_channel_eof(channel.get()))
@@ -658,7 +670,9 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             {
                 if (command.type == CommandType::Resize)
                 {
-                    libssh2_channel_request_pty_size(channel.get(), command.columns, command.rows);
+                    // Keep only the latest dimensions, but retry it if libssh2's
+                    // non-blocking state machine cannot send the request yet.
+                    pending_resize = std::pair(command.columns, command.rows);
                 }
                 else
                 {
@@ -666,11 +680,34 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
                 }
             }
 
+            if (pending_resize)
+            {
+                const auto resize_result = libssh2_channel_request_pty_size(
+                    channel.get(), pending_resize->first, pending_resize->second);
+                if (resize_result == 0)
+                {
+                    pending_resize.reset();
+                }
+                else if (resize_result == LIBSSH2_ERROR_EAGAIN)
+                {
+                    // libssh2 requires the same non-blocking operation to be
+                    // retried before starting another channel operation.
+                    WaitSocket(socket.value, session.get());
+                    continue;
+                }
+                else
+                {
+                    const auto resize_message = LastSessionError(session.get(), "调整 SSH 终端大小失败。");
+                    logW(resize_message.c_str());
+                    pending_resize.reset();
+                }
+            }
+
             while (pending_offset < pending_input.size())
             {
                 const auto written = libssh2_channel_write(channel.get(), pending_input.data() + pending_offset,
                                                            pending_input.size() - pending_offset);
-                if (written == LIBSSH2_ERROR_EAGAIN)
+                if (written == 0 || written == LIBSSH2_ERROR_EAGAIN)
                 {
                     break;
                 }
