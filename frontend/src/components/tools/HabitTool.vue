@@ -495,7 +495,7 @@ import {
   NSpin,
   useMessage,
 } from "naive-ui";
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   fetchHabitState,
   saveHabitState,
@@ -736,6 +736,10 @@ watch(statisticsHabits, (habits) => {
 });
 
 async function loadState() {
+  loaded = false;
+  window.clearTimeout(saveTimer);
+  saveTimer = undefined;
+  saveState.value = "";
   loading.value = true;
   loadError.value = "";
   try {
@@ -745,6 +749,10 @@ async function loadState() {
     state.logs = Array.isArray(remote.logs) ? remote.logs : [];
     state.settings = remote.settings ?? { weekStartsOn: 1 };
     selectedHabitId.value = activeHabits.value[0]?.id ?? state.habits[0]?.id ?? "";
+    // Deep watchers are queued until Vue's next update. Keep persistence
+    // suspended through that flush so data loaded from the server is not
+    // mistaken for a local edit and immediately written back unchanged.
+    await nextTick();
     loaded = true;
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : "未知错误";
@@ -1637,10 +1645,11 @@ function eachDate(start: Date, end: Date) {
 
 @media (max-width: 620px) {
   .habit-app { gap: 12px; }
-  .habit-intro { min-height: 0; padding: 18px; display: grid; gap: 18px; }
+  .habit-intro { min-height: 0; padding: 18px; display: grid; justify-content: stretch; gap: 18px; }
   .habit-intro h2 { font-size: 23px; }
   .habit-intro span { font-size: 13px; line-height: 1.6; }
-  .intro-actions { width: 100%; justify-content: space-between; }
+  .intro-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-content: stretch; }
+  .intro-actions small { align-self: center; }
   .intro-actions :deep(.n-button) { flex: 0 0 auto; }
   .habit-tabs { width: 100%; }
   .habit-tabs button { flex: 1; }
