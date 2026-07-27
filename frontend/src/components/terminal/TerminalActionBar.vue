@@ -1,6 +1,11 @@
 <template>
   <div class="terminal-action-bar">
-    <n-button v-if="search" secondary size="tiny" @click="$emit('search')">搜索</n-button>
+    <n-tooltip v-if="search" trigger="hover" placement="bottom">
+      <template #trigger>
+        <n-button secondary size="tiny" aria-label="搜索终端" @click="$emit('search')">搜索</n-button>
+      </template>
+      搜索终端 · Ctrl/⌘ + F
+    </n-tooltip>
     <n-button v-if="snippets" secondary size="tiny" @click="$emit('snippets')">片段</n-button>
     <n-button
       v-if="recordingEnabled"
@@ -15,7 +20,7 @@
 </template>
 
 <script setup lang="ts">
-import { NButton } from "naive-ui";
+import { NButton, NTooltip } from "naive-ui";
 import type { TerminalRenderer } from "./WebTerminal.types";
 import TerminalRendererBadge from "./TerminalRendererBadge.vue";
 

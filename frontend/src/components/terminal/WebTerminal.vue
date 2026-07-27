@@ -85,6 +85,7 @@ let resizeFrame = 0;
 let fitStabilizeFrame = 0;
 let appearanceFrame = 0;
 let touchCleanup: (() => void) | undefined;
+let focusBoundaryCleanup: (() => void) | undefined;
 let mobileCopyLabelTimer = 0;
 let searchWorker: Worker | undefined;
 let searchCountTimer = 0;
@@ -155,7 +156,7 @@ function writeln(data: string) {
 }
 
 function focus() {
-  terminal?.focus();
+  if (document.hasFocus()) terminal?.focus();
 }
 
 function disposeDecorations(items: IDisposable[]) {
@@ -705,6 +706,25 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
   };
 }
 
+function setupFocusBoundary(element: HTMLElement, instance: Terminal) {
+  const blurWhenPointerLeavesTerminal = (event: PointerEvent) => {
+    const target = event.target;
+    if (target instanceof Node && !element.contains(target)) instance.blur();
+  };
+  const blurWhenBrowserLosesFocus = () => instance.blur();
+  const blurWhenPageIsHidden = () => {
+    if (document.visibilityState !== "visible") instance.blur();
+  };
+  document.addEventListener("pointerdown", blurWhenPointerLeavesTerminal, true);
+  window.addEventListener("blur", blurWhenBrowserLosesFocus);
+  document.addEventListener("visibilitychange", blurWhenPageIsHidden);
+  focusBoundaryCleanup = () => {
+    document.removeEventListener("pointerdown", blurWhenPointerLeavesTerminal, true);
+    window.removeEventListener("blur", blurWhenBrowserLosesFocus);
+    document.removeEventListener("visibilitychange", blurWhenPageIsHidden);
+  };
+}
+
 onMounted(() => {
   const element = mountElement.value;
   if (!element) return;
@@ -808,13 +828,14 @@ onMounted(() => {
     if (currentSearchTerm) scheduleExactSearchCount(currentSearchTerm, 400);
   });
   setupTouchScrolling(element, terminal);
+  setupFocusBoundary(element, terminal);
   resizeObserver = new ResizeObserver(() => {
     window.cancelAnimationFrame(resizeFrame);
     resizeFrame = window.requestAnimationFrame(fit);
   });
   resizeObserver.observe(element);
   fit();
-  if (props.autofocus) terminal.focus();
+  if (props.autofocus && document.hasFocus()) terminal.focus();
   emit("ready", { terminal, element, handle: terminalHandle });
 });
 
@@ -829,6 +850,7 @@ onBeforeUnmount(() => {
   searchWorker = undefined;
   resizeObserver?.disconnect();
   touchCleanup?.();
+  focusBoundaryCleanup?.();
   webglAddon?.dispose();
   terminal?.dispose();
   terminal = undefined;

@@ -105,6 +105,31 @@ int main()
         Expect(hosts[0].value("lastUsedAt", "") == "2026-07-26T12:34:56.000Z", "SSH recent-use timestamp was not persisted");
         Expect(hosts[1].value("jumpHostId", "") == "jump-1", "jump host setting was not persisted");
 
+        const auto saved_snippet = store.SaveCommandSnippet({
+            {"id", "snippet-1"},
+            {"name", "Disk usage"},
+            {"command", "df -h"},
+            {"action", "insert"},
+            {"pinned", true},
+        });
+        Expect(saved_snippet.value("action", "") == "insert", "command snippet action was not saved");
+        Expect(!saved_snippet.contains("pinned"), "browser-only pinned state was stored in the shared library");
+        store.SaveCommandSnippet({
+            {"id", "snippet-1"},
+            {"name", "Disk usage updated"},
+            {"command", "df -h /"},
+            {"action", "run"},
+        });
+        const auto snippets = store.LoadCommandSnippets();
+        Expect(snippets.size() == 1, "saving a shared snippet created a duplicate");
+        Expect(snippets[0].value("name", "") == "Disk usage updated", "shared snippet was not updated by id");
+        Expect(store.DeleteCommandSnippet("snippet-1"), "shared snippet was not deleted");
+        Expect(store.LoadCommandSnippets().empty(), "deleted shared snippet was still returned");
+        Expect(!store.DeleteCommandSnippet("missing"), "deleting a missing shared snippet reported success");
+        ExpectThrows([&] {
+            store.SaveCommandSnippet({{"id", "invalid"}, {"name", ""}, {"command", "whoami"}});
+        }, "invalid shared snippet was accepted");
+
         ExpectThrows([&] {
             store.SaveSshHosts(nlohmann::json::array({{
                 {"id", "self"},

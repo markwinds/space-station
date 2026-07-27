@@ -666,6 +666,51 @@ nlohmann::json NormalizeHabitState(const nlohmann::json& input)
     }
     return state;
 }
+
+nlohmann::json NormalizeCommandSnippet(const nlohmann::json& input)
+{
+    if (!input.is_object())
+    {
+        return nullptr;
+    }
+    const auto id = JsonString(input, "id");
+    const auto name = JsonString(input, "name");
+    const auto command = JsonString(input, "command");
+    if (id.empty() || id.size() > 128 || name.empty() || name.size() > 120 || command.empty() || command.size() > 65536)
+    {
+        return nullptr;
+    }
+    return {
+        {"id", id},
+        {"name", name},
+        {"command", command},
+        {"action", JsonString(input, "action") == "insert" ? "insert" : "run"},
+    };
+}
+
+nlohmann::json NormalizeCommandSnippets(const nlohmann::json& input)
+{
+    auto result = nlohmann::json::array();
+    if (!input.is_array())
+    {
+        return result;
+    }
+    std::unordered_set<std::string> ids;
+    for (const auto& item : input)
+    {
+        auto snippet = NormalizeCommandSnippet(item);
+        if (!snippet.is_object())
+        {
+            continue;
+        }
+        const auto id = snippet["id"].get<std::string>();
+        if (ids.insert(id).second)
+        {
+            result.push_back(std::move(snippet));
+        }
+    }
+    return result;
+}
 } // namespace
 
 ConfigStore::ConfigStore() : ConfigStore(DefaultConfigPath())
@@ -819,6 +864,57 @@ void ConfigStore::SaveHabitState(const nlohmann::json& json)
 {
     std::lock_guard lock(mutex_);
     SaveBusinessJsonUnlocked("habitState", NormalizeHabitState(json));
+}
+
+nlohmann::json ConfigStore::LoadCommandSnippets()
+{
+    std::lock_guard lock(mutex_);
+    return NormalizeCommandSnippets(LoadBusinessJsonUnlocked("commandSnippets", nlohmann::json::array()));
+}
+
+nlohmann::json ConfigStore::SaveCommandSnippet(const nlohmann::json& json)
+{
+    auto snippet = NormalizeCommandSnippet(json);
+    if (!snippet.is_object())
+    {
+        throw std::runtime_error("片段必须包含有效的 id、名称和命令。");
+    }
+    std::lock_guard lock(mutex_);
+    auto snippets = NormalizeCommandSnippets(LoadBusinessJsonUnlocked("commandSnippets", nlohmann::json::array()));
+    const auto id = snippet["id"].get<std::string>();
+    const auto found = std::find_if(snippets.begin(), snippets.end(), [&id](const auto& item) {
+        return item.value("id", "") == id;
+    });
+    if (found == snippets.end())
+    {
+        snippets.push_back(snippet);
+    }
+    else
+    {
+        *found = snippet;
+    }
+    SaveBusinessJsonUnlocked("commandSnippets", snippets);
+    return snippet;
+}
+
+bool ConfigStore::DeleteCommandSnippet(const std::string& id)
+{
+    if (id.empty())
+    {
+        return false;
+    }
+    std::lock_guard lock(mutex_);
+    auto snippets = NormalizeCommandSnippets(LoadBusinessJsonUnlocked("commandSnippets", nlohmann::json::array()));
+    const auto original_size = snippets.size();
+    snippets.erase(std::remove_if(snippets.begin(), snippets.end(), [&id](const auto& item) {
+        return item.value("id", "") == id;
+    }), snippets.end());
+    if (snippets.size() == original_size)
+    {
+        return false;
+    }
+    SaveBusinessJsonUnlocked("commandSnippets", snippets);
+    return true;
 }
 
 nlohmann::json ConfigStore::LoadTransferConfig()

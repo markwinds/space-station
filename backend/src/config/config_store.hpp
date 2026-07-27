@@ -34,6 +34,9 @@ class ConfigStore
     void SaveTimeManagerState(const nlohmann::json& json);
     nlohmann::json LoadHabitState();
     void SaveHabitState(const nlohmann::json& json);
+    nlohmann::json LoadCommandSnippets();
+    nlohmann::json SaveCommandSnippet(const nlohmann::json& json);
+    bool DeleteCommandSnippet(const std::string& id);
     nlohmann::json LoadFileShares();
     void SaveFileShares(const nlohmann::json& json);
     nlohmann::json LoadSshHosts();

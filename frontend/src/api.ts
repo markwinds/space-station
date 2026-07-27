@@ -6,6 +6,13 @@ export interface HealthResponse {
   version: string;
 }
 
+export interface SharedCommandSnippet {
+  id: string;
+  name: string;
+  command: string;
+  action: "insert" | "run";
+}
+
 export interface AppConfig {
   dataPath: string;
   logLevel: "trace" | "debug" | "info" | "warn" | "error";
@@ -604,6 +611,20 @@ export async function fetchHabitState(): Promise<HabitState> {
 
 export async function saveHabitState(payload: HabitState): Promise<void> {
   await api.put("/tools/habits/state", payload);
+}
+
+export async function fetchSharedCommandSnippets(): Promise<SharedCommandSnippet[]> {
+  const { data } = await api.get<{ snippets: SharedCommandSnippet[] }>("/tools/terminal/snippets");
+  return data.snippets;
+}
+
+export async function saveSharedCommandSnippet(snippet: SharedCommandSnippet): Promise<SharedCommandSnippet> {
+  const { data } = await api.put<{ snippet: SharedCommandSnippet }>("/tools/terminal/snippets", snippet);
+  return data.snippet;
+}
+
+export async function deleteSharedCommandSnippet(id: string): Promise<void> {
+  await api.delete("/tools/terminal/snippets", { params: { id } });
 }
 
 export async function fetchFileShareState(): Promise<{ shares: FileShare[] }> {

@@ -861,6 +861,52 @@ void HttpServer::RegisterRoutes()
         {drogon::Put});
 
     drogon::app().registerHandler(
+        "/api/tools/terminal/snippets",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            auto response = JsonResponse({{"snippets", config_store_.LoadCommandSnippets()}});
+            response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+            callback(response);
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/snippets",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                callback(JsonResponse({{"ok", true}, {"snippet", config_store_.SaveCommandSnippet(body)}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/terminal/snippets",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            const auto id = req->getParameter("id");
+            if (id.empty())
+            {
+                callback(JsonResponse({{"ok", false}, {"message", "片段 id 不能为空。"}}, drogon::k400BadRequest));
+                return;
+            }
+            if (!config_store_.DeleteCommandSnippet(id))
+            {
+                callback(JsonResponse({{"ok", false}, {"message", "共享片段不存在。"}}, drogon::k404NotFound));
+                return;
+            }
+            callback(JsonResponse({{"ok", true}}));
+        },
+        {drogon::Delete});
+
+    drogon::app().registerHandler(
         "/api/tools/transfer/state",
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             callback(JsonResponse(transfer_manager_.State()));

@@ -172,10 +172,8 @@
             :show-quick="showQuickSnippets"
             :show-composer="terminalSettings.showCommandComposer"
             :snippets="pinnedSnippets"
-            hide-label="隐藏发送框"
-            show-label="显示发送框"
+            label="发送框"
             @toggle-quick="showQuickSnippets = !showQuickSnippets"
-            @manage-snippets="showSnippets = true"
             @toggle-composer="toggleCommandComposer"
             @use-snippet="useSnippet(view, $event)"
           >
@@ -197,45 +195,72 @@
     </main>
 
     <n-modal v-model:show="showSnippets" preset="card" title="命令片段" :style="dialogStyle">
-      <div class="serial-snippet-editor">
-        <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查询版本" />
-        <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="要发送的文本或 HEX" />
-        <n-select v-model:value="snippetDraft.action" :options="snippetActionOptions" />
-        <n-checkbox v-model:checked="snippetDraft.pinned">显示为快捷按钮</n-checkbox>
-        <n-button type="primary" @click="saveSnippet">{{ editingSnippetId ? '保存修改' : '添加片段' }}</n-button>
-      </div>
-      <div class="serial-snippet-list">
-        <p v-if="snippets.length" class="serial-snippet-order-hint">SSH 与串口共用此列表；左键拖动手柄调整顺序。</p>
-        <div
-          v-for="snippet in snippets"
-          :key="snippet.id"
-          class="serial-snippet-row"
-          :class="{
-            'serial-snippet-row--dragging': draggedSnippetId === snippet.id,
-            'serial-snippet-row--drop-before': snippetDropTargetId === snippet.id && snippetDropPosition === 'before',
-            'serial-snippet-row--drop-after': snippetDropTargetId === snippet.id && snippetDropPosition === 'after',
-          }"
-          @dragover.prevent="updateSnippetDropTarget($event, snippet.id)"
-          @drop.prevent="dropSnippet(snippet.id)"
-        >
-          <button
-            class="serial-snippet-drag-handle"
-            type="button"
-            draggable="true"
-            aria-label="拖动调整片段顺序"
-            title="左键按住拖动排序"
-            @dragstart="startSnippetDrag($event, snippet.id)"
-            @dragend="finishSnippetDrag"
-          >⠿</button>
-          <button class="serial-snippet-content" type="button" @click="activeView && useSnippet(activeView, snippet)">
-            <span class="serial-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '发送' }}</small></span>
-            <code>{{ snippet.command }}</code>
-          </button>
-          <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
-          <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
-        </div>
-        <p v-if="snippets.length === 0" class="serial-hint">还没有命令片段。</p>
-      </div>
+      <n-tabs v-model:value="snippetLibraryTab" type="line" animated>
+        <n-tab-pane name="local" tab="本地片段">
+          <div class="serial-snippet-editor">
+            <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查询版本" />
+            <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="要发送的文本或 HEX" />
+            <n-select v-model:value="snippetDraft.action" :options="snippetActionOptions" />
+            <n-checkbox v-model:checked="snippetDraft.pinned">显示为快捷按钮</n-checkbox>
+            <n-button type="primary" @click="saveSnippet">{{ editingSnippetId ? '保存修改' : '添加片段' }}</n-button>
+          </div>
+          <div class="serial-snippet-list">
+            <p v-if="snippets.length" class="serial-snippet-order-hint">SSH 与串口共用此本地列表；拖动左侧手柄调整顺序。</p>
+            <div
+              v-for="snippet in snippets"
+              :key="snippet.id"
+              class="serial-snippet-row"
+              :data-snippet-id="snippet.id"
+              :class="{
+                'serial-snippet-row--dragging': draggedSnippetId === snippet.id,
+                'serial-snippet-row--drop-before': snippetDropTargetId === snippet.id && snippetDropPosition === 'before',
+                'serial-snippet-row--drop-after': snippetDropTargetId === snippet.id && snippetDropPosition === 'after',
+              }"
+            >
+              <button
+                class="serial-snippet-drag-handle"
+                type="button"
+                aria-label="拖动调整片段顺序"
+                title="按住拖动排序"
+                @pointerdown="startSnippetPointerDrag($event, snippet.id)"
+                @pointermove="updateSnippetPointerDrag"
+                @pointerup="dropSnippetPointerDrag"
+                @pointercancel="cancelSnippetPointerDrag"
+              >⠿</button>
+              <button class="serial-snippet-content" type="button" @click="activeView && useSnippet(activeView, snippet)">
+                <span class="serial-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '发送' }}</small></span>
+                <code>{{ snippet.command }}</code>
+              </button>
+              <n-button text type="primary" :disabled="sharedActionId === snippet.id || localShareStatus(snippet) === '已共享'" @click="storeSnippetInLibrary(snippet)">{{ localShareStatus(snippet) }}</n-button>
+              <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
+              <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
+            </div>
+            <p v-if="snippets.length === 0" class="serial-hint">还没有本地片段，可新建或从共享库添加。</p>
+          </div>
+        </n-tab-pane>
+        <n-tab-pane name="shared" tab="共享片段库">
+          <div class="serial-shared-snippet-heading">
+            <p>共享库保存在服务器；按需把单条片段添加到当前浏览器。</p>
+            <n-button size="tiny" secondary :loading="libraryLoading" @click="loadSharedSnippetLibrary(true)">刷新</n-button>
+          </div>
+          <n-alert type="warning" :show-icon="false">共享片段对能访问本服务的客户端可见，请勿保存口令、令牌等秘密。</n-alert>
+          <div class="serial-snippet-list serial-shared-snippet-list">
+            <div v-for="snippet in librarySnippets" :key="snippet.id" class="serial-snippet-row">
+              <div class="serial-snippet-content">
+                <span class="serial-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '发送' }}</small></span>
+                <code>{{ snippet.command }}</code>
+              </div>
+              <n-button text type="primary" :disabled="sharedActionId === snippet.id || sharedImportStatus(snippet) === '已在本地'" @click="addSharedSnippetToLocal(snippet)">{{ sharedImportStatus(snippet) }}</n-button>
+              <n-popconfirm @positive-click="deleteSnippetFromLibrary(snippet.id)">
+                <template #trigger><n-button text type="error" :disabled="sharedActionId === snippet.id">删除</n-button></template>
+                只会从共享库删除，不影响各浏览器已有的本地片段。确认删除吗？
+              </n-popconfirm>
+            </div>
+            <p v-if="libraryLoading && librarySnippets.length === 0" class="serial-hint">正在读取共享片段…</p>
+            <p v-else-if="librarySnippets.length === 0" class="serial-hint">共享库还没有片段。</p>
+          </div>
+        </n-tab-pane>
+      </n-tabs>
     </n-modal>
 
     <n-modal v-model:show="showRecordingOptions" preset="card" title="开始串口录制" :style="dialogStyle">
@@ -270,9 +295,9 @@
 </template>
 
 <script setup lang="ts">
-import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NInput, NInputNumber, NModal, NSelect, useMessage } from "naive-ui";
+import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NTabPane, NTabs, useMessage } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { fetchBackendSerialPorts, fetchBrowserSerialShares, type BackendSerialPort, type BrowserSerialShare } from "@/api";
+import { fetchBackendSerialPorts, fetchBrowserSerialShares, type BackendSerialPort, type BrowserSerialShare, type SharedCommandSnippet } from "@/api";
 import WebTerminal from "../terminal/WebTerminal.vue";
 import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
@@ -285,8 +310,9 @@ import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 import {
   persistCommandSnippets,
-  reorderCommandSnippet,
   useCommandSnippets,
+  useCommandSnippetReorder,
+  useSharedCommandSnippetLibrary,
   type CommandSnippet,
   type SnippetAction,
 } from "@/utils/commandSnippets";
@@ -404,9 +430,24 @@ const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; 
   action: "insert",
 });
 const editingSnippetId = ref("");
-const draggedSnippetId = ref("");
-const snippetDropTargetId = ref("");
-const snippetDropPosition = ref<"before" | "after">("before");
+const {
+  draggedSnippetId,
+  snippetDropTargetId,
+  snippetDropPosition,
+  startSnippetPointerDrag,
+  updateSnippetPointerDrag,
+  dropSnippetPointerDrag,
+  cancelSnippetPointerDrag,
+} = useCommandSnippetReorder(snippets, ".serial-snippet-row");
+const snippetLibraryTab = ref<"local" | "shared">("local");
+const sharedActionId = ref("");
+const {
+  librarySnippets,
+  libraryLoading,
+  refreshSharedSnippets,
+  storeSharedSnippet,
+  removeSharedSnippet,
+} = useSharedCommandSnippetLibrary();
 const showQuickSnippets = ref(localStorage.getItem("serial-show-quick-snippets") !== "false");
 const showRecordingOptions = ref(false);
 const recordingTargetId = ref("");
@@ -949,6 +990,7 @@ function handleTerminalReady(view: SerialView, event: WebTerminalReadyEvent) {
   const session = sessions.get(view.sessionKey);
   if (!session) return;
   view.terminalView = event.handle;
+  event.terminal.attachCustomKeyEventHandler((keyboardEvent) => keyboardEvent.key !== "F12");
   view.clipboardCleanup?.();
   view.clipboardCleanup = attachTerminalClipboard(event.terminal, event.element, {
     copyOnSelect: () => terminalSettings.copyOnSelect,
@@ -1200,31 +1242,71 @@ function toggleCommandComposer() {
 
 function persistSnippets() { persistCommandSnippets(snippets.value); }
 
-function startSnippetDrag(event: DragEvent, id: string) {
-  draggedSnippetId.value = id;
-  event.dataTransfer?.setData("text/plain", id);
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+function snippetContentsMatch(left: Pick<CommandSnippet, "name" | "command" | "action">, right: Pick<CommandSnippet, "name" | "command" | "action">) {
+  return left.name === right.name && left.command === right.command && left.action === right.action;
 }
 
-function updateSnippetDropTarget(event: DragEvent, id: string) {
-  if (!draggedSnippetId.value || draggedSnippetId.value === id) {
-    snippetDropTargetId.value = "";
-    return;
+function localShareStatus(snippet: CommandSnippet) {
+  const shared = librarySnippets.value.find((item) => item.id === snippet.id);
+  if (!shared) return "存入共享";
+  return snippetContentsMatch(snippet, shared) ? "已共享" : "更新共享";
+}
+
+function sharedImportStatus(snippet: SharedCommandSnippet) {
+  const local = snippets.value.find((item) => item.id === snippet.id)
+    ?? snippets.value.find((item) => snippetContentsMatch(item, snippet));
+  if (!local) return "添加到本地";
+  return snippetContentsMatch(local, snippet) ? "已在本地" : "更新本地";
+}
+
+async function loadSharedSnippetLibrary(force = false) {
+  try {
+    await refreshSharedSnippets(force);
+  } catch (error) {
+    message.error(`共享片段读取失败：${errorMessage(error)}`);
   }
-  const row = event.currentTarget as HTMLElement;
-  snippetDropTargetId.value = id;
-  snippetDropPosition.value = event.clientY >= row.getBoundingClientRect().top + row.offsetHeight / 2 ? "after" : "before";
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
 }
 
-function dropSnippet(targetId: string) {
-  if (reorderCommandSnippet(snippets.value, draggedSnippetId.value, targetId, snippetDropPosition.value === "after")) persistSnippets();
-  finishSnippetDrag();
+async function storeSnippetInLibrary(snippet: CommandSnippet) {
+  const duplicate = librarySnippets.value.find((item) => item.id !== snippet.id && snippetContentsMatch(item, snippet));
+  if (duplicate) return message.info(`共享库已有相同片段“${duplicate.name}”`);
+  const updating = librarySnippets.value.some((item) => item.id === snippet.id);
+  sharedActionId.value = snippet.id;
+  try {
+    await storeSharedSnippet(snippet);
+    message.success(updating ? "共享片段已更新" : "片段已存入共享库");
+  } catch (error) {
+    message.error(`共享片段保存失败：${errorMessage(error)}`);
+  } finally {
+    sharedActionId.value = "";
+  }
 }
 
-function finishSnippetDrag() {
-  draggedSnippetId.value = "";
-  snippetDropTargetId.value = "";
+function addSharedSnippetToLocal(snippet: SharedCommandSnippet) {
+  const localIndex = snippets.value.findIndex((item) => item.id === snippet.id);
+  if (localIndex >= 0) {
+    const local = snippets.value[localIndex];
+    snippets.value[localIndex] = { ...snippet, pinned: local.pinned !== false };
+    message.success("本地片段已更新");
+  } else {
+    const duplicate = snippets.value.find((item) => snippetContentsMatch(item, snippet));
+    if (duplicate) return message.info(`本地已有相同片段“${duplicate.name}”`);
+    snippets.value.push({ ...snippet, pinned: true });
+    message.success("已添加到本地片段");
+  }
+  persistSnippets();
+}
+
+async function deleteSnippetFromLibrary(id: string) {
+  sharedActionId.value = id;
+  try {
+    await removeSharedSnippet(id);
+    message.success("已从共享库删除；本地片段不受影响");
+  } catch (error) {
+    message.error(`共享片段删除失败：${errorMessage(error)}`);
+  } finally {
+    sharedActionId.value = "";
+  }
 }
 
 function resetSnippetDraft() {
@@ -1369,6 +1451,9 @@ watch(source, (value) => {
   else void refreshBrowserPorts();
 });
 watch(showQuickSnippets, (value) => localStorage.setItem("serial-show-quick-snippets", String(value)));
+watch(showSnippets, (visible) => {
+  if (visible) void loadSharedSnippetLibrary(true);
+});
 watch([searchQuery, searchCaseSensitive, searchWholeWord, searchRegex], ([value]) => {
   if (!showSearch.value) return;
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
@@ -1475,12 +1560,16 @@ onBeforeUnmount(() => {
 .serial-snippet-editor > :last-child { grid-column: 2; }
 .serial-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
 .serial-snippet-order-hint { margin: 0 0 2px; color: #71808b; font-size: 12px; }
+.serial-shared-snippet-heading { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.serial-shared-snippet-heading p { margin: 0; color: #687783; font-size: 12px; line-height: 1.5; }
+.serial-shared-snippet-list { max-height: 390px; }
 .serial-snippet-row { position: relative; padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #dce3e7; border-radius: 7px; }
 .serial-snippet-row--dragging { opacity: .45; }
 .serial-snippet-row--drop-before::before, .serial-snippet-row--drop-after::after { position: absolute; right: 4px; left: 4px; height: 2px; border-radius: 2px; background: #18a058; content: ""; }
 .serial-snippet-row--drop-before::before { top: -5px; }
 .serial-snippet-row--drop-after::after { bottom: -5px; }
-.serial-snippet-drag-handle { flex: 0 0 auto; width: 24px; padding: 2px; border: 0; background: transparent; color: #82909a; font-size: 20px; line-height: 1; cursor: grab; }
+.serial-snippet-drag-handle { flex: 0 0 auto; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #82909a; font-size: 22px; line-height: 1; cursor: grab; touch-action: none; user-select: none; }
+.serial-snippet-drag-handle:hover { background: #f0f3f5; color: #53636e; }
 .serial-snippet-drag-handle:active { cursor: grabbing; }
 .serial-snippet-content { min-width: 0; flex: 1; display: grid; gap: 3px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .serial-snippet-title { display: flex; align-items: center; gap: 7px; }
@@ -1507,7 +1596,20 @@ onBeforeUnmount(() => {
   .serial-app--session-open .serial-sidebar { display: none; }
   .serial-workspace { display: none; }
   .serial-app--session-open .serial-workspace { display: flex; }
-  .serial-mobile-menu { display: inline-flex; }
+  .serial-mobile-menu {
+    display: inline-flex;
+    min-height: 34px;
+    border: 1px solid #647985 !important;
+    background: #30434e !important;
+    color: #f4f9fb !important;
+    font-weight: 700;
+  }
+  .serial-mobile-menu:hover, .serial-mobile-menu:active {
+    border-color: #9bc7c4 !important;
+    background: #9bc7c4 !important;
+    color: #102027 !important;
+  }
+  .serial-mobile-menu:focus-visible { outline: 2px solid #b9d9d7; outline-offset: 1px; }
   .serial-tabs { padding-top: env(safe-area-inset-top); min-height: calc(46px + env(safe-area-inset-top)); }
   .serial-tab-list .serial-tab:not(.active) { display: none; }
   .serial-tab-list .serial-tab.active { min-width: 0; max-width: none; flex: 1; }
@@ -1531,6 +1633,9 @@ onBeforeUnmount(() => {
   .serial-line-ending { flex: 1; }
   .serial-command-toolbar { flex-wrap: wrap; }
   .serial-quick-snippets { order: 3; flex-basis: 100%; }
+  .serial-snippet-row { align-items: flex-start; flex-wrap: wrap; }
+  .serial-snippet-row > .serial-snippet-content { flex-basis: calc(100% - 50px); }
+  .serial-shared-snippet-list .serial-snippet-content { flex-basis: 100%; }
   .serial-settings-grid { grid-template-columns: 1fr; }
 }
 </style>

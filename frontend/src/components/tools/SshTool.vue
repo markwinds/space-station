@@ -218,7 +218,6 @@
           :show-composer="terminalSettings.showCommandComposer"
           :snippets="pinnedSnippets"
           @toggle-quick="toggleQuickSnippets"
-          @manage-snippets="openSnippets"
           @toggle-composer="toggleCommandComposer"
           @use-snippet="useSnippet(tab, $event, false)"
         >
@@ -237,7 +236,7 @@
               :disabled="tab.commandHistory.length === 0"
               @select="selectCommandHistory(tab, $event)"
             >
-              <n-button secondary :disabled="tab.commandHistory.length === 0">历史</n-button>
+              <n-button class="ssh-history-button" secondary :disabled="tab.commandHistory.length === 0">历史</n-button>
             </n-dropdown>
             <n-button type="primary" :disabled="!tab.commandDraft.trim()" @click="sendCommand(tab)">发送</n-button>
           </div></template>
@@ -345,48 +344,75 @@
     </n-modal>
 
     <n-modal v-model:show="showSnippets" preset="card" title="命令片段" class="ssh-dialog" :style="dialogStyle">
-      <div class="ssh-snippet-editor">
-        <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查看磁盘" />
-        <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="df -h" />
-        <n-select v-model:value="snippetDraft.action" :options="snippetActionOptions" />
-        <n-checkbox v-model:checked="snippetDraft.pinned">显示为终端快捷按钮</n-checkbox>
-        <div class="ssh-snippet-editor-actions">
-          <n-button v-if="editingSnippetId" @click="cancelSnippetEdit">取消编辑</n-button>
-          <n-button type="primary" @click="saveSnippet">{{ editingSnippetId ? '保存修改' : '添加片段' }}</n-button>
-        </div>
-      </div>
-      <div class="ssh-snippet-list">
-        <p v-if="snippets.length" class="ssh-snippet-order-hint">SSH 与串口共用此列表；左键拖动手柄调整顺序。</p>
-        <div
-          v-for="snippet in snippets"
-          :key="snippet.id"
-          class="ssh-snippet-row"
-          :class="{
-            'ssh-snippet-row--dragging': draggedSnippetId === snippet.id,
-            'ssh-snippet-row--drop-before': snippetDropTargetId === snippet.id && snippetDropPosition === 'before',
-            'ssh-snippet-row--drop-after': snippetDropTargetId === snippet.id && snippetDropPosition === 'after',
-          }"
-          @dragover.prevent="updateSnippetDropTarget($event, snippet.id)"
-          @drop.prevent="dropSnippet(snippet.id)"
-        >
-          <button
-            class="ssh-snippet-drag-handle"
-            type="button"
-            draggable="true"
-            aria-label="拖动调整片段顺序"
-            title="左键按住拖动排序"
-            @dragstart="startSnippetDrag($event, snippet.id)"
-            @dragend="finishSnippetDrag"
-          >⠿</button>
-          <button class="ssh-snippet-content" type="button" @click="activeTab && useSnippet(activeTab, snippet)">
-            <span class="ssh-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '执行' }}</small></span>
-            <code>{{ snippet.command }}</code>
-          </button>
-          <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
-          <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
-        </div>
-        <p v-if="snippets.length === 0" class="ssh-field-hint">还没有命令片段。</p>
-      </div>
+      <n-tabs v-model:value="snippetLibraryTab" type="line" animated>
+        <n-tab-pane name="local" tab="本地片段">
+          <div class="ssh-snippet-editor">
+            <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查看磁盘" />
+            <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="df -h" />
+            <n-select v-model:value="snippetDraft.action" :options="snippetActionOptions" />
+            <n-checkbox v-model:checked="snippetDraft.pinned">显示为终端快捷按钮</n-checkbox>
+            <div class="ssh-snippet-editor-actions">
+              <n-button v-if="editingSnippetId" @click="cancelSnippetEdit">取消编辑</n-button>
+              <n-button type="primary" @click="saveSnippet">{{ editingSnippetId ? '保存修改' : '添加片段' }}</n-button>
+            </div>
+          </div>
+          <div class="ssh-snippet-list">
+            <p v-if="snippets.length" class="ssh-snippet-order-hint">SSH 与串口共用此本地列表；拖动左侧手柄调整顺序。</p>
+            <div
+              v-for="snippet in snippets"
+              :key="snippet.id"
+              class="ssh-snippet-row"
+              :data-snippet-id="snippet.id"
+              :class="{
+                'ssh-snippet-row--dragging': draggedSnippetId === snippet.id,
+                'ssh-snippet-row--drop-before': snippetDropTargetId === snippet.id && snippetDropPosition === 'before',
+                'ssh-snippet-row--drop-after': snippetDropTargetId === snippet.id && snippetDropPosition === 'after',
+              }"
+            >
+              <button
+                class="ssh-snippet-drag-handle"
+                type="button"
+                aria-label="拖动调整片段顺序"
+                title="按住拖动排序"
+                @pointerdown="startSnippetPointerDrag($event, snippet.id)"
+                @pointermove="updateSnippetPointerDrag"
+                @pointerup="dropSnippetPointerDrag"
+                @pointercancel="cancelSnippetPointerDrag"
+              >⠿</button>
+              <button class="ssh-snippet-content" type="button" @click="activeTab && useSnippet(activeTab, snippet)">
+                <span class="ssh-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '执行' }}</small></span>
+                <code>{{ snippet.command }}</code>
+              </button>
+              <n-button text type="primary" :disabled="sharedActionId === snippet.id || localShareStatus(snippet) === '已共享'" @click="storeSnippetInLibrary(snippet)">{{ localShareStatus(snippet) }}</n-button>
+              <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
+              <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
+            </div>
+            <p v-if="snippets.length === 0" class="ssh-field-hint">还没有本地片段，可新建或从共享库添加。</p>
+          </div>
+        </n-tab-pane>
+        <n-tab-pane name="shared" tab="共享片段库">
+          <div class="ssh-shared-snippet-heading">
+            <p>共享库保存在服务器；按需把单条片段添加到当前浏览器。</p>
+            <n-button size="tiny" secondary :loading="libraryLoading" @click="loadSharedSnippetLibrary(true)">刷新</n-button>
+          </div>
+          <n-alert type="warning" :show-icon="false">共享片段对能访问本服务的客户端可见，请勿保存口令、令牌等秘密。</n-alert>
+          <div class="ssh-snippet-list ssh-shared-snippet-list">
+            <div v-for="snippet in librarySnippets" :key="snippet.id" class="ssh-snippet-row">
+              <div class="ssh-snippet-content">
+                <span class="ssh-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '执行' }}</small></span>
+                <code>{{ snippet.command }}</code>
+              </div>
+              <n-button text type="primary" :disabled="sharedActionId === snippet.id || sharedImportStatus(snippet) === '已在本地'" @click="addSharedSnippetToLocal(snippet)">{{ sharedImportStatus(snippet) }}</n-button>
+              <n-popconfirm @positive-click="deleteSnippetFromLibrary(snippet.id)">
+                <template #trigger><n-button text type="error" :disabled="sharedActionId === snippet.id">删除</n-button></template>
+                只会从共享库删除，不影响各浏览器已有的本地片段。确认删除吗？
+              </n-popconfirm>
+            </div>
+            <p v-if="libraryLoading && librarySnippets.length === 0" class="ssh-field-hint">正在读取共享片段…</p>
+            <p v-else-if="librarySnippets.length === 0" class="ssh-field-hint">共享库还没有片段。</p>
+          </div>
+        </n-tab-pane>
+      </n-tabs>
     </n-modal>
 
     <n-modal v-model:show="showPortForwards" preset="card" title="本地端口转发" class="ssh-dialog" :style="dialogStyle">
@@ -480,6 +506,7 @@ import {
   NInput,
   NInputNumber,
   NModal,
+  NPopconfirm,
   NScrollbar,
   NSelect,
   NTabPane,
@@ -492,8 +519,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { writeClipboard } from "@/utils/clipboard";
 import {
   persistCommandSnippets,
-  reorderCommandSnippet,
   useCommandSnippets,
+  useCommandSnippetReorder,
+  useSharedCommandSnippetLibrary,
   type CommandSnippet,
   type SnippetAction,
 } from "@/utils/commandSnippets";
@@ -504,6 +532,7 @@ import {
   saveSshHosts,
   startSshPortForward,
   stopSshPortForward,
+  type SharedCommandSnippet,
   type SshHost,
   type SshPortForward,
 } from "@/api";
@@ -632,9 +661,24 @@ const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; 
   action: "insert",
 });
 const editingSnippetId = ref("");
-const draggedSnippetId = ref("");
-const snippetDropTargetId = ref("");
-const snippetDropPosition = ref<"before" | "after">("before");
+const {
+  draggedSnippetId,
+  snippetDropTargetId,
+  snippetDropPosition,
+  startSnippetPointerDrag,
+  updateSnippetPointerDrag,
+  dropSnippetPointerDrag,
+  cancelSnippetPointerDrag,
+} = useCommandSnippetReorder(snippets, ".ssh-snippet-row");
+const snippetLibraryTab = ref<"local" | "shared">("local");
+const sharedActionId = ref("");
+const {
+  librarySnippets,
+  libraryLoading,
+  refreshSharedSnippets,
+  storeSharedSnippet,
+  removeSharedSnippet,
+} = useSharedCommandSnippetLibrary();
 const showQuickSnippets = ref(localStorage.getItem("ssh-show-quick-snippets") !== "false");
 const configurationInput = ref<HTMLInputElement | null>(null);
 const showPortForwards = ref(false);
@@ -763,6 +807,10 @@ watch([searchQuery, searchCaseSensitive, searchWholeWord, searchRegex], ([value]
     return;
   }
   searchInputTimer = window.setTimeout(() => searchTerminal(false, true), 200);
+});
+
+watch(showSnippets, (visible) => {
+  if (visible) void loadSharedSnippetLibrary(true);
 });
 
 onMounted(() => {
@@ -1115,6 +1163,9 @@ function handleTerminalReady(tab: TerminalTab, event: WebTerminalReadyEvent) {
   tab.terminal = terminal;
   tab.terminalView = event.handle;
   terminal.attachCustomKeyEventHandler((event) => {
+    // F12 belongs to the browser (Chrome DevTools). Returning false prevents
+    // xterm from translating it to ESC[24~ without canceling Chrome's default.
+    if (event.key === "F12") return false;
     if (event.type !== "keydown" || (!event.ctrlKey && !event.metaKey)) return true;
     const key = event.key.toLowerCase();
     if (key === "f") {
@@ -1731,31 +1782,71 @@ function persistSnippets() {
   persistCommandSnippets(snippets.value);
 }
 
-function startSnippetDrag(event: DragEvent, id: string) {
-  draggedSnippetId.value = id;
-  event.dataTransfer?.setData("text/plain", id);
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+function snippetContentsMatch(left: Pick<CommandSnippet, "name" | "command" | "action">, right: Pick<CommandSnippet, "name" | "command" | "action">) {
+  return left.name === right.name && left.command === right.command && left.action === right.action;
 }
 
-function updateSnippetDropTarget(event: DragEvent, id: string) {
-  if (!draggedSnippetId.value || draggedSnippetId.value === id) {
-    snippetDropTargetId.value = "";
-    return;
+function localShareStatus(snippet: CommandSnippet) {
+  const shared = librarySnippets.value.find((item) => item.id === snippet.id);
+  if (!shared) return "存入共享";
+  return snippetContentsMatch(snippet, shared) ? "已共享" : "更新共享";
+}
+
+function sharedImportStatus(snippet: SharedCommandSnippet) {
+  const local = snippets.value.find((item) => item.id === snippet.id)
+    ?? snippets.value.find((item) => snippetContentsMatch(item, snippet));
+  if (!local) return "添加到本地";
+  return snippetContentsMatch(local, snippet) ? "已在本地" : "更新本地";
+}
+
+async function loadSharedSnippetLibrary(force = false) {
+  try {
+    await refreshSharedSnippets(force);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : "共享片段读取失败");
   }
-  const row = event.currentTarget as HTMLElement;
-  snippetDropTargetId.value = id;
-  snippetDropPosition.value = event.clientY >= row.getBoundingClientRect().top + row.offsetHeight / 2 ? "after" : "before";
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
 }
 
-function dropSnippet(targetId: string) {
-  if (reorderCommandSnippet(snippets.value, draggedSnippetId.value, targetId, snippetDropPosition.value === "after")) persistSnippets();
-  finishSnippetDrag();
+async function storeSnippetInLibrary(snippet: CommandSnippet) {
+  const duplicate = librarySnippets.value.find((item) => item.id !== snippet.id && snippetContentsMatch(item, snippet));
+  if (duplicate) return message.info(`共享库已有相同片段“${duplicate.name}”`);
+  const updating = librarySnippets.value.some((item) => item.id === snippet.id);
+  sharedActionId.value = snippet.id;
+  try {
+    await storeSharedSnippet(snippet);
+    message.success(updating ? "共享片段已更新" : "片段已存入共享库");
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : "共享片段保存失败");
+  } finally {
+    sharedActionId.value = "";
+  }
 }
 
-function finishSnippetDrag() {
-  draggedSnippetId.value = "";
-  snippetDropTargetId.value = "";
+function addSharedSnippetToLocal(snippet: SharedCommandSnippet) {
+  const localIndex = snippets.value.findIndex((item) => item.id === snippet.id);
+  if (localIndex >= 0) {
+    const local = snippets.value[localIndex];
+    snippets.value[localIndex] = { ...snippet, pinned: local.pinned !== false };
+    message.success("本地片段已更新");
+  } else {
+    const duplicate = snippets.value.find((item) => snippetContentsMatch(item, snippet));
+    if (duplicate) return message.info(`本地已有相同片段“${duplicate.name}”`);
+    snippets.value.push({ ...snippet, pinned: true });
+    message.success("已添加到本地片段");
+  }
+  persistSnippets();
+}
+
+async function deleteSnippetFromLibrary(id: string) {
+  sharedActionId.value = id;
+  try {
+    await removeSharedSnippet(id);
+    message.success("已从共享库删除；本地片段不受影响");
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : "共享片段删除失败");
+  } finally {
+    sharedActionId.value = "";
+  }
 }
 
 function saveSnippet() {
@@ -2071,17 +2162,24 @@ function disposeTab(tab: TerminalTab) {
 .ssh-quick-snippets > span { align-self: center; color: #71808b; font-size: 12px; }
 .ssh-command-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: stretch; gap: 8px; }
 .ssh-command-editor :deep(textarea) { font-family: "SFMono-Regular", Consolas, monospace; }
+.ssh-command-editor :deep(.ssh-history-button) { min-width: 62px; color: #e1e9ed; background: #2c3941; border-color: #596b76; }
+.ssh-command-editor :deep(.ssh-history-button:hover) { color: #fff; background: #3a4b55; border-color: #78909d; }
+.ssh-command-editor :deep(.ssh-history-button.n-button--disabled) { color: #84939c; background: #242f36; border-color: #3d4c55; opacity: 1; }
 .ssh-snippet-editor { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
 .ssh-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
 .ssh-snippet-editor-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
 .ssh-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
 .ssh-snippet-order-hint { margin: 0 0 2px; color: #71808b; font-size: 12px; }
+.ssh-shared-snippet-heading { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ssh-shared-snippet-heading p { margin: 0; color: #687783; font-size: 12px; line-height: 1.5; }
+.ssh-shared-snippet-list { max-height: 390px; }
 .ssh-snippet-row { position: relative; padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #e3e7ea; border-radius: 6px; }
 .ssh-snippet-row--dragging { opacity: .45; }
 .ssh-snippet-row--drop-before::before, .ssh-snippet-row--drop-after::after { position: absolute; right: 4px; left: 4px; height: 2px; border-radius: 2px; background: #18a058; content: ""; }
 .ssh-snippet-row--drop-before::before { top: -5px; }
 .ssh-snippet-row--drop-after::after { bottom: -5px; }
-.ssh-snippet-drag-handle { flex: 0 0 auto; width: 24px; padding: 2px; border: 0; background: transparent; color: #82909a; font-size: 20px; line-height: 1; cursor: grab; }
+.ssh-snippet-drag-handle { flex: 0 0 auto; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #82909a; font-size: 22px; line-height: 1; cursor: grab; touch-action: none; user-select: none; }
+.ssh-snippet-drag-handle:hover { background: #f0f3f5; color: #53636e; }
 .ssh-snippet-drag-handle:active { cursor: grabbing; }
 .ssh-snippet-content { min-width: 0; flex: 1; display: grid; gap: 4px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .ssh-snippet-title { display: flex; align-items: center; gap: 7px; }
@@ -2131,7 +2229,22 @@ function disposeTab(tab: TerminalTab) {
   .ssh-tab-list .ssh-tab:not(.active) { display: none; }
   .ssh-tab-list .ssh-tab.active { min-width: 0; max-width: none; flex: 1; }
   .ssh-tab-actions { max-width: none; padding-right: max(4px, env(safe-area-inset-right, 0px)); box-shadow: none; }
-  .ssh-mobile-hosts { display: inline-flex; flex: 0 0 auto; margin: 4px; }
+  .ssh-mobile-hosts {
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-height: 34px;
+    margin: 4px;
+    border: 1px solid #647985 !important;
+    background: #30434e !important;
+    color: #f4f9fb !important;
+    font-weight: 700;
+  }
+  .ssh-mobile-hosts:hover, .ssh-mobile-hosts:active {
+    border-color: #9bc7c4 !important;
+    background: #9bc7c4 !important;
+    color: #102027 !important;
+  }
+  .ssh-mobile-hosts:focus-visible { outline: 2px solid #b9d9d7; outline-offset: 1px; }
   .ssh-mobile-more { display: inline-flex; }
   .ssh-desktop-action { display: none !important; }
   .ssh-status-text { display: none; }
@@ -2154,6 +2267,9 @@ function disposeTab(tab: TerminalTab) {
   .ssh-command-toolbar { flex-wrap: wrap; }
   .ssh-quick-snippets { order: 3; flex-basis: 100%; }
   .ssh-command-editor { grid-template-columns: minmax(0, 1fr) auto 64px; gap: 6px; }
+  .ssh-snippet-row { align-items: flex-start; flex-wrap: wrap; }
+  .ssh-snippet-row > .ssh-snippet-content { flex-basis: calc(100% - 50px); }
+  .ssh-shared-snippet-list .ssh-snippet-content { flex-basis: 100%; }
   :global(.ssh-dialog) {
     --ssh-dialog-width: 100vw;
     max-width: 100vw;

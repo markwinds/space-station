@@ -10,7 +10,7 @@
         @click="$emit('toggleComposer')"
       >
         <span class="terminal-command-toggle__mark">&gt;_</span>
-        {{ showComposer ? hideLabel : showLabel }}
+        {{ label }}
       </n-button>
       <n-button
         class="terminal-command-toggle"
@@ -35,7 +35,6 @@
         </n-button>
         <span v-if="snippets.length === 0">暂无快捷片段</span>
       </div>
-      <n-button class="terminal-manage-snippets" text size="tiny" @click="$emit('manageSnippets')">管理</n-button>
     </div>
     <div v-if="showComposer" class="terminal-command-composer"><slot name="composer" /></div>
   </div>
@@ -56,13 +55,11 @@ withDefaults(defineProps<{
   showQuick: boolean;
   showComposer: boolean;
   snippets: TerminalCommandSnippet[];
-  hideLabel?: string;
-  showLabel?: string;
-}>(), { hideLabel: "隐藏命令框", showLabel: "显示命令框" });
+  label?: string;
+}>(), { label: "命令框" });
 
 defineEmits<{
   toggleQuick: [];
-  manageSnippets: [];
   toggleComposer: [];
   useSnippet: [snippet: TerminalCommandSnippet];
 }>();
@@ -79,14 +76,12 @@ defineEmits<{
 .terminal-quick-snippets :deep(.terminal-snippet-chip) { flex: 0 0 auto; max-width: 180px; }
 .terminal-quick-snippets :deep(.terminal-snippet-chip .n-button__content) { min-width: 0; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-quick-snippets :deep(.terminal-snippet-chip--run) { border-color: #6c6045; color: #ecd08e; }
-.terminal-manage-snippets { flex: 0 0 auto; }
 .terminal-command-composer { padding: 0 9px 9px; }
 @media (max-width: 760px) {
   .terminal-command-toolbar { padding: 6px; flex-wrap: wrap; gap: 5px; }
   .terminal-command-toolbar :deep(.n-button) { min-height: 32px; }
   .terminal-quick-snippets { order: 3; flex-basis: 100%; padding-top: 1px; scrollbar-width: none; }
   .terminal-quick-snippets::-webkit-scrollbar { display: none; }
-  .terminal-manage-snippets { margin-left: auto; }
   .terminal-command-composer { padding-bottom: max(9px, env(safe-area-inset-bottom)); }
 }
 </style>
