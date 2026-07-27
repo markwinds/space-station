@@ -196,7 +196,7 @@
       </template>
     </main>
 
-    <n-modal v-model:show="showSnippets" preset="card" title="串口片段" :style="dialogStyle">
+    <n-modal v-model:show="showSnippets" preset="card" title="命令片段" :style="dialogStyle">
       <div class="serial-snippet-editor">
         <n-input v-model:value="snippetDraft.name" placeholder="名称，例如：查询版本" />
         <n-input v-model:value="snippetDraft.command" type="textarea" :rows="3" placeholder="要发送的文本或 HEX" />
@@ -205,15 +205,36 @@
         <n-button type="primary" @click="saveSnippet">{{ editingSnippetId ? '保存修改' : '添加片段' }}</n-button>
       </div>
       <div class="serial-snippet-list">
-        <div v-for="snippet in snippets" :key="snippet.id" class="serial-snippet-row">
-          <button type="button" @click="activeView && useSnippet(activeView, snippet)">
+        <p v-if="snippets.length" class="serial-snippet-order-hint">SSH 与串口共用此列表；左键拖动手柄调整顺序。</p>
+        <div
+          v-for="snippet in snippets"
+          :key="snippet.id"
+          class="serial-snippet-row"
+          :class="{
+            'serial-snippet-row--dragging': draggedSnippetId === snippet.id,
+            'serial-snippet-row--drop-before': snippetDropTargetId === snippet.id && snippetDropPosition === 'before',
+            'serial-snippet-row--drop-after': snippetDropTargetId === snippet.id && snippetDropPosition === 'after',
+          }"
+          @dragover.prevent="updateSnippetDropTarget($event, snippet.id)"
+          @drop.prevent="dropSnippet(snippet.id)"
+        >
+          <button
+            class="serial-snippet-drag-handle"
+            type="button"
+            draggable="true"
+            aria-label="拖动调整片段顺序"
+            title="左键按住拖动排序"
+            @dragstart="startSnippetDrag($event, snippet.id)"
+            @dragend="finishSnippetDrag"
+          >⠿</button>
+          <button class="serial-snippet-content" type="button" @click="activeView && useSnippet(activeView, snippet)">
             <span class="serial-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '发送' }}</small></span>
             <code>{{ snippet.command }}</code>
           </button>
           <n-button text type="primary" @click="editSnippet(snippet)">编辑</n-button>
           <n-button text type="error" @click="deleteSnippet(snippet.id)">删除</n-button>
         </div>
-        <p v-if="snippets.length === 0" class="serial-hint">还没有串口片段。</p>
+        <p v-if="snippets.length === 0" class="serial-hint">还没有命令片段。</p>
       </div>
     </n-modal>
 
@@ -262,6 +283,13 @@ import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTer
 import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
+import {
+  persistCommandSnippets,
+  reorderCommandSnippet,
+  useCommandSnippets,
+  type CommandSnippet,
+  type SnippetAction,
+} from "@/utils/commandSnippets";
 
 type Location = "browser" | "shared" | "server";
 type SessionStatus = "connecting" | "open" | "closed" | "error";
@@ -339,16 +367,6 @@ interface SerialView {
   recordingLimitReached: boolean;
 }
 
-type SnippetAction = "insert" | "run";
-
-interface CommandSnippet {
-  id: string;
-  name: string;
-  command: string;
-  pinned?: boolean;
-  action: SnippetAction;
-}
-
 const message = useMessage();
 const { mobileViewportStyle } = useMobileVisualViewport();
 const dialogStyle = { width: "min(680px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 32px)" };
@@ -378,7 +396,7 @@ const searchTargetIndex = ref<number | null>(null);
 const searchIndexEditing = ref(false);
 const searchInput = ref<{ focus: () => void } | null>(null);
 const showSnippets = ref(false);
-const snippets = ref<CommandSnippet[]>(loadSnippets());
+const snippets = useCommandSnippets();
 const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; action: SnippetAction }>({
   name: "",
   command: "",
@@ -386,6 +404,9 @@ const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; 
   action: "insert",
 });
 const editingSnippetId = ref("");
+const draggedSnippetId = ref("");
+const snippetDropTargetId = ref("");
+const snippetDropPosition = ref<"before" | "after">("before");
 const showQuickSnippets = ref(localStorage.getItem("serial-show-quick-snippets") !== "false");
 const showRecordingOptions = ref(false);
 const recordingTargetId = ref("");
@@ -1177,25 +1198,34 @@ function toggleCommandComposer() {
   nextTick(() => activeView.value?.terminalView?.fit());
 }
 
-function loadSnippets(): CommandSnippet[] {
-  try {
-    const value = JSON.parse(localStorage.getItem("serial-command-snippets") || "[]") as Array<Partial<CommandSnippet>>;
-    if (!Array.isArray(value)) return [];
-    return value
-      .filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.command === "string")
-      .map((item) => ({
-        id: item.id!,
-        name: item.name!,
-        command: item.command!,
-        pinned: item.pinned !== false,
-        action: item.action === "insert" ? "insert" : "run",
-      }));
-  } catch {
-    return [];
-  }
+function persistSnippets() { persistCommandSnippets(snippets.value); }
+
+function startSnippetDrag(event: DragEvent, id: string) {
+  draggedSnippetId.value = id;
+  event.dataTransfer?.setData("text/plain", id);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
 }
 
-function persistSnippets() { localStorage.setItem("serial-command-snippets", JSON.stringify(snippets.value)); }
+function updateSnippetDropTarget(event: DragEvent, id: string) {
+  if (!draggedSnippetId.value || draggedSnippetId.value === id) {
+    snippetDropTargetId.value = "";
+    return;
+  }
+  const row = event.currentTarget as HTMLElement;
+  snippetDropTargetId.value = id;
+  snippetDropPosition.value = event.clientY >= row.getBoundingClientRect().top + row.offsetHeight / 2 ? "after" : "before";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+}
+
+function dropSnippet(targetId: string) {
+  if (reorderCommandSnippet(snippets.value, draggedSnippetId.value, targetId, snippetDropPosition.value === "after")) persistSnippets();
+  finishSnippetDrag();
+}
+
+function finishSnippetDrag() {
+  draggedSnippetId.value = "";
+  snippetDropTargetId.value = "";
+}
 
 function resetSnippetDraft() {
   editingSnippetId.value = "";
@@ -1444,8 +1474,15 @@ onBeforeUnmount(() => {
 .serial-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
 .serial-snippet-editor > :last-child { grid-column: 2; }
 .serial-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
-.serial-snippet-row { padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #dce3e7; border-radius: 7px; }
-.serial-snippet-row > button { min-width: 0; flex: 1; display: grid; gap: 3px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.serial-snippet-order-hint { margin: 0 0 2px; color: #71808b; font-size: 12px; }
+.serial-snippet-row { position: relative; padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #dce3e7; border-radius: 7px; }
+.serial-snippet-row--dragging { opacity: .45; }
+.serial-snippet-row--drop-before::before, .serial-snippet-row--drop-after::after { position: absolute; right: 4px; left: 4px; height: 2px; border-radius: 2px; background: #18a058; content: ""; }
+.serial-snippet-row--drop-before::before { top: -5px; }
+.serial-snippet-row--drop-after::after { bottom: -5px; }
+.serial-snippet-drag-handle { flex: 0 0 auto; width: 24px; padding: 2px; border: 0; background: transparent; color: #82909a; font-size: 20px; line-height: 1; cursor: grab; }
+.serial-snippet-drag-handle:active { cursor: grabbing; }
+.serial-snippet-content { min-width: 0; flex: 1; display: grid; gap: 3px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .serial-snippet-title { display: flex; align-items: center; gap: 7px; }
 .serial-snippet-title small { padding: 1px 6px; border-radius: 999px; background: #e8eef1; color: #64737d; font-size: 10px; }
 .serial-snippet-row code { overflow: hidden; color: #687783; text-overflow: ellipsis; white-space: nowrap; }

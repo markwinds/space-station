@@ -356,8 +356,29 @@
         </div>
       </div>
       <div class="ssh-snippet-list">
-        <div v-for="snippet in snippets" :key="snippet.id" class="ssh-snippet-row">
-          <button type="button" @click="activeTab && useSnippet(activeTab, snippet)">
+        <p v-if="snippets.length" class="ssh-snippet-order-hint">SSH 与串口共用此列表；左键拖动手柄调整顺序。</p>
+        <div
+          v-for="snippet in snippets"
+          :key="snippet.id"
+          class="ssh-snippet-row"
+          :class="{
+            'ssh-snippet-row--dragging': draggedSnippetId === snippet.id,
+            'ssh-snippet-row--drop-before': snippetDropTargetId === snippet.id && snippetDropPosition === 'before',
+            'ssh-snippet-row--drop-after': snippetDropTargetId === snippet.id && snippetDropPosition === 'after',
+          }"
+          @dragover.prevent="updateSnippetDropTarget($event, snippet.id)"
+          @drop.prevent="dropSnippet(snippet.id)"
+        >
+          <button
+            class="ssh-snippet-drag-handle"
+            type="button"
+            draggable="true"
+            aria-label="拖动调整片段顺序"
+            title="左键按住拖动排序"
+            @dragstart="startSnippetDrag($event, snippet.id)"
+            @dragend="finishSnippetDrag"
+          >⠿</button>
+          <button class="ssh-snippet-content" type="button" @click="activeTab && useSnippet(activeTab, snippet)">
             <span class="ssh-snippet-title"><strong>{{ snippet.name }}</strong><small>{{ snippet.action === 'insert' ? '插入' : '执行' }}</small></span>
             <code>{{ snippet.command }}</code>
           </button>
@@ -470,6 +491,13 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { writeClipboard } from "@/utils/clipboard";
 import {
+  persistCommandSnippets,
+  reorderCommandSnippet,
+  useCommandSnippets,
+  type CommandSnippet,
+  type SnippetAction,
+} from "@/utils/commandSnippets";
+import {
   deleteSshCredential,
   fetchSshHosts,
   fetchSshPortForwards,
@@ -560,16 +588,6 @@ interface TerminalTab {
   altModifier: boolean;
 }
 
-type SnippetAction = "insert" | "run";
-
-interface CommandSnippet {
-  id: string;
-  name: string;
-  command: string;
-  pinned?: boolean;
-  action: SnippetAction;
-}
-
 type TerminalSettings = TerminalPreferences;
 
 interface CredentialData {
@@ -606,7 +624,7 @@ const searchTargetIndex = ref<number | null>(null);
 const searchIndexEditing = ref(false);
 const searchInput = ref<{ focus: () => void } | null>(null);
 const showSnippets = ref(false);
-const snippets = ref<CommandSnippet[]>(loadSnippets());
+const snippets = useCommandSnippets();
 const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; action: SnippetAction }>({
   name: "",
   command: "",
@@ -614,6 +632,9 @@ const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; 
   action: "insert",
 });
 const editingSnippetId = ref("");
+const draggedSnippetId = ref("");
+const snippetDropTargetId = ref("");
+const snippetDropPosition = ref<"before" | "after">("before");
 const showQuickSnippets = ref(localStorage.getItem("ssh-show-quick-snippets") !== "false");
 const configurationInput = ref<HTMLInputElement | null>(null);
 const showPortForwards = ref(false);
@@ -1706,28 +1727,35 @@ function saveTerminalSettings() {
   message.success("终端显示设置已应用；回滚行数将在新终端中生效");
 }
 
-function loadSnippets(): CommandSnippet[] {
-  try {
-    const value = JSON.parse(localStorage.getItem("ssh-command-snippets") || "[]") as Array<Partial<CommandSnippet>>;
-    if (!Array.isArray(value)) return [];
-    return value
-      .filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.command === "string")
-      .map((item) => ({
-        id: item.id!,
-        name: item.name!,
-        command: item.command!,
-        pinned: item.pinned !== false,
-        // Existing snippets executed immediately. Preserve that behavior while
-        // new snippets default to the safer insert-and-review mode.
-        action: item.action === "insert" ? "insert" : "run",
-      }));
-  } catch {
-    return [];
-  }
+function persistSnippets() {
+  persistCommandSnippets(snippets.value);
 }
 
-function persistSnippets() {
-  localStorage.setItem("ssh-command-snippets", JSON.stringify(snippets.value));
+function startSnippetDrag(event: DragEvent, id: string) {
+  draggedSnippetId.value = id;
+  event.dataTransfer?.setData("text/plain", id);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
+
+function updateSnippetDropTarget(event: DragEvent, id: string) {
+  if (!draggedSnippetId.value || draggedSnippetId.value === id) {
+    snippetDropTargetId.value = "";
+    return;
+  }
+  const row = event.currentTarget as HTMLElement;
+  snippetDropTargetId.value = id;
+  snippetDropPosition.value = event.clientY >= row.getBoundingClientRect().top + row.offsetHeight / 2 ? "after" : "before";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+}
+
+function dropSnippet(targetId: string) {
+  if (reorderCommandSnippet(snippets.value, draggedSnippetId.value, targetId, snippetDropPosition.value === "after")) persistSnippets();
+  finishSnippetDrag();
+}
+
+function finishSnippetDrag() {
+  draggedSnippetId.value = "";
+  snippetDropTargetId.value = "";
 }
 
 function saveSnippet() {
@@ -2047,8 +2075,15 @@ function disposeTab(tab: TerminalTab) {
 .ssh-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
 .ssh-snippet-editor-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
 .ssh-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
-.ssh-snippet-row { padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #e3e7ea; border-radius: 6px; }
-.ssh-snippet-row > button:first-child { min-width: 0; flex: 1; display: grid; gap: 4px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.ssh-snippet-order-hint { margin: 0 0 2px; color: #71808b; font-size: 12px; }
+.ssh-snippet-row { position: relative; padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #e3e7ea; border-radius: 6px; }
+.ssh-snippet-row--dragging { opacity: .45; }
+.ssh-snippet-row--drop-before::before, .ssh-snippet-row--drop-after::after { position: absolute; right: 4px; left: 4px; height: 2px; border-radius: 2px; background: #18a058; content: ""; }
+.ssh-snippet-row--drop-before::before { top: -5px; }
+.ssh-snippet-row--drop-after::after { bottom: -5px; }
+.ssh-snippet-drag-handle { flex: 0 0 auto; width: 24px; padding: 2px; border: 0; background: transparent; color: #82909a; font-size: 20px; line-height: 1; cursor: grab; }
+.ssh-snippet-drag-handle:active { cursor: grabbing; }
+.ssh-snippet-content { min-width: 0; flex: 1; display: grid; gap: 4px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .ssh-snippet-title { display: flex; align-items: center; gap: 7px; }
 .ssh-snippet-title small { padding: 1px 6px; border-radius: 999px; background: #e8eef1; color: #64737d; font-size: 10px; }
 .ssh-snippet-row code { overflow: hidden; color: #687783; text-overflow: ellipsis; white-space: nowrap; }
