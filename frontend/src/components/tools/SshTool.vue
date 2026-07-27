@@ -2158,7 +2158,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-command-panel { padding: 7px 9px 9px; display: grid; gap: 7px; border-top: 1px solid #34414b; background: #171e23; }
 .ssh-command-toolbar { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .ssh-command-toolbar :deep(.n-button) { color: #dce6eb; border-color: #50616c; background: #2c3941; }
-.ssh-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; }
+.ssh-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.ssh-quick-snippets::-webkit-scrollbar { display: none; }
 .ssh-quick-snippets > span { align-self: center; color: #71808b; font-size: 12px; }
 .ssh-command-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: stretch; gap: 8px; }
 .ssh-command-editor :deep(textarea) { font-family: "SFMono-Regular", Consolas, monospace; }
@@ -2168,7 +2169,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-snippet-editor { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
 .ssh-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
 .ssh-snippet-editor-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
-.ssh-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
+.ssh-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; scrollbar-width: none; }
+.ssh-snippet-list::-webkit-scrollbar { display: none; }
 .ssh-snippet-order-hint { margin: 0 0 2px; color: #71808b; font-size: 12px; }
 .ssh-shared-snippet-heading { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ssh-shared-snippet-heading p { margin: 0; color: #687783; font-size: 12px; line-height: 1.5; }

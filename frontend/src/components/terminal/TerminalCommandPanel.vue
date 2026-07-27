@@ -20,7 +20,7 @@
         :aria-pressed="showQuick"
         @click="$emit('toggleQuick')"
       >⚡ 片段</n-button>
-      <div v-if="showQuick" class="terminal-quick-snippets">
+      <div v-if="showQuick" ref="quickSnippetList" class="terminal-quick-snippets" @wheel="scrollQuickSnippets">
         <n-button
           v-for="snippet in snippets"
           :key="snippet.id"
@@ -42,6 +42,7 @@
 
 <script setup lang="ts">
 import { NButton } from "naive-ui";
+import { ref } from "vue";
 
 export interface TerminalCommandSnippet {
   id: string;
@@ -63,6 +64,23 @@ defineEmits<{
   toggleComposer: [];
   useSnippet: [snippet: TerminalCommandSnippet];
 }>();
+
+const quickSnippetList = ref<HTMLElement | null>(null);
+
+function scrollQuickSnippets(event: WheelEvent) {
+  const element = quickSnippetList.value;
+  if (!element || element.scrollWidth <= element.clientWidth) return;
+  const rawDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  if (!rawDelta) return;
+  const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? 24
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? element.clientWidth : 1;
+  const maximum = element.scrollWidth - element.clientWidth;
+  const next = Math.max(0, Math.min(maximum, element.scrollLeft + rawDelta * scale));
+  if (next === element.scrollLeft) return;
+  element.scrollLeft = next;
+  event.preventDefault();
+}
 </script>
 
 <style scoped>
@@ -71,7 +89,8 @@ defineEmits<{
 .terminal-command-toolbar :deep(.n-button) { color: #dce6eb; border-color: #50616c; background: #2c3941; }
 .terminal-command-toolbar :deep(.terminal-command-toggle.active) { border-color: #74aaa6; background: #31504f; color: #efffff; }
 .terminal-command-toggle__mark { font-family: "SFMono-Regular", Consolas, monospace; font-weight: 800; }
-.terminal-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+.terminal-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.terminal-quick-snippets::-webkit-scrollbar { display: none; }
 .terminal-quick-snippets > span { align-self: center; color: #83939e; font-size: 12px; }
 .terminal-quick-snippets :deep(.terminal-snippet-chip) { flex: 0 0 auto; max-width: 180px; }
 .terminal-quick-snippets :deep(.terminal-snippet-chip .n-button__content) { min-width: 0; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -80,8 +99,7 @@ defineEmits<{
 @media (max-width: 760px) {
   .terminal-command-toolbar { padding: 6px; flex-wrap: wrap; gap: 5px; }
   .terminal-command-toolbar :deep(.n-button) { min-height: 32px; }
-  .terminal-quick-snippets { order: 3; flex-basis: 100%; padding-top: 1px; scrollbar-width: none; }
-  .terminal-quick-snippets::-webkit-scrollbar { display: none; }
+  .terminal-quick-snippets { order: 3; flex-basis: 100%; padding-top: 1px; }
   .terminal-command-composer { padding-bottom: max(9px, env(safe-area-inset-bottom)); }
 }
 </style>

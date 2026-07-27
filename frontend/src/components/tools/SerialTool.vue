@@ -1549,7 +1549,8 @@ onBeforeUnmount(() => {
 .serial-error { padding: 8px 12px; border-top: 1px solid #653b3b; background: #3a2222; color: #f3b3b3; font-size: 13px; }
 .serial-command-toolbar { padding: 7px 12px; display: flex; align-items: center; gap: 7px; border-top: 1px solid #2c3942; background: #151d23; }
 .serial-command-toolbar :deep(.n-button) { color: #dbe5ea; }
-.serial-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+.serial-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.serial-quick-snippets::-webkit-scrollbar { display: none; }
 .serial-quick-snippets > span { align-self: center; color: #83939e; font-size: 12px; }
 .serial-composer { padding: 10px 12px; display: flex; align-items: center; gap: 8px; border-top: 1px solid #2c3942; background: #151d23; }
 .serial-send-mode { width: 84px; flex: 0 0 auto; }
@@ -1558,7 +1559,8 @@ onBeforeUnmount(() => {
 .serial-snippet-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
 .serial-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }
 .serial-snippet-editor > :last-child { grid-column: 2; }
-.serial-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; }
+.serial-snippet-list { margin-top: 16px; display: grid; gap: 7px; max-height: 280px; overflow: auto; scrollbar-width: none; }
+.serial-snippet-list::-webkit-scrollbar { display: none; }
 .serial-snippet-order-hint { margin: 0 0 2px; color: #71808b; font-size: 12px; }
 .serial-shared-snippet-heading { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .serial-shared-snippet-heading p { margin: 0; color: #687783; font-size: 12px; line-height: 1.5; }
