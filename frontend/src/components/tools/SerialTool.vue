@@ -284,10 +284,15 @@
         <n-form-item label="公共交互">
           <div class="serial-setting-switches">
             <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示底部命令编辑和发送框</n-checkbox>
-            <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">划选后自动复制</n-checkbox>
-            <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">右键自动粘贴（浏览器允许时）</n-checkbox>
+            <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
+            <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+            <div class="serial-clipboard-permission">
+              <span>读取权限：{{ clipboardPermissionLabel }}</span>
+              <n-button size="small" secondary :loading="clipboardPermissionState === 'checking'" @click="requestClipboardAccess">检测/授权</n-button>
+            </div>
           </div>
         </n-form-item>
+        <p class="serial-settings-hint">已明确授权时右键自动粘贴；Safari 或无权限时直接显示浏览器原生右键菜单。</p>
       </n-form>
       <template #footer><div class="serial-dialog-actions"><n-button @click="showTerminalSettings = false">取消</n-button><n-button type="primary" @click="saveTerminalSettings">保存</n-button></div></template>
     </n-modal>
@@ -307,6 +312,7 @@ import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
 import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
+import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 import {
   persistCommandSnippets,
@@ -395,6 +401,15 @@ interface SerialView {
 
 const message = useMessage();
 const { mobileViewportStyle } = useMobileVisualViewport();
+const {
+  clipboardPermissionState,
+  clipboardPermissionLabel,
+  refreshClipboardPermission,
+  requestClipboardPermission,
+  canReadClipboardAutomatically,
+  markClipboardReadFailed,
+  disposeClipboardPermission,
+} = useTerminalClipboardPermission();
 const dialogStyle = { width: "min(680px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 32px)" };
 const source = ref<Location>("server");
 const browserSupported = "serial" in navigator;
@@ -457,6 +472,8 @@ let browserSequence = 0;
 let searchInputTimer: number | undefined;
 let sharedRefreshTimer: number | undefined;
 let shareSettingsTimer: number | undefined;
+let clipboardWarningShown = false;
+let clipboardFallbackHintShown = false;
 const sharedRefreshIntervalMs = 2000;
 const snippetActionOptions = [
   { label: "插入发送框，可编辑后发送", value: "insert" },
@@ -996,10 +1013,17 @@ function handleTerminalReady(view: SerialView, event: WebTerminalReadyEvent) {
     copyOnSelect: () => terminalSettings.copyOnSelect,
     pasteOnRightClick: () => terminalSettings.pasteOnRightClick,
     canPaste: () => session.status === "open",
-    canReadClipboard: () => window.isSecureContext && Boolean(navigator.clipboard?.readText),
-    onCopyError: () => message.warning("浏览器不允许自动写入剪贴板，请检查站点权限"),
-    onPasteUnavailable: () => message.info("串口尚未连接或浏览器不允许读取剪贴板，已保留原生右键菜单"),
-    onPasteError: () => message.info("浏览器未授予剪贴板读取权限，请使用系统粘贴快捷键"),
+    canReadClipboard: canReadClipboardAutomatically,
+    onCopyError: () => warnClipboardAccess("浏览器不允许自动写入剪贴板，请检查站点权限"),
+    onPasteUnavailable: () => {
+      if (clipboardFallbackHintShown) return;
+      clipboardFallbackHintShown = true;
+      message.info("未获得自动读取权限，已保留浏览器原生右键菜单");
+    },
+    onPasteError: (error) => {
+      markClipboardReadFailed();
+      message.error(`${describeTerminalClipboardError(error)}；下次右键将显示原生菜单`);
+    },
   });
   session.chunks.forEach((chunk) => event.terminal.write(chunk));
 }
@@ -1158,6 +1182,25 @@ async function sendFromComposer(view: SerialView) {
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function warnClipboardAccess(content: string) {
+  if (clipboardWarningShown) return;
+  clipboardWarningShown = true;
+  message.warning(content);
+}
+
+async function requestClipboardAccess() {
+  try {
+    const state = await requestClipboardPermission();
+    clipboardFallbackHintShown = false;
+    message.success(state === "granted"
+      ? "剪贴板读取权限已允许，右键可以自动粘贴"
+      : "剪贴板读取成功；此浏览器仍会使用原生右键菜单按次粘贴");
+  } catch (error) {
+    await refreshClipboardPermission();
+    message.error(describeTerminalClipboardError(error));
+  }
 }
 
 function updateSearchResults(view: SerialView, event: WebTerminalSearchResult) {
@@ -1465,6 +1508,7 @@ onMounted(() => {
   void refreshServerPorts();
   void refreshBrowserPorts();
   void refreshSharedPorts();
+  void refreshClipboardPermission();
   window.addEventListener("keydown", handleGlobalShortcut, true);
   window.addEventListener("focus", refreshSharedPortsWhenVisible);
   document.addEventListener("visibilitychange", refreshSharedPortsWhenVisible);
@@ -1474,6 +1518,7 @@ onBeforeUnmount(() => {
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
   window.clearInterval(sharedRefreshTimer);
   window.clearTimeout(shareSettingsTimer);
+  disposeClipboardPermission();
   window.removeEventListener("keydown", handleGlobalShortcut, true);
   window.removeEventListener("focus", refreshSharedPortsWhenVisible);
   document.removeEventListener("visibilitychange", refreshSharedPortsWhenVisible);
@@ -1579,6 +1624,8 @@ onBeforeUnmount(() => {
 .serial-snippet-row code { overflow: hidden; color: #687783; text-overflow: ellipsis; white-space: nowrap; }
 .serial-recording-options, .serial-setting-switches { display: grid; gap: 12px; }
 .serial-recording-options p { margin: 0; color: #687783; font-size: 12px; }
+.serial-clipboard-permission { padding-top: 2px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #687783; font-size: 12px; }
+.serial-settings-hint { margin: -10px 0 10px; color: #687783; font-size: 12px; line-height: 1.5; }
 .serial-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
 .serial-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 

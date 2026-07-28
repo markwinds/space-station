@@ -545,6 +545,7 @@ import TerminalSpecialKeyBar from "../terminal/TerminalSpecialKeyBar.vue";
 import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
+import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 import {
   clampTerminalDecimal as clampDecimal,
@@ -633,10 +634,17 @@ interface FingerprintRequest {
   fingerprint: string;
 }
 
-type ClipboardReadState = PermissionState | "checking" | "available" | "unsupported" | "insecure";
-
 const message = useMessage();
 const { mobileViewportStyle } = useMobileVisualViewport();
+const {
+  clipboardPermissionState,
+  clipboardPermissionLabel,
+  refreshClipboardPermission,
+  requestClipboardPermission,
+  canReadClipboardAutomatically,
+  markClipboardReadFailed,
+  disposeClipboardPermission,
+} = useTerminalClipboardPermission();
 const hosts = ref<SshHost[]>([]);
 const tabs = ref<TerminalTab[]>([]);
 const activeTabId = ref("");
@@ -693,11 +701,9 @@ const showTerminalSettings = ref(false);
 const credentialCache = new Map<string, CredentialData>();
 let clipboardWarningShown = false;
 let clipboardFallbackHintShown = false;
-let clipboardPermissionStatus: PermissionStatus | undefined;
 let originalViewportContent: string | null = null;
 let originalThemeColor: string | null = null;
 let searchInputTimer: number | undefined;
-const clipboardPermissionState = ref<ClipboardReadState>("checking");
 const keyword = ref("");
 const loading = ref(true);
 const saving = ref(false);
@@ -788,16 +794,6 @@ const mobileActionOptions = computed(() => {
   }
   return options;
 });
-const clipboardPermissionLabel = computed(() => ({
-  checking: "检测中",
-  granted: "已允许",
-  available: "当前会话可用",
-  prompt: "等待授权",
-  denied: "已拒绝",
-  unsupported: "浏览器按次确认",
-  insecure: "当前页面不安全",
-})[clipboardPermissionState.value]);
-
 watch([searchQuery, searchCaseSensitive, searchWholeWord, searchRegex], ([value]) => {
   if (!showSearch.value) return;
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
@@ -838,7 +834,7 @@ onBeforeUnmount(() => {
   if (themeColor && originalThemeColor !== null) themeColor.content = originalThemeColor;
   document.documentElement.classList.remove("ssh-page-lock");
   document.body.classList.remove("ssh-page-lock");
-  if (clipboardPermissionStatus) clipboardPermissionStatus.onchange = null;
+  disposeClipboardPermission();
   window.removeEventListener("keydown", handleGlobalShortcut, true);
   tabs.value.forEach(disposeTab);
 });
@@ -1284,7 +1280,7 @@ function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: H
     copyOnSelect: () => terminalSettings.copyOnSelect,
     pasteOnRightClick: () => terminalSettings.pasteOnRightClick,
     canPaste: () => tab.socket.readyState === WebSocket.OPEN && tab.status === "connected",
-    canReadClipboard: () => ["granted", "available"].includes(clipboardPermissionState.value),
+    canReadClipboard: canReadClipboardAutomatically,
     onCopyError: () => warnClipboardAccess("浏览器不允许自动写入剪贴板，请检查站点权限"),
     onPasteUnavailable: () => {
       terminal.focus();
@@ -1294,8 +1290,8 @@ function setupTerminalClipboard(tab: TerminalTab, terminal: Terminal, element: H
       }
     },
     onPasteError: (error) => {
-      clipboardPermissionState.value = "prompt";
-      message.error(`${describeClipboardError(error)}；下次右键将使用浏览器原生粘贴菜单`);
+      markClipboardReadFailed();
+      message.error(`${describeTerminalClipboardError(error)}；下次右键将显示原生菜单`);
     },
   });
 }
@@ -1306,60 +1302,16 @@ function warnClipboardAccess(content: string) {
   message.warning(content);
 }
 
-function describeClipboardError(error: unknown) {
-  if (error instanceof DOMException) return `剪贴板读取失败（${error.name}: ${error.message}）`;
-  if (error instanceof Error) return `剪贴板读取失败（${error.message}）`;
-  return "浏览器不允许读取剪贴板";
-}
-
-async function refreshClipboardPermission() {
-  if (clipboardPermissionStatus) clipboardPermissionStatus.onchange = null;
-  clipboardPermissionStatus = undefined;
-  if (!window.isSecureContext) {
-    clipboardPermissionState.value = "insecure";
-    return;
-  }
-  if (!navigator.clipboard?.readText || !navigator.permissions?.query) {
-    clipboardPermissionState.value = "unsupported";
-    return;
-  }
-  clipboardPermissionState.value = "checking";
-  try {
-    const status = await navigator.permissions.query({ name: "clipboard-read" as PermissionName });
-    clipboardPermissionStatus = status;
-    clipboardPermissionState.value = status.state;
-    status.onchange = () => {
-      clipboardPermissionState.value = status.state;
-      if (status.state === "granted") clipboardFallbackHintShown = false;
-    };
-  } catch {
-    clipboardPermissionState.value = "unsupported";
-  }
-}
-
 async function requestClipboardAccess() {
-  if (!window.isSecureContext) {
-    message.error("当前页面不是浏览器认可的安全上下文，请使用受信任的 HTTPS 地址");
-    return;
-  }
-  if (!navigator.clipboard?.readText) {
-    message.error("当前浏览器不支持读取剪贴板，请使用原生粘贴菜单或快捷键");
-    return;
-  }
   try {
-    await navigator.clipboard.readText();
-    await refreshClipboardPermission();
-    if (clipboardPermissionState.value === "granted") {
-      clipboardFallbackHintShown = false;
-      message.success("剪贴板读取权限已允许，右键可以自动粘贴");
-    } else {
-      clipboardPermissionState.value = "available";
-      clipboardFallbackHintShown = false;
-      message.success("剪贴板读取成功，当前页面会话中将优先尝试右键自动粘贴");
-    }
+    const state = await requestClipboardPermission();
+    clipboardFallbackHintShown = false;
+    message.success(state === "granted"
+      ? "剪贴板读取权限已允许，右键可以自动粘贴"
+      : "剪贴板读取成功；此浏览器仍会使用原生右键菜单按次粘贴");
   } catch (error) {
     await refreshClipboardPermission();
-    message.error(describeClipboardError(error));
+    message.error(describeTerminalClipboardError(error));
   }
 }
 
