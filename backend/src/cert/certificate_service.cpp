@@ -36,7 +36,9 @@ using Pkcs12Ptr = OpenSslPtr<PKCS12, PKCS12_free>;
 using X509Ptr = OpenSslPtr<X509, X509_free>;
 using X509ReqPtr = OpenSslPtr<X509_REQ, X509_REQ_free>;
 using Asn1IntegerPtr = OpenSslPtr<ASN1_INTEGER, ASN1_INTEGER_free>;
+using Asn1BitStringPtr = OpenSslPtr<ASN1_BIT_STRING, ASN1_BIT_STRING_free>;
 using Asn1TimePtr = OpenSslPtr<ASN1_TIME, ASN1_TIME_free>;
+using BasicConstraintsPtr = OpenSslPtr<BASIC_CONSTRAINTS, BASIC_CONSTRAINTS_free>;
 
 void OpenSslFree(void* value)
 {
@@ -692,7 +694,9 @@ nlohmann::json CertificateToJson(X509* certificate)
     const auto key_usage = ExtensionValueByNid(certificate, NID_key_usage);
     const auto extended_key_usage = ExtensionValueByNid(certificate, NID_ext_key_usage);
     const auto san = ParseSubjectAltNames(certificate);
-    const bool self_signed = subject.value("raw", "") == issuer.value("raw", "");
+    const bool names_match = X509_NAME_cmp(X509_get_subject_name(certificate), X509_get_issuer_name(certificate)) == 0;
+    const bool self_signed = names_match && public_key && X509_verify(certificate, public_key.get()) == 1;
+    ERR_clear_error();
     const bool is_ca = basic_constraints.find("CA:TRUE") != std::string::npos;
     const int signature_nid = X509_get_signature_nid(certificate);
     const char* signature_name = OBJ_nid2ln(signature_nid);
@@ -785,6 +789,110 @@ OpenSslPtr<STACK_OF(X509), X509StackFree> ReadCertificateChain(const std::string
         throw std::runtime_error("CA 链证书解析失败。");
     }
     return certificates;
+}
+
+void EnsureCertificateValidity(X509* certificate, std::string_view label)
+{
+    if (X509_cmp_current_time(X509_get0_notBefore(certificate)) > 0)
+    {
+        throw std::runtime_error(std::string(label) + "尚未生效。");
+    }
+    if (X509_cmp_current_time(X509_get0_notAfter(certificate)) < 0)
+    {
+        throw std::runtime_error(std::string(label) + "已经过期。");
+    }
+}
+
+void EnsureCaCertificate(X509* certificate)
+{
+    int basic_constraints_critical = -1;
+    BasicConstraintsPtr basic_constraints(
+        static_cast<BASIC_CONSTRAINTS*>(
+            X509_get_ext_d2i(certificate, NID_basic_constraints, &basic_constraints_critical, nullptr)),
+        BASIC_CONSTRAINTS_free);
+    if (!basic_constraints || basic_constraints->ca == 0)
+    {
+        throw std::runtime_error("签发者证书不是有效的 CA 证书（缺少 CA:TRUE）。");
+    }
+
+    int critical = -1;
+    Asn1BitStringPtr key_usage(
+        static_cast<ASN1_BIT_STRING*>(X509_get_ext_d2i(certificate, NID_key_usage, &critical, nullptr)),
+        ASN1_BIT_STRING_free);
+    if (!key_usage && critical != -1)
+    {
+        throw std::runtime_error("签发者证书的 Key Usage 扩展无效。");
+    }
+    if (key_usage && ASN1_BIT_STRING_get_bit(key_usage.get(), 5) != 1)
+    {
+        throw std::runtime_error("签发者证书缺少 keyCertSign 用途。");
+    }
+}
+
+bool IsSignedBy(X509* certificate, X509* issuer)
+{
+    if (X509_NAME_cmp(X509_get_issuer_name(certificate), X509_get_subject_name(issuer)) != 0)
+    {
+        return false;
+    }
+    EvpPkeyPtr issuer_public_key(X509_get_pubkey(issuer), EVP_PKEY_free);
+    const bool valid = issuer_public_key && X509_verify(certificate, issuer_public_key.get()) == 1;
+    ERR_clear_error();
+    return valid;
+}
+
+bool IsCryptographicallySelfSigned(X509* certificate)
+{
+    return IsSignedBy(certificate, certificate);
+}
+
+bool HasCompleteCertificatePath(X509* certificate,
+                                STACK_OF(X509)* ca_chain,
+                                std::vector<bool>& used_certificates)
+{
+    const int count = sk_X509_num(ca_chain);
+    for (int i = 0; i < count; ++i)
+    {
+        if (used_certificates[static_cast<std::size_t>(i)])
+        {
+            continue;
+        }
+        X509* issuer = sk_X509_value(ca_chain, i);
+        if (!issuer || !IsSignedBy(certificate, issuer))
+        {
+            continue;
+        }
+
+        EnsureCertificateValidity(issuer, "CA 证书");
+        EnsureCaCertificate(issuer);
+        if (IsCryptographicallySelfSigned(issuer))
+        {
+            return true;
+        }
+
+        used_certificates[static_cast<std::size_t>(i)] = true;
+        if (HasCompleteCertificatePath(issuer, ca_chain, used_certificates))
+        {
+            return true;
+        }
+        used_certificates[static_cast<std::size_t>(i)] = false;
+    }
+    return false;
+}
+
+void EnsureCompleteCertificateChain(X509* certificate, STACK_OF(X509)* ca_chain)
+{
+    if (!ca_chain || sk_X509_num(ca_chain) == 0)
+    {
+        return;
+    }
+
+    EnsureCertificateValidity(certificate, "证书");
+    std::vector<bool> used_certificates(static_cast<std::size_t>(sk_X509_num(ca_chain)), false);
+    if (!HasCompleteCertificatePath(certificate, ca_chain, used_certificates))
+    {
+        throw std::runtime_error("证书无法通过提供的完整 CA 链校验，请检查签发证书和 CA 链是否配套。");
+    }
 }
 
 EvpPkeyPtr GenerateKey(const nlohmann::json& request)
@@ -1088,6 +1196,9 @@ X509Ptr BuildCertificate(EVP_PKEY* subject_key,
     AddExtension(certificate.get(), issuer_certificate, csr, NID_key_usage, BuildKeyUsage(is_ca, request));
     AddExtension(certificate.get(), issuer_certificate, csr, NID_ext_key_usage, BuildExtendedKeyUsage(request));
     AddExtension(certificate.get(), issuer_certificate, csr, NID_subject_alt_name, BuildSanExtensionValue(ParseSans(request)));
+    X509* extension_issuer = issuer_certificate ? issuer_certificate : certificate.get();
+    AddExtension(certificate.get(), extension_issuer, csr, NID_subject_key_identifier, "hash");
+    AddExtension(certificate.get(), extension_issuer, csr, NID_authority_key_identifier, "keyid,issuer");
 
     if (X509_sign(certificate.get(), issuer_key, EVP_sha256()) <= 0)
     {
@@ -1147,6 +1258,13 @@ nlohmann::json SignCertificateRequest(const nlohmann::json& request)
         auto ca_certificate = ReadCertificate(ca_certificate_pem);
         auto ca_private_key = ReadPrivateKey(ca_private_key_pem);
         auto csr = ReadCsr(csr_pem);
+        if (X509_check_private_key(ca_certificate.get(), ca_private_key.get()) != 1)
+        {
+            ERR_clear_error();
+            throw std::runtime_error("CA 证书与 CA 私钥不匹配。");
+        }
+        EnsureCertificateValidity(ca_certificate.get(), "CA 证书");
+        EnsureCaCertificate(ca_certificate.get());
         EvpPkeyPtr subject_key(X509_REQ_get_pubkey(csr.get()), EVP_PKEY_free);
         if (!subject_key)
         {
@@ -1160,6 +1278,12 @@ nlohmann::json SignCertificateRequest(const nlohmann::json& request)
         X509_NAME* subject = X509_REQ_get_subject_name(csr.get());
         auto certificate =
             BuildCertificate(subject_key.get(), subject, ca_certificate.get(), ca_private_key.get(), csr.get(), request, false);
+        EvpPkeyPtr ca_public_key(X509_get_pubkey(ca_certificate.get()), EVP_PKEY_free);
+        if (!ca_public_key || X509_verify(certificate.get(), ca_public_key.get()) != 1)
+        {
+            ERR_clear_error();
+            throw std::runtime_error("签发后的证书无法通过 CA 公钥校验。");
+        }
 
         return {
             {"ok", true},
@@ -1258,8 +1382,10 @@ nlohmann::json CreatePkcs12(const nlohmann::json& request)
         auto ca_chain = ReadCertificateChain(ca_certificate_pem);
         if (X509_check_private_key(certificate.get(), private_key.get()) != 1)
         {
+            ERR_clear_error();
             throw std::runtime_error("证书和私钥不匹配。");
         }
+        EnsureCompleteCertificateChain(certificate.get(), ca_chain.get());
 
         const auto* password_arg = Pkcs12Password(password);
         Pkcs12Ptr pkcs12(PKCS12_create(password_arg,

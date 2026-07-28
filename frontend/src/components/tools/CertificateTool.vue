@@ -262,7 +262,7 @@
               <div class="action-row">
                 <n-button type="primary" :loading="signing" @click="sign">签发证书</n-button>
                 <n-button tertiary :disabled="!generateResult" @click="useGeneratedCsr">使用生成 CSR</n-button>
-                <n-button tertiary :disabled="!generateResult" @click="useGeneratedAsCa">使用生成结果作为 CA</n-button>
+                <n-button tertiary :disabled="!canUseGeneratedAsCa" @click="useGeneratedAsCa">使用生成结果作为 CA</n-button>
                 <n-button quaternary @click="clearSignResult">清空结果</n-button>
               </div>
               <n-alert v-if="signMessage" :type="signMessage.type" :show-icon="false">
@@ -317,7 +317,7 @@
               <div class="action-row">
                 <n-button type="primary" :loading="creatingP12" :disabled="!p12Form.certificatePem || !p12Form.privateKeyPem" @click="createP12Now">合成 P12</n-button>
                 <n-button tertiary :disabled="!generateResult" @click="useGeneratedForP12">使用生成结果</n-button>
-                <n-button tertiary :disabled="!signResult || !generateResult" @click="useSignedForP12">使用签发结果</n-button>
+                <n-button tertiary :disabled="!canUseSignedForP12" @click="useSignedForP12">使用签发结果</n-button>
                 <n-button quaternary @click="clearP12">清空</n-button>
               </div>
               <n-alert v-if="p12Message" :type="p12Message.type" :show-icon="false">
@@ -570,6 +570,10 @@ const signResult = ref<SignCertificateResponse | null>(null);
 const parseResult = ref<ParsedCertificateResponse | null>(null);
 const parseP12Result = ref<ParsedP12Response | null>(null);
 const p12Result = ref<CreateP12Response | null>(null);
+const generatedResultIsCa = ref(false);
+const signedResultPrivateKeyPem = ref("");
+const signedResultCaCertificatePem = ref("");
+const signedResultFriendlyName = ref("");
 const generateMessage = ref<MessageState | null>(null);
 const signMessage = ref<MessageState | null>(null);
 const parseMessage = ref<MessageState | null>(null);
@@ -697,6 +701,11 @@ const signOutputItems = computed<PemItem[]>(() => {
   return [{ title: "签发证书 PEM", value: signResult.value.certificatePem, filename: "signed-certificate.pem" }];
 });
 
+const canUseGeneratedAsCa = computed(() => Boolean(generateResult.value?.ok && generatedResultIsCa.value));
+const canUseSignedForP12 = computed(() =>
+  Boolean(signResult.value?.ok && signedResultPrivateKeyPem.value && signedResultCaCertificatePem.value),
+);
+
 async function generate() {
   generating.value = true;
   generateMessage.value = null;
@@ -716,6 +725,7 @@ async function generate() {
       payload.validDays = Math.min(payload.validDays, 825);
     }
     generateResult.value = await generateCertificateBundle(payload);
+    generatedResultIsCa.value = Boolean(generateResult.value.ok && payload.isCa);
     generateMessage.value = generateResult.value.ok
       ? { type: "success", text: "证书、CSR、公钥和私钥已生成。" }
       : { type: "error", text: generateResult.value.error || "生成失败。" };
@@ -729,6 +739,9 @@ async function generate() {
 async function sign() {
   signing.value = true;
   signMessage.value = null;
+  signedResultPrivateKeyPem.value = "";
+  signedResultCaCertificatePem.value = "";
+  signedResultFriendlyName.value = "";
   try {
     const payload: SignCertificateRequest = {
       ...signForm,
@@ -739,6 +752,13 @@ async function sign() {
       serialNumber: signForm.serialNumber || undefined,
     };
     signResult.value = await signCertificateRequest(payload);
+    if (signResult.value.ok) {
+      signedResultCaCertificatePem.value = payload.caCertificatePem;
+      if (generateResult.value?.ok && generateResult.value.csrPem.trim() === payload.csrPem.trim()) {
+        signedResultPrivateKeyPem.value = generateResult.value.privateKeyPem;
+        signedResultFriendlyName.value = generateForm.subject.commonName || "signed-certificate";
+      }
+    }
     signMessage.value = signResult.value.ok
       ? { type: "success", text: "证书已由 CA 签发。" }
       : { type: "error", text: signResult.value.error || "签发失败。" };
@@ -1032,7 +1052,7 @@ async function importParseP12File(event: Event) {
 }
 
 function useGeneratedAsCa() {
-  if (!generateResult.value?.ok) {
+  if (!canUseGeneratedAsCa.value || !generateResult.value?.ok) {
     return;
   }
   signForm.caCertificatePem = generateResult.value.certificatePem;
@@ -1062,13 +1082,13 @@ function useGeneratedForP12() {
 }
 
 function useSignedForP12() {
-  if (!signResult.value?.ok || !generateResult.value?.ok) {
+  if (!canUseSignedForP12.value || !signResult.value?.ok) {
     return;
   }
   p12Form.certificatePem = signResult.value.certificatePem;
-  p12Form.privateKeyPem = generateResult.value.privateKeyPem;
-  p12Form.caCertificatePem = signForm.caCertificatePem;
-  p12Form.friendlyName = generateForm.subject.commonName || "certificate";
+  p12Form.privateKeyPem = signedResultPrivateKeyPem.value;
+  p12Form.caCertificatePem = signedResultCaCertificatePem.value;
+  p12Form.friendlyName = signedResultFriendlyName.value || "signed-certificate";
   activeTab.value = "p12";
   p12Message.value = { type: "success", text: "已填入签发证书、生成私钥和 CA 链，可合成 P12。" };
 }
@@ -1110,11 +1130,15 @@ function loadGenerateExample() {
 
 function clearGenerateResult() {
   generateResult.value = null;
+  generatedResultIsCa.value = false;
   generateMessage.value = null;
 }
 
 function clearSignResult() {
   signResult.value = null;
+  signedResultPrivateKeyPem.value = "";
+  signedResultCaCertificatePem.value = "";
+  signedResultFriendlyName.value = "";
   signMessage.value = null;
 }
 

@@ -146,6 +146,16 @@ if (BUILD_TESTING)
             OpenSSL::Crypto)
     add_test(NAME authenticator-totp-test COMMAND authenticator-totp-test)
 
+    add_executable(certificate-service-test
+            tests/certificate_service_test.cpp
+            src/cert/certificate_service.cpp)
+    target_include_directories(certificate-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(certificate-service-test
+            PRIVATE
+            nlohmann_json::nlohmann_json
+            OpenSSL::Crypto)
+    add_test(NAME certificate-service-test COMMAND certificate-service-test)
+
     add_executable(terminal-plugin-test
             tests/terminal_plugin_test.cpp
             src/plugins/terminal_plugin_service.cpp
