@@ -166,6 +166,7 @@
             @data="handleTerminalData(view, $event)"
             @renderer="view.renderer = $event"
             @search-results="updateSearchResults(view, $event)"
+            @user-selection-start="cancelPendingSearch"
           />
           <div v-if="sessionFor(view)?.error" class="serial-error">{{ sessionFor(view)?.error }}</div>
           <terminal-command-panel
@@ -1244,6 +1245,12 @@ function searchTerminal(previous: boolean, incremental = false) {
     searchWholeWord.value,
     searchRegex.value,
   );
+}
+
+function cancelPendingSearch() {
+  if (!searchInputTimer) return;
+  window.clearTimeout(searchInputTimer);
+  searchInputTimer = undefined;
 }
 
 function jumpToSearchIndex() {

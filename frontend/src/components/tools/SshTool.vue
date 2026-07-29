@@ -204,6 +204,7 @@
           @resize="handleTerminalResize(tab, $event)"
           @renderer="updateRenderer(tab, $event)"
           @search-results="updateSearchResults(tab, $event)"
+          @user-selection-start="cancelPendingSearch"
         />
         <terminal-special-key-bar
           :ctrl="tab.ctrlModifier"
@@ -1697,6 +1698,12 @@ function searchTerminal(previous: boolean, incremental = false) {
     searchWholeWord.value,
     searchRegex.value,
   );
+}
+
+function cancelPendingSearch() {
+  if (!searchInputTimer) return;
+  window.clearTimeout(searchInputTimer);
+  searchInputTimer = undefined;
 }
 
 function openSearch() {

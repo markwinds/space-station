@@ -70,6 +70,7 @@ const emit = defineEmits<{
   resize: [event: WebTerminalResizeEvent];
   renderer: [renderer: TerminalRenderer];
   searchResults: [event: WebTerminalSearchResult];
+  userSelectionStart: [];
 }>();
 
 const mountElement = ref<HTMLElement>();
@@ -103,6 +104,13 @@ let searchSnapshotReadyId = 0;
 let pendingJumpIndex: number | undefined;
 let jumpDecorations: IDisposable[] = [];
 let nearbyDecorations: IDisposable[] = [];
+let protectUserSelection = false;
+let userSelectionPointerActive = false;
+let userSelectionEventActive = false;
+let restoringUserSelection = false;
+let protectedSelection: { startX: number; startY: number; endX: number; endY: number } | undefined;
+let protectedViewportY: number | undefined;
+let restoringViewport = false;
 
 type SearchWorkerResponse =
   | { type: "result"; id: number; count: number }
@@ -263,6 +271,74 @@ function decorateMatch(row: number, stringOffset: number, textLength: number, ac
   }
 }
 
+function captureUserSelection(instance = terminal) {
+  const range = instance?.getSelectionPosition();
+  protectedSelection = range
+    ? { startX: range.start.x, startY: range.start.y, endX: range.end.x, endY: range.end.y }
+    : undefined;
+}
+
+function beginUserSelection(instance: Terminal) {
+  protectUserSelection = true;
+  userSelectionPointerActive = true;
+  pendingJumpIndex = undefined;
+  protectedSelection = undefined;
+  protectedViewportY = instance.buffer.active.viewportY;
+  instance.clearSelection();
+  emit("userSelectionStart");
+}
+
+function finishUserSelection() {
+  if (!userSelectionPointerActive) return;
+  userSelectionPointerActive = false;
+  userSelectionEventActive = false;
+  captureUserSelection();
+  protectedViewportY = undefined;
+}
+
+function allowSearchSelection() {
+  protectUserSelection = false;
+  userSelectionPointerActive = false;
+  userSelectionEventActive = false;
+  protectedSelection = undefined;
+  protectedViewportY = undefined;
+}
+
+function preserveUserSelection(instance: Terminal) {
+  if (!protectUserSelection || restoringUserSelection) return;
+  if (userSelectionEventActive) {
+    captureUserSelection(instance);
+    return;
+  }
+  const current = instance.getSelectionPosition();
+  const expected = protectedSelection;
+  const unchanged = current && expected
+    ? current.start.x === expected.startX
+      && current.start.y === expected.startY
+      && current.end.x === expected.endX
+      && current.end.y === expected.endY
+    : !current && !expected;
+  if (unchanged) return;
+  restoringUserSelection = true;
+  if (expected) {
+    const length = (expected.endY - expected.startY) * instance.cols + expected.endX - expected.startX;
+    instance.select(expected.startX, expected.startY, Math.max(1, length));
+  } else instance.clearSelection();
+  restoringUserSelection = false;
+}
+
+function preservePointerDownViewport(instance: Terminal, viewportY: number) {
+  if (!userSelectionPointerActive || restoringViewport) return;
+  if (userSelectionEventActive) {
+    protectedViewportY = viewportY;
+    return;
+  }
+  if (protectedViewportY === undefined || viewportY === protectedViewportY) return;
+  restoringViewport = true;
+  instance.scrollToLine(protectedViewportY);
+  restoringViewport = false;
+}
+
 function requestNearbyHighlights() {
   if (!searchWorker || searchSnapshotReadyId !== searchCountRequestId || currentSearchIndex < props.searchHighlightLimit) {
     disposeDecorations(nearbyDecorations);
@@ -348,7 +424,8 @@ function search(
   wholeWord = false,
   regex = false,
 ) {
-  if (!searchAddon || !term) return false;
+  if (!searchAddon || !term || userSelectionPointerActive) return false;
+  allowSearchSelection();
   const queryChanged = term !== currentSearchTerm;
   const optionsChanged = caseSensitive !== currentSearchCaseSensitive
     || wholeWord !== currentSearchWholeWord
@@ -404,7 +481,8 @@ function search(
 function jumpToSearchIndex(index: number) {
   const target = Math.trunc(index);
   const count = exactSearchCount ?? (addonSearchCount < props.searchHighlightLimit ? addonSearchCount : undefined);
-  if (!currentSearchTerm || !Number.isFinite(target) || target < 0 || (count !== undefined && target >= count) || !searchWorker) return false;
+  if (userSelectionPointerActive || !currentSearchTerm || !Number.isFinite(target) || target < 0 || (count !== undefined && target >= count) || !searchWorker) return false;
+  allowSearchSelection();
   pendingJumpIndex = target;
   if (searchSnapshotReadyId === searchCountRequestId) {
     searchWorker.postMessage({ type: "locate", id: searchCountRequestId, index: target });
@@ -552,7 +630,13 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
   const selectRange = (start: number, end: number) => {
     const first = Math.min(start, end);
     const last = Math.max(start, end);
-    instance.select(first % instance.cols, Math.floor(first / instance.cols), last - first + 1);
+    userSelectionEventActive = true;
+    try {
+      instance.select(first % instance.cols, Math.floor(first / instance.cols), last - first + 1);
+      captureUserSelection(instance);
+    } finally {
+      userSelectionEventActive = false;
+    }
   };
   const showSelectionToolbar = (clientX: number, clientY: number) => {
     const bounds = element.getBoundingClientRect();
@@ -712,9 +796,25 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     else resetTouch();
   };
   const pointerDown = (event: PointerEvent) => {
+    if (event.pointerType !== "touch" && event.button !== 0) {
+      instance.focus();
+      return;
+    }
+    userSelectionEventActive = true;
+    window.queueMicrotask(() => { userSelectionEventActive = false; });
+    beginUserSelection(instance);
     if (event.pointerType !== "touch") instance.focus();
   };
+  const pointerMove = () => {
+    if (!userSelectionPointerActive) return;
+    userSelectionEventActive = true;
+    window.queueMicrotask(() => { userSelectionEventActive = false; });
+  };
+  const pointerUp = () => finishUserSelection();
   element.addEventListener("pointerdown", pointerDown, { passive: true, capture: true });
+  element.addEventListener("pointermove", pointerMove, { passive: true, capture: true });
+  document.addEventListener("pointerup", pointerUp, true);
+  document.addEventListener("pointercancel", pointerUp, true);
   element.addEventListener("touchstart", touchStart, { passive: true, capture: true });
   element.addEventListener("touchmove", touchMove, { passive: false, capture: true });
   element.addEventListener("touchend", touchEnd, { passive: true, capture: true });
@@ -723,6 +823,9 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     cancelMomentum();
     cancelLongPress();
     element.removeEventListener("pointerdown", pointerDown, true);
+    element.removeEventListener("pointermove", pointerMove, true);
+    document.removeEventListener("pointerup", pointerUp, true);
+    document.removeEventListener("pointercancel", pointerUp, true);
     element.removeEventListener("touchstart", touchStart, true);
     element.removeEventListener("touchmove", touchMove, true);
     element.removeEventListener("touchend", touchEnd, true);
@@ -789,6 +892,7 @@ onMounted(() => {
       return;
     }
     if (response.type === "location") {
+      if (pendingJumpIndex === undefined || response.index !== pendingJumpIndex) return;
       pendingJumpIndex = undefined;
       currentSearchIndex = response.index;
       searchAddon?.clearActiveDecoration();
@@ -809,6 +913,8 @@ onMounted(() => {
   terminal.loadAddon(searchAddon);
   terminal.loadAddon(serializeAddon);
   terminal.open(element);
+  terminal.onSelectionChange(() => preserveUserSelection(terminal!));
+  terminal.onScroll((viewportY) => preservePointerDownViewport(terminal!, viewportY));
   searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
     addonSearchIndex = resultIndex;
     addonSearchCount = resultCount;
@@ -849,6 +955,7 @@ onMounted(() => {
   if (props.restoreBuffer) terminal.write(props.restoreBuffer);
   terminal.onData((data) => emit("data", data));
   terminal.onWriteParsed(() => {
+    if (protectUserSelection && !userSelectionPointerActive) captureUserSelection(terminal);
     if (currentSearchTerm) scheduleExactSearchCount(currentSearchTerm, 400);
   });
   setupTouchScrolling(element, terminal);
