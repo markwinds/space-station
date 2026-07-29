@@ -121,6 +121,27 @@ const searchDecorations = {
 let reportedColumns = 0;
 let reportedRows = 0;
 
+// xterm counts wrapped screen rows, so a narrow terminal can otherwise turn a
+// configured 50,000-line history into only a few thousand newline-delimited
+// output lines. Keep approximately the same text capacity at every width by
+// treating the preference as rows at a conventional 120-column terminal.
+const scrollbackReferenceColumns = 120;
+
+function scrollbackForColumns(columns: number) {
+  const safeColumns = Math.max(1, Math.trunc(columns));
+  return Math.ceil(props.scrollback * Math.max(1, scrollbackReferenceColumns / safeColumns));
+}
+
+function preserveScrollbackForColumns(columns: number) {
+  if (!terminal) return;
+  const requiredScrollback = scrollbackForColumns(columns);
+  // Never reduce a live buffer: widening a terminal must not discard history
+  // that was retained while it was narrow.
+  if ((terminal.options.scrollback ?? 0) < requiredScrollback) {
+    terminal.options.scrollback = requiredScrollback;
+  }
+}
+
 function reportSize() {
   if (!terminal) return;
   if (terminal.cols === reportedColumns && terminal.rows === reportedRows) return;
@@ -131,7 +152,10 @@ function reportSize() {
 
 function fitNow() {
   if (!terminal || !fitAddon) return;
+  const proposedColumns = fitAddon.proposeDimensions()?.cols;
+  if (proposedColumns) preserveScrollbackForColumns(proposedColumns);
   fitAddon.fit();
+  preserveScrollbackForColumns(terminal.cols);
   reportSize();
 }
 

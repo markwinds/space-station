@@ -18,12 +18,19 @@ export function attachTerminalClipboard(terminal: Terminal, element: HTMLElement
     if (options.canPaste && !options.canPaste()) return;
     terminal.focus();
   };
-  const copySelection = (event: PointerEvent) => {
+  const copySelection = (event: MouseEvent) => {
     if (event.button !== 0 || !options.copyOnSelect()) return;
     const selection = terminal.getSelection() || latestSelection;
     if (!selection) return;
     if (!navigator.clipboard?.writeText) { options.onCopyError?.(); return; }
     void navigator.clipboard.writeText(selection).catch(() => options.onCopyError?.());
+  };
+  const beginMouseSelection = (event: MouseEvent) => {
+    if (event.button !== 0) return;
+    document.removeEventListener("mouseup", copySelection);
+    // xterm registers its document-level mouseup listener from its own earlier
+    // mousedown handler. Registering here puts copying after selection commit.
+    document.addEventListener("mouseup", copySelection, { once: true });
   };
   const pasteClipboard = (event: MouseEvent) => {
     if (!options.pasteOnRightClick()) return;
@@ -40,12 +47,13 @@ export function attachTerminalClipboard(terminal: Terminal, element: HTMLElement
       terminal.focus();
     }).catch((error) => options.onPasteError?.(error));
   };
-  element.addEventListener("pointerup", copySelection);
+  element.addEventListener("mousedown", beginMouseSelection);
   element.addEventListener("pointerdown", focusBeforeNativeContextMenu, true);
   element.addEventListener("contextmenu", pasteClipboard, true);
   return () => {
     selectionDisposable.dispose();
-    element.removeEventListener("pointerup", copySelection);
+    element.removeEventListener("mousedown", beginMouseSelection);
+    document.removeEventListener("mouseup", copySelection);
     element.removeEventListener("pointerdown", focusBeforeNativeContextMenu, true);
     element.removeEventListener("contextmenu", pasteClipboard, true);
   };

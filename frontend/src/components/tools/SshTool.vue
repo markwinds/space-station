@@ -449,8 +449,9 @@
 
     <n-modal v-model:show="showTerminalSettings" preset="card" title="终端设置" class="ssh-dialog" :style="dialogStyle">
       <n-form label-placement="top">
-        <n-form-item label="终端回滚缓冲区（行）">
+        <n-form-item label="终端回滚缓冲区（输出行）">
           <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
+          <template #feedback>按 120 列终端折算；窄屏自动增加内部屏幕行容量，避免自动折行占满缓存。</template>
         </n-form-item>
         <p class="ssh-field-hint">保存后对新打开或重新连接的终端生效。</p>
         <n-form-item label="字体大小">
@@ -802,7 +803,7 @@ watch([searchQuery, searchCaseSensitive, searchWholeWord, searchRegex], ([value]
     resetSearchResults(activeTab.value);
     return;
   }
-  searchInputTimer = window.setTimeout(() => searchTerminal(false, true), 200);
+  searchInputTimer = window.setTimeout(() => searchTerminal(true, true), 200);
 });
 
 watch(showSnippets, (visible) => {
@@ -1450,7 +1451,7 @@ function activateTab(id: string) {
       tab?.terminalView?.fit();
       tab?.terminal?.focus();
       if (tab) sendResize(tab);
-      if (tab && showSearch.value && searchQuery.value) searchTerminal(false, true);
+      if (tab && showSearch.value && searchQuery.value) searchTerminal(true, true);
     }
   });
 }
@@ -1554,7 +1555,7 @@ function openSearch() {
     : null;
   nextTick(() => {
     searchInput.value?.focus();
-    if (searchQuery.value) searchTerminal(false, true);
+    if (searchQuery.value) searchTerminal(true, true);
   });
 }
 

@@ -275,7 +275,10 @@
     <n-modal v-model:show="showTerminalSettings" preset="card" title="终端设置（SSH 与串口共用）" :style="dialogStyle">
       <n-form label-placement="top">
         <div class="serial-settings-grid">
-          <n-form-item label="回滚缓冲区（行）"><n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" /></n-form-item>
+          <n-form-item label="回滚缓冲区（输出行）">
+            <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
+            <template #feedback>按 120 列终端折算；窄屏会自动增加内部屏幕行容量。</template>
+          </n-form-item>
           <n-form-item label="字体大小"><n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" /></n-form-item>
           <n-form-item label="行高"><n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" /></n-form-item>
           <n-form-item label="字符间距"><n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" /></n-form-item>
@@ -1213,7 +1216,7 @@ function updateSearchResults(view: SerialView, event: WebTerminalSearchResult) {
 function openSearch() {
   showSearch.value = true;
   searchTargetIndex.value = activeView.value && activeView.value.searchResultIndex >= 0 ? activeView.value.searchResultIndex + 1 : null;
-  nextTick(() => { searchInput.value?.focus(); if (searchQuery.value) searchTerminal(false, true); });
+  nextTick(() => { searchInput.value?.focus(); if (searchQuery.value) searchTerminal(true, true); });
 }
 
 function closeSearch() {
@@ -1501,7 +1504,7 @@ watch([searchQuery, searchCaseSensitive, searchWholeWord, searchRegex], ([value]
   if (!showSearch.value) return;
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
   if (!value) { activeView.value?.terminalView?.clearSearch(); return; }
-  searchInputTimer = window.setTimeout(() => searchTerminal(false, true), 200);
+  searchInputTimer = window.setTimeout(() => searchTerminal(true, true), 200);
 });
 
 onMounted(() => {
