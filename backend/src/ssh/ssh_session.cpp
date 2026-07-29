@@ -36,6 +36,8 @@ namespace
 using namespace std::chrono_literals;
 using Deadline = std::chrono::steady_clock::time_point;
 constexpr auto kConnectionTimeout = 15s;
+constexpr std::size_t kDetachedOutputBufferBytes = 4ULL * 1024ULL * 1024ULL;
+constexpr std::array<char, 4> kOutputFrameMagic{'S', 'S', 'O', '1'};
 
 std::string NextPluginSessionId(const std::string& host_id)
 {
@@ -367,8 +369,12 @@ int Authenticate(LIBSSH2_SESSION* session,
 
 SshSession::SshSession(ConfigStore& config_store,
                        drogon::WebSocketConnectionPtr connection,
+                       std::string connection_id,
                        plugins::TerminalPluginService* plugin_service)
-    : config_store_(config_store), plugin_service_(plugin_service), connection_(std::move(connection))
+    : config_store_(config_store),
+      plugin_service_(plugin_service),
+      connection_(std::move(connection)),
+      connection_id_(std::move(connection_id))
 {
 }
 
@@ -430,6 +436,68 @@ void SshSession::ConfirmHostKey(bool trusted)
         host_trusted_ = trusted;
     }
     condition_.notify_all();
+}
+
+SshSession::ResumeResult SshSession::Attach(drogon::WebSocketConnectionPtr connection,
+                                            std::string connection_id,
+                                            std::uint64_t last_sequence)
+{
+    drogon::WebSocketConnectionPtr previous;
+    ResumeResult result;
+    {
+        std::lock_guard lock(mutex_);
+        previous = connection_.lock();
+        const auto latest_sequence = next_output_sequence_ - 1;
+        const auto earliest_sequence = output_buffer_.empty() ? next_output_sequence_ : output_buffer_.front().sequence;
+        result.latest_sequence = latest_sequence;
+        result.earliest_sequence = earliest_sequence;
+        result.gap = last_sequence < latest_sequence && last_sequence + 1 < earliest_sequence;
+
+        while (!output_buffer_.empty() && output_buffer_.front().sequence <= last_sequence)
+        {
+            output_buffer_bytes_ -= output_buffer_.front().data.size();
+            output_buffer_.pop_front();
+        }
+
+        connection_ = connection;
+        connection_id_ = std::move(connection_id);
+        detached_at_.reset();
+        for (const auto& buffered : output_buffer_)
+        {
+            connection->send(buffered.data, buffered.type);
+            ++result.replayed_messages;
+        }
+    }
+    if (previous && previous != connection && previous->connected())
+    {
+        previous->shutdown(drogon::CloseCode::kEndpointGone, "SSH session resumed elsewhere");
+    }
+    return result;
+}
+
+bool SshSession::Detach(const std::string& connection_id)
+{
+    std::lock_guard lock(mutex_);
+    if (connection_id_ != connection_id)
+    {
+        return false;
+    }
+    connection_.reset();
+    connection_id_.clear();
+    detached_at_ = std::chrono::steady_clock::now();
+    return true;
+}
+
+bool SshSession::IsAttachedTo(const std::string& connection_id) const
+{
+    std::lock_guard lock(mutex_);
+    return !connection_id.empty() && connection_id_ == connection_id && !connection_.expired();
+}
+
+bool SshSession::DetachedFor(std::chrono::steady_clock::duration duration) const
+{
+    std::lock_guard lock(mutex_);
+    return detached_at_.has_value() && std::chrono::steady_clock::now() - *detached_at_ >= duration;
 }
 
 void SshSession::Stop()
@@ -777,21 +845,51 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
     }
 }
 
-void SshSession::SendEvent(const nlohmann::json& event) const
+void SshSession::SendEvent(const nlohmann::json& event)
 {
+    std::lock_guard lock(mutex_);
+    auto payload = event;
+    const auto sequence = next_output_sequence_++;
+    payload["seq"] = sequence;
+    BufferedMessage buffered{sequence, drogon::WebSocketMessageType::Text, payload.dump()};
+    StoreBufferedMessage(buffered);
     if (const auto connection = connection_.lock(); connection && connection->connected())
     {
-        connection->send(event.dump(), drogon::WebSocketMessageType::Text);
+        connection->send(buffered.data, buffered.type);
     }
 }
 
-void SshSession::SendOutput(const char* data, std::size_t size) const
+void SshSession::SendOutput(const char* data, std::size_t size)
 {
     if (plugin_service_ && !plugin_session_id_.empty())
         plugin_service_->OnOutput(plugin_session_id_, std::string(data, size));
+
+    std::lock_guard lock(mutex_);
+    const auto sequence = next_output_sequence_++;
+    std::string frame(kOutputFrameMagic.begin(), kOutputFrameMagic.end());
+    frame.resize(kOutputFrameMagic.size() + sizeof(sequence) + size);
+    for (std::size_t index = 0; index < sizeof(sequence); ++index)
+    {
+        frame[kOutputFrameMagic.size() + index] =
+            static_cast<char>((sequence >> ((sizeof(sequence) - index - 1) * 8)) & 0xff);
+    }
+    std::memcpy(frame.data() + kOutputFrameMagic.size() + sizeof(sequence), data, size);
+    BufferedMessage buffered{sequence, drogon::WebSocketMessageType::Binary, std::move(frame)};
+    StoreBufferedMessage(buffered);
     if (const auto connection = connection_.lock(); connection && connection->connected())
     {
-        connection->send(data, size, drogon::WebSocketMessageType::Binary);
+        connection->send(buffered.data, buffered.type);
+    }
+}
+
+void SshSession::StoreBufferedMessage(BufferedMessage message)
+{
+    output_buffer_bytes_ += message.data.size();
+    output_buffer_.push_back(std::move(message));
+    while (output_buffer_bytes_ > kDetachedOutputBufferBytes && output_buffer_.size() > 1)
+    {
+        output_buffer_bytes_ -= output_buffer_.front().data.size();
+        output_buffer_.pop_front();
     }
 }
 } // namespace spacestation::ssh

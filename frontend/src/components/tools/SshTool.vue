@@ -564,7 +564,7 @@ import type {
   WebTerminalSearchResult,
 } from "../terminal/WebTerminal.types";
 
-type ConnectionStatus = "connecting" | "authenticating" | "connected" | "closed" | "error";
+type ConnectionStatus = "connecting" | "reconnecting" | "authenticating" | "connected" | "closed" | "error";
 type TerminalModifier = "ctrl" | "alt";
 type TerminalSpecialKey =
   | "escape"
@@ -613,6 +613,15 @@ interface TerminalTab {
   reconnectHintShown: boolean;
   socketReady: boolean;
   automaticRetryCount: number;
+  resumeToken: string;
+  connectionId: string;
+  lastServerSequence: number;
+  pendingOutput: Uint8Array[];
+  reconnectTimer?: number;
+  resumeDeadline?: number;
+  heartbeatTimer?: number;
+  lastClientPongAt?: number;
+  intentionalClose: boolean;
   commandDraft: string;
   commandHistory: string[];
   ctrlModifier: boolean;
@@ -1080,7 +1089,7 @@ async function openTerminal(
     status: "connecting",
     message: "正在打开连接…",
     socket,
-    connectPayload: buildConnectPayload(host, credential, persistCredential),
+    connectPayload: buildConnectPayload(host, credential, persistCredential, id),
     pendingCredential: credential,
     rememberCredential,
     persistCredential,
@@ -1099,6 +1108,11 @@ async function openTerminal(
     reconnectHintShown: false,
     socketReady: false,
     automaticRetryCount: 0,
+    resumeToken: "",
+    connectionId: "",
+    lastServerSequence: 0,
+    pendingOutput: [],
+    intentionalClose: false,
     commandDraft: "",
     commandHistory: [],
     ctrlModifier: false,
@@ -1121,9 +1135,10 @@ function createTerminalSocket() {
   return socket;
 }
 
-function buildConnectPayload(host: SshHost, credential: CredentialData, persistCredential: boolean) {
+function buildConnectPayload(host: SshHost, credential: CredentialData, persistCredential: boolean, tabId: string) {
   return {
     type: "connect",
+    tabId,
     hostId: host.id,
     password: credential.method === "password" ? credential.password : "",
     privateKey: credential.method === "privateKey" ? credential.privateKey : "",
@@ -1137,15 +1152,24 @@ function bindTerminalSocket(tab: TerminalTab, socket: WebSocket) {
   socket.onmessage = (event) => {
     if (tab.socket === socket) handleSocketMessage(tab, event);
   };
-  socket.onerror = () => {
+  socket.onerror = (event) => {
     if (tab.socket !== socket) return;
-    if (!tab.socketReady && scheduleAutomaticReconnect(tab)) return;
-    updateTab(tab, "error", "WebSocket 通道建立失败");
-    tab.terminal?.writeln("\r\n\x1b[31mWebSocket 通道建立失败，请检查访问地址、客户端证书或后端状态。\x1b[0m");
-    showReconnectHint(tab);
+    console.warn("SSH WebSocket error", { tabId: tab.id, connectionId: tab.connectionId, event });
+    if (!tab.socketReady) updateTab(tab, "connecting", "WebSocket 通道建立失败，正在重试…");
   };
   socket.onclose = (event) => {
     if (tab.socket !== socket) return;
+    stopSocketHeartbeat(tab);
+    console.warn("SSH WebSocket closed", {
+      tabId: tab.id,
+      connectionId: tab.connectionId,
+      code: event.code,
+      reason: event.reason,
+      wasClean: event.wasClean,
+      lastClientPongAt: tab.lastClientPongAt,
+    });
+    if (tab.intentionalClose) return;
+    if (tab.resumeToken && scheduleResumeReconnect(tab)) return;
     if (!tab.socketReady && scheduleAutomaticReconnect(tab)) return;
     if (tab.status !== "closed" && tab.status !== "error") {
       const reason = event.reason ? `：${event.reason}` : "";
@@ -1155,10 +1179,25 @@ function bindTerminalSocket(tab: TerminalTab, socket: WebSocket) {
   };
 }
 
+function startSocketHeartbeat(tab: TerminalTab, socket: WebSocket) {
+  stopSocketHeartbeat(tab);
+  tab.heartbeatTimer = window.setInterval(() => {
+    if (tab.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: "client-ping", at: Date.now(), tabId: tab.id }));
+  }, 10_000);
+}
+
+function stopSocketHeartbeat(tab: TerminalTab) {
+  if (tab.heartbeatTimer !== undefined) window.clearInterval(tab.heartbeatTimer);
+  tab.heartbeatTimer = undefined;
+}
+
 function handleTerminalReady(tab: TerminalTab, event: WebTerminalReadyEvent) {
   const { terminal, element } = event;
   tab.terminal = terminal;
   tab.terminalView = event.handle;
+  for (const bytes of tab.pendingOutput) applyTerminalOutput(tab, bytes);
+  tab.pendingOutput = [];
   terminal.attachCustomKeyEventHandler((event) => {
     // F12 belongs to the browser (Chrome DevTools). Returning false prevents
     // xterm from translating it to ESC[24~ without canceling Chrome's default.
@@ -1318,39 +1357,82 @@ async function requestClipboardAccess() {
 
 function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
   if (event.data instanceof ArrayBuffer) {
-    const bytes = new Uint8Array(event.data);
-    tab.terminal?.write(bytes);
-    const recordingLimit = terminalSettings.recordingMaxMiB * 1024 * 1024;
-    if (tab.recording && tab.recordingSizeBytes < recordingLimit) {
-      if (tab.recordingSizeBytes + bytes.byteLength <= recordingLimit) {
-        const decoded = tab.recordingDecoder?.decode(bytes, { stream: true }) ?? new TextDecoder().decode(bytes);
-        tab.recordingContent += decoded;
-        tab.recordingEntries.push({ at: new Date(), data: decoded });
-        tab.recordingSizeBytes += bytes.byteLength;
-      } else if (!tab.recordingLimitReached) {
-        tab.recordingLimitReached = true;
-        tab.recordingSizeBytes = recordingLimit;
-        message.warning(`录制缓冲区已达到 ${terminalSettings.recordingMaxMiB} MiB 上限，已停止追加`);
-      }
+    const frame = new Uint8Array(event.data);
+    const sequenced = frame.byteLength >= 12 && frame[0] === 0x53 && frame[1] === 0x53 && frame[2] === 0x4f && frame[3] === 0x31;
+    let bytes = frame;
+    if (sequenced) {
+      let sequence = 0;
+      for (let index = 4; index < 12; ++index) sequence = sequence * 256 + frame[index];
+      if (sequence <= tab.lastServerSequence) return;
+      tab.lastServerSequence = sequence;
+      bytes = frame.subarray(12);
     }
+    applyTerminalOutput(tab, bytes);
     return;
   }
-  const payload = JSON.parse(String(event.data)) as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(String(event.data)) as Record<string, unknown>;
+  } catch {
+    console.warn("Invalid SSH WebSocket JSON message", { tabId: tab.id, data: event.data });
+    return;
+  }
+  const sequence = Number(payload.seq ?? 0);
+  if (Number.isSafeInteger(sequence) && sequence > 0) {
+    if (sequence <= tab.lastServerSequence) return;
+    tab.lastServerSequence = sequence;
+  }
   if (payload.type === "ready") {
     tab.socketReady = true;
+    tab.connectionId = String(payload.connectionId ?? "");
+    startSocketHeartbeat(tab, tab.socket);
+    if (tab.resumeToken) {
+      tab.socket.send(JSON.stringify({
+        type: "resume",
+        resumeToken: tab.resumeToken,
+        lastSequence: tab.lastServerSequence,
+        tabId: tab.id,
+      }));
+    } else {
+      tab.connectPayload.columns = tab.terminal?.cols ?? 100;
+      tab.connectPayload.rows = tab.terminal?.rows ?? 30;
+      tab.socket.send(JSON.stringify(tab.connectPayload));
+    }
+  } else if (payload.type === "session") {
+    tab.resumeToken = String(payload.resumeToken ?? "");
+  } else if (payload.type === "resumed") {
+    tab.resumeToken = String(payload.resumeToken ?? "");
+    tab.automaticRetryCount = 0;
+    tab.resumeDeadline = undefined;
+    tab.reconnectHintShown = false;
+    updateTab(tab, "connected", "连接已恢复");
+    sendResize(tab);
+    tab.terminal?.focus();
+  } else if (payload.type === "resume-failed") {
+    tab.resumeToken = "";
+    tab.lastServerSequence = 0;
+    tab.automaticRetryCount = 0;
+    tab.resumeDeadline = undefined;
+    tab.terminal?.writeln(`\r\n\x1b[33m${String(payload.message ?? "原 SSH 会话已过期，正在建立新会话…")}\x1b[0m`);
     tab.connectPayload.columns = tab.terminal?.cols ?? 100;
     tab.connectPayload.rows = tab.terminal?.rows ?? 30;
     tab.socket.send(JSON.stringify(tab.connectPayload));
-    tab.connectPayload = {};
+  } else if (payload.type === "resume-gap") {
+    tab.terminal?.writeln("\r\n\x1b[33m断线期间输出超过缓存上限，部分内容无法恢复。\x1b[0m");
+  } else if (payload.type === "client-pong") {
+    tab.lastClientPongAt = Date.now();
   } else if (payload.type === "status") {
     updateTab(tab, String(payload.status) as ConnectionStatus, String(payload.message ?? ""));
     if (payload.status === "connected") {
+      tab.automaticRetryCount = 0;
       if (tab.rememberCredential && tab.pendingCredential) credentialCache.set(tab.host.id, { ...tab.pendingCredential });
       if (tab.persistCredential) {
         const host = hosts.value.find((item) => item.id === tab.host.id);
         if (host) host.hasCredential = true;
       }
       tab.terminal?.focus();
+    } else if (payload.status === "closed") {
+      terminateServerSession(tab);
     }
   } else if (payload.type === "host-key") {
     fingerprintRequest.value = {
@@ -1374,12 +1456,55 @@ function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
     }
     updateTab(tab, "error", errorText);
     tab.terminal?.writeln(`\r\n\x1b[31m${errorText}\x1b[0m`);
+    terminateServerSession(tab);
     showReconnectHint(tab);
+  }
+}
+
+function applyTerminalOutput(tab: TerminalTab, bytes: Uint8Array) {
+  if (!tab.terminal) {
+    tab.pendingOutput.push(bytes.slice());
+    return;
+  }
+  tab.terminal.write(bytes);
+  const recordingLimit = terminalSettings.recordingMaxMiB * 1024 * 1024;
+  if (!tab.recording || tab.recordingSizeBytes >= recordingLimit) return;
+  if (tab.recordingSizeBytes + bytes.byteLength <= recordingLimit) {
+    const decoded = tab.recordingDecoder?.decode(bytes, { stream: true }) ?? new TextDecoder().decode(bytes);
+    tab.recordingContent += decoded;
+    tab.recordingEntries.push({ at: new Date(), data: decoded });
+    tab.recordingSizeBytes += bytes.byteLength;
+  } else if (!tab.recordingLimitReached) {
+    tab.recordingLimitReached = true;
+    tab.recordingSizeBytes = recordingLimit;
+    message.warning(`录制缓冲区已达到 ${terminalSettings.recordingMaxMiB} MiB 上限，已停止追加`);
   }
 }
 
 function isTransientSshError(content: string) {
   return /无法连接 SSH 主机|DNS 解析超时|TCP 连接超时|SSH 握手(?:失败|超时)|socket|Unable to exchange encryption keys|Failure establishing SSH session/i.test(content);
+}
+
+const resumeRetryDelays = [500, 1_000, 2_000, 4_000, 8_000];
+
+function scheduleResumeReconnect(tab: TerminalTab) {
+  if (!tabs.value.some((item) => item.id === tab.id)) return false;
+  tab.resumeDeadline ??= Date.now() + 90_000;
+  const delay = resumeRetryDelays[Math.min(tab.automaticRetryCount, resumeRetryDelays.length - 1)];
+  if (Date.now() + delay >= tab.resumeDeadline) return false;
+  tab.automaticRetryCount += 1;
+  tab.socketReady = false;
+  updateTab(tab, "reconnecting", `WebSocket 已断开，${delay / 1000} 秒后恢复会话…`);
+  if (tab.reconnectTimer !== undefined) window.clearTimeout(tab.reconnectTimer);
+  tab.reconnectTimer = window.setTimeout(() => {
+    tab.reconnectTimer = undefined;
+    if (!tabs.value.some((item) => item.id === tab.id) || !tab.resumeToken) return;
+    const socket = createTerminalSocket();
+    tab.intentionalClose = false;
+    tab.socket = socket;
+    bindTerminalSocket(tab, socket);
+  }, delay);
+  return true;
 }
 
 function scheduleAutomaticReconnect(tab: TerminalTab) {
@@ -1390,21 +1515,41 @@ function scheduleAutomaticReconnect(tab: TerminalTab) {
   previousSocket.onmessage = null;
   previousSocket.onerror = null;
   previousSocket.onclose = null;
+  terminateServerSession(tab, previousSocket);
   if (previousSocket.readyState === WebSocket.OPEN || previousSocket.readyState === WebSocket.CONNECTING) previousSocket.close();
   tab.socketReady = false;
+  tab.lastServerSequence = 0;
   tab.connectPayload = buildConnectPayload(
     tab.host,
     tab.pendingCredential ? { ...tab.pendingCredential } : { method: "stored", password: "", privateKey: "", passphrase: "" },
     tab.persistCredential,
+    tab.id,
   );
   updateTab(tab, "connecting", "正在建立连接…");
   window.setTimeout(() => {
     if (!tabs.value.some((item) => item.id === tab.id) || tab.socket !== previousSocket) return;
     const socket = createTerminalSocket();
+    tab.intentionalClose = false;
     tab.socket = socket;
     bindTerminalSocket(tab, socket);
   }, 250);
   return true;
+}
+
+function terminateServerSession(tab: TerminalTab, socket = tab.socket) {
+  const resumeToken = tab.resumeToken;
+  if (resumeToken && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "terminate", resumeToken, tabId: tab.id }));
+  } else if (resumeToken) {
+    void fetch("/api/tools/ssh/session/terminate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resumeToken }),
+      keepalive: true,
+    }).catch(() => undefined);
+  }
+  tab.resumeToken = "";
+  tab.resumeDeadline = undefined;
 }
 
 function showReconnectHint(tab: TerminalTab) {
@@ -1519,14 +1664,20 @@ function reconnectTab(tab: TerminalTab) {
   previousSocket.onerror = null;
   previousSocket.onclose = null;
   if (previousSocket.readyState === WebSocket.OPEN || previousSocket.readyState === WebSocket.CONNECTING) previousSocket.close();
-  tab.connectPayload = buildConnectPayload(tab.host, credential, tab.persistCredential);
+  if (!tab.resumeToken) {
+    tab.lastServerSequence = 0;
+    tab.connectPayload = buildConnectPayload(tab.host, credential, tab.persistCredential, tab.id);
+  }
   tab.usedStoredCredential = credential.method === "stored";
   tab.reconnectHintShown = false;
   tab.socketReady = false;
   tab.automaticRetryCount = 0;
-  updateTab(tab, "connecting", "正在重新连接…");
-  tab.terminal?.writeln("\r\n\x1b[36m正在重新连接，文件传输状态将继续保留…\x1b[0m");
+  updateTab(tab, tab.resumeToken ? "reconnecting" : "connecting", tab.resumeToken ? "正在恢复原 SSH 会话…" : "正在重新连接…");
+  tab.terminal?.writeln(tab.resumeToken
+    ? "\r\n\x1b[36m正在恢复原 SSH 会话…\x1b[0m"
+    : "\r\n\x1b[36m正在重新连接，文件传输状态将继续保留…\x1b[0m");
   const socket = createTerminalSocket();
+  tab.intentionalClose = false;
   tab.socket = socket;
   bindTerminalSocket(tab, socket);
 }
@@ -2011,6 +2162,11 @@ function closeTab(id: string) {
 
 function disposeTab(tab: TerminalTab) {
   tab.clipboardCleanup?.();
+  tab.intentionalClose = true;
+  if (tab.reconnectTimer !== undefined) window.clearTimeout(tab.reconnectTimer);
+  tab.reconnectTimer = undefined;
+  stopSocketHeartbeat(tab);
+  terminateServerSession(tab);
   if (tab.socket.readyState === WebSocket.OPEN || tab.socket.readyState === WebSocket.CONNECTING) tab.socket.close();
   if (tab.pendingCredential) {
     tab.pendingCredential.password = "";

@@ -526,6 +526,16 @@ void HttpServer::RegisterRoutes()
     ssh_websocket_controller_ =
         std::make_shared<ssh::SshWebSocketController>(config_store_, terminal_plugin_service_);
     drogon::app().registerController(ssh_websocket_controller_);
+    drogon::app().registerHandler(
+        "/api/tools/ssh/session/terminate",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireSecureRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            const auto terminated = ssh_websocket_controller_->TerminateSession(body.value("resumeToken", ""));
+            callback(JsonResponse({{"ok", true}, {"terminated", terminated}}));
+        },
+        {drogon::Post});
 
     drogon::app().registerHandler(
         "/",
