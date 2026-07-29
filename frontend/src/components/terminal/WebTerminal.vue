@@ -112,6 +112,11 @@ let protectedSelection: { startX: number; startY: number; endX: number; endY: nu
 let protectedViewportY: number | undefined;
 let restoringViewport = false;
 
+type SearchAddonInternals = SearchAddon & {
+  _highlightTimeout?: { clear: () => void };
+  _updateMatches?: () => void;
+};
+
 type SearchWorkerResponse =
   | { type: "result"; id: number; count: number }
   | { type: "location"; id: number; index: number; row: number; offset: number; length: number }
@@ -278,10 +283,41 @@ function captureUserSelection(instance = terminal) {
     : undefined;
 }
 
+function cancelAutomaticSearchRefresh() {
+  // SearchAddon 0.16 refreshes matches 200ms after every parsed write. That
+  // refresh calls terminal.select(), even though it uses the addon's no-scroll
+  // mode, so a continuously writing terminal steals an in-progress or finished
+  // mouse selection. The addon does not expose cancellation publicly; clear its
+  // disposable timer while a user selection is protected. Explicit search
+  // actions call allowSearchSelection() and enable automatic refresh again.
+  const addon = searchAddon as SearchAddonInternals | undefined;
+  addon?._highlightTimeout?.clear();
+}
+
+function guardAutomaticSearchRefresh(addon: SearchAddon) {
+  const internals = addon as SearchAddonInternals;
+  const updateMatches = internals._updateMatches?.bind(addon);
+  if (!updateMatches) return;
+  internals._updateMatches = () => {
+    if (protectUserSelection) {
+      internals._highlightTimeout?.clear();
+      return;
+    }
+    updateMatches();
+  };
+}
+
 function beginUserSelection(instance: Terminal) {
   protectUserSelection = true;
   userSelectionPointerActive = true;
   pendingJumpIndex = undefined;
+  cancelAutomaticSearchRefresh();
+  // Remove only the active search marker. Keeping the passive match
+  // decorations lets an empty click restore the previous result immediately
+  // without rebuilding every highlighted match.
+  searchAddon?.clearActiveDecoration();
+  disposeDecorations(jumpDecorations);
+  disposeDecorations(nearbyDecorations);
   protectedSelection = undefined;
   protectedViewportY = instance.buffer.active.viewportY;
   instance.clearSelection();
@@ -294,6 +330,22 @@ function finishUserSelection() {
   userSelectionEventActive = false;
   captureUserSelection();
   protectedViewportY = undefined;
+  const hasSelection = protectedSelection
+    && (protectedSelection.startX !== protectedSelection.endX || protectedSelection.startY !== protectedSelection.endY);
+  if (!hasSelection && currentSearchTerm) {
+    const restoreIndex = currentSearchIndex;
+    allowSearchSelection();
+    if (restoreIndex < 0 || !jumpToSearchIndex(restoreIndex)) {
+      search(
+        currentSearchTerm,
+        true,
+        false,
+        currentSearchCaseSensitive,
+        currentSearchWholeWord,
+        currentSearchRegex,
+      );
+    }
+  }
 }
 
 function allowSearchSelection() {
@@ -795,26 +847,53 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     if (continueScrolling) startMomentum();
     else resetTouch();
   };
-  const pointerDown = (event: PointerEvent) => {
-    if (event.pointerType !== "touch" && event.button !== 0) {
-      instance.focus();
-      return;
-    }
+  const markUserSelectionEvent = () => {
     userSelectionEventActive = true;
     window.queueMicrotask(() => { userSelectionEventActive = false; });
+  };
+  const pointerDown = (event: PointerEvent) => {
+    // Enter protection at the earliest primary-pointer event. The mousedown
+    // handler below is kept as a fallback for browsers that do not emit pointer
+    // events for xterm's desktop selection path.
+    if (event.button !== 0) return;
+    markUserSelectionEvent();
     beginUserSelection(instance);
     if (event.pointerType !== "touch") instance.focus();
   };
-  const pointerMove = () => {
-    if (!userSelectionPointerActive) return;
-    userSelectionEventActive = true;
-    window.queueMicrotask(() => { userSelectionEventActive = false; });
+  const pointerMove = (event: PointerEvent) => {
+    if (event.pointerType === "touch" && userSelectionPointerActive) markUserSelectionEvent();
   };
-  const pointerUp = () => finishUserSelection();
+  const pointerUp = (event: PointerEvent) => {
+    if (event.pointerType === "touch") finishUserSelection();
+  };
+  const pointerCancel = () => finishUserSelection();
+  const mouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) {
+      instance.focus();
+      return;
+    }
+    markUserSelectionEvent();
+    if (!userSelectionPointerActive) beginUserSelection(instance);
+    instance.focus();
+  };
+  const mouseMove = () => {
+    if (userSelectionPointerActive) markUserSelectionEvent();
+  };
+  const mouseUp = () => {
+    if (!userSelectionPointerActive) return;
+    markUserSelectionEvent();
+    // xterm publishes the completed selection from its own mouseup listener.
+    // Keep search navigation suspended until all listeners for that event have
+    // run, then store the final user selection.
+    window.queueMicrotask(finishUserSelection);
+  };
   element.addEventListener("pointerdown", pointerDown, { passive: true, capture: true });
   element.addEventListener("pointermove", pointerMove, { passive: true, capture: true });
   document.addEventListener("pointerup", pointerUp, true);
-  document.addEventListener("pointercancel", pointerUp, true);
+  document.addEventListener("pointercancel", pointerCancel, true);
+  element.addEventListener("mousedown", mouseDown, { passive: true, capture: true });
+  document.addEventListener("mousemove", mouseMove, true);
+  document.addEventListener("mouseup", mouseUp, true);
   element.addEventListener("touchstart", touchStart, { passive: true, capture: true });
   element.addEventListener("touchmove", touchMove, { passive: false, capture: true });
   element.addEventListener("touchend", touchEnd, { passive: true, capture: true });
@@ -825,7 +904,10 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     element.removeEventListener("pointerdown", pointerDown, true);
     element.removeEventListener("pointermove", pointerMove, true);
     document.removeEventListener("pointerup", pointerUp, true);
-    document.removeEventListener("pointercancel", pointerUp, true);
+    document.removeEventListener("pointercancel", pointerCancel, true);
+    element.removeEventListener("mousedown", mouseDown, true);
+    document.removeEventListener("mousemove", mouseMove, true);
+    document.removeEventListener("mouseup", mouseUp, true);
     element.removeEventListener("touchstart", touchStart, true);
     element.removeEventListener("touchmove", touchMove, true);
     element.removeEventListener("touchend", touchEnd, true);
@@ -875,6 +957,7 @@ onMounted(() => {
   });
   fitAddon = new FitAddon();
   searchAddon = new SearchAddon({ highlightLimit: props.searchHighlightLimit });
+  guardAutomaticSearchRefresh(searchAddon);
   searchWorker = new Worker(new URL("./terminalSearch.worker.ts", import.meta.url), { type: "module" });
   searchWorker.onmessage = (event: MessageEvent<SearchWorkerResponse>) => {
     const response = event.data;
@@ -955,7 +1038,11 @@ onMounted(() => {
   if (props.restoreBuffer) terminal.write(props.restoreBuffer);
   terminal.onData((data) => emit("data", data));
   terminal.onWriteParsed(() => {
-    if (protectUserSelection && !userSelectionPointerActive) captureUserSelection(terminal);
+    if (protectUserSelection) cancelAutomaticSearchRefresh();
+    // Output parsing can clear xterm's selection before this callback runs.
+    // Keep the range captured at mouseup instead of accepting that cleared
+    // state as the new protected selection.
+    if (terminal && protectUserSelection && !userSelectionPointerActive) preserveUserSelection(terminal);
     if (currentSearchTerm) scheduleExactSearchCount(currentSearchTerm, 400);
   });
   setupTouchScrolling(element, terminal);
