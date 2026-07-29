@@ -82,6 +82,32 @@
       }
     },
     {
+      "name": "orange-pi-zero3-release-vcpkg",
+      "displayName": "Orange Pi Zero3 Release Vcpkg",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "BUILD_TESTING": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "OPENSSL_CRYPTO_LIBRARY": "${sourceDir}/out/build/${presetName}/vcpkg_installed/arm64-linux-orange-pi-zero3/lib/libcrypto.a",
+        "OPENSSL_INCLUDE_DIR": "${sourceDir}/out/build/${presetName}/vcpkg_installed/arm64-linux-orange-pi-zero3/include",
+        "OPENSSL_ROOT_DIR": "${sourceDir}/out/build/${presetName}/vcpkg_installed/arm64-linux-orange-pi-zero3",
+        "OPENSSL_SSL_LIBRARY": "${sourceDir}/out/build/${presetName}/vcpkg_installed/arm64-linux-orange-pi-zero3/lib/libssl.a",
+        "OPENSSL_USE_STATIC_LIBS": "ON",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-orange-pi-zero3",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/orange-pi-zero3-clang.cmake"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
       "name": "bwg-x64-linux-release-vcpkg",
       "displayName": "bwg x64 Linux Release Vcpkg",
       "generator": "Ninja",
@@ -171,6 +197,15 @@
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Linux"
+      }
+    },
+    {
+      "name": "orange-pi-zero3-release-vcpkg",
+      "configurePreset": "orange-pi-zero3-release-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
       }
     },
     {

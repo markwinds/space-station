@@ -41,6 +41,24 @@ cmake --build --preset linux-release-vcpkg
 ./out/build/linux-release-vcpkg/space-station
 ```
 
+Cross-build for Orange Pi Zero3 on macOS:
+
+```bash
+cd frontend
+npm install
+npm run build
+
+cd ../backend
+export VCPKG_ROOT=/Users/mark/vcpkg
+export ORANGE_PI_SYSROOT=/path/to/orange-pi-zero3-sysroot
+cmake --preset orange-pi-zero3-release-vcpkg
+cmake --build --preset orange-pi-zero3-release-vcpkg
+```
+
+The preset targets `aarch64-linux-gnu` with Clang and LLD. If `ORANGE_PI_SYSROOT`
+is not set, it uses `/Volumes/samsung/orange-pi/sysroot` by default. Set
+`LLVM_ROOT` to override the default LLVM installation.
+
 首次使用时，可以仅为本次运行临时开启 HTTP，不会修改配置文件：
 
 ```bash
