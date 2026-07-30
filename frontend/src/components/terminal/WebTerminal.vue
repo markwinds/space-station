@@ -109,8 +109,6 @@ let userSelectionPointerActive = false;
 let userSelectionEventActive = false;
 let restoringUserSelection = false;
 let protectedSelection: { startX: number; startY: number; endX: number; endY: number } | undefined;
-let protectedViewportY: number | undefined;
-let restoringViewport = false;
 
 type SearchAddonInternals = SearchAddon & {
   _highlightTimeout?: { clear: () => void };
@@ -319,7 +317,6 @@ function beginUserSelection(instance: Terminal) {
   disposeDecorations(jumpDecorations);
   disposeDecorations(nearbyDecorations);
   protectedSelection = undefined;
-  protectedViewportY = instance.buffer.active.viewportY;
   instance.clearSelection();
   emit("userSelectionStart");
 }
@@ -329,7 +326,6 @@ function finishUserSelection() {
   userSelectionPointerActive = false;
   userSelectionEventActive = false;
   captureUserSelection();
-  protectedViewportY = undefined;
   const hasSelection = protectedSelection
     && (protectedSelection.startX !== protectedSelection.endX || protectedSelection.startY !== protectedSelection.endY);
   if (!hasSelection && currentSearchTerm) {
@@ -353,12 +349,15 @@ function allowSearchSelection() {
   userSelectionPointerActive = false;
   userSelectionEventActive = false;
   protectedSelection = undefined;
-  protectedViewportY = undefined;
 }
 
 function preserveUserSelection(instance: Terminal) {
   if (!protectUserSelection || restoringUserSelection) return;
-  if (userSelectionEventActive) {
+  // xterm extends a selection from its own auto-scroll timer when the pointer
+  // is held above or below the screen. Those selection changes do not happen
+  // inside a mousemove event, so accept every change while the pointer remains
+  // down instead of restoring an older range and fighting xterm's scrolling.
+  if (userSelectionPointerActive || userSelectionEventActive) {
     captureUserSelection(instance);
     return;
   }
@@ -379,16 +378,10 @@ function preserveUserSelection(instance: Terminal) {
   restoringUserSelection = false;
 }
 
-function preservePointerDownViewport(instance: Terminal, viewportY: number) {
-  if (!userSelectionPointerActive || restoringViewport) return;
-  if (userSelectionEventActive) {
-    protectedViewportY = viewportY;
-    return;
-  }
-  if (protectedViewportY === undefined || viewportY === protectedViewportY) return;
-  restoringViewport = true;
-  instance.scrollToLine(protectedViewportY);
-  restoringViewport = false;
+function targetsTerminalScreen(event: PointerEvent | MouseEvent, element: HTMLElement) {
+  const screen = element.querySelector<HTMLElement>(".xterm-screen");
+  const target = event.target;
+  return Boolean(screen && target instanceof Node && screen.contains(target));
 }
 
 function requestNearbyHighlights() {
@@ -855,7 +848,7 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     // Enter protection at the earliest primary-pointer event. The mousedown
     // handler below is kept as a fallback for browsers that do not emit pointer
     // events for xterm's desktop selection path.
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !targetsTerminalScreen(event, element)) return;
     markUserSelectionEvent();
     beginUserSelection(instance);
     if (event.pointerType !== "touch") instance.focus();
@@ -872,6 +865,7 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
       instance.focus();
       return;
     }
+    if (!targetsTerminalScreen(event, element)) return;
     markUserSelectionEvent();
     if (!userSelectionPointerActive) beginUserSelection(instance);
     instance.focus();
@@ -997,7 +991,6 @@ onMounted(() => {
   terminal.loadAddon(serializeAddon);
   terminal.open(element);
   terminal.onSelectionChange(() => preserveUserSelection(terminal!));
-  terminal.onScroll((viewportY) => preservePointerDownViewport(terminal!, viewportY));
   searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
     addonSearchIndex = resultIndex;
     addonSearchCount = resultCount;

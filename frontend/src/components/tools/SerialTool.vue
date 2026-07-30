@@ -532,6 +532,14 @@ const parityOptions = [{ label: "无", value: "none" }, { label: "偶校验", va
 const flowOptions = [{ label: "无", value: "none" }, { label: "硬件 RTS/CTS", value: "hardware" }];
 const sendModeOptions = [{ label: "文本", value: "text" }, { label: "HEX", value: "hex" }];
 const lineEndingOptions = [{ label: "不追加", value: "none" }, { label: "LF", value: "lf" }, { label: "CRLF", value: "crlf" }];
+const browserSerialBufferSize = 8 * 1024 * 1024;
+const recoverableSerialReadErrors = new Set([
+  "BufferOverrunError",
+  "BreakError",
+  "FramingError",
+  "ParityError",
+  "UnknownError",
+]);
 
 const browserPortOptions = computed(() => browserPorts.value.map((item) => ({ label: item.label, value: item.id })));
 const serverPortOptions = computed(() => serverPorts.value.map((item) => ({ label: item.name === item.path ? item.path : `${item.name} · ${item.path}`, value: item.id })));
@@ -709,26 +717,37 @@ async function startSession(session: SerialSession) {
 
 async function openBrowserSession(session: SerialSession) {
   if (!session.browserPort) throw new Error("浏览器串口授权已失效，请重新选择设备。");
-  await session.browserPort.open({ ...session.settings, bufferSize: 1024 * 1024 });
+  await session.browserPort.open({ ...session.settings, bufferSize: browserSerialBufferSize });
   session.status = "open";
   broadcastNotice(session, `\r\n\x1b[36m[已连接浏览器串口 ${session.name}]\x1b[0m\r\n`);
   if (session.shareId) openBrowserPluginBridge(session);
   const readTask = (async () => {
-    if (!session.browserPort?.readable) return;
-    const reader = session.browserPort.readable.getReader();
-    session.reader = markRaw(reader);
-    try {
-      while (!session.closing) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value?.byteLength) {
-          receiveData(session, value);
-          if (session.relaySocket?.readyState === WebSocket.OPEN) session.relaySocket.send(value);
+    let recoverableErrorCount = 0;
+    while (!session.closing && session.browserPort?.readable) {
+      const reader = session.browserPort.readable.getReader();
+      session.reader = markRaw(reader);
+      try {
+        while (!session.closing) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value?.byteLength) {
+            receiveData(session, value);
+            if (session.relaySocket?.readyState === WebSocket.OPEN) session.relaySocket.send(value);
+          }
         }
+      } catch (error) {
+        if (session.closing) break;
+        const errorName = serialReadErrorName(error);
+        if (!recoverableSerialReadErrors.has(errorName)) throw error;
+        recoverableErrorCount += 1;
+        const detail = errorName === "BufferOverrunError"
+          ? "接收缓冲区发生溢出，本次可能丢失了部分数据"
+          : `串口发生可恢复读取错误：${errorMessage(error)}`;
+        broadcastNotice(session, `\r\n\x1b[33m[${detail}；正在继续读取（第 ${recoverableErrorCount} 次）]\x1b[0m\r\n`);
+      } finally {
+        reader.releaseLock();
+        if (session.reader === reader) session.reader = undefined;
       }
-    } finally {
-      reader.releaseLock();
-      if (session.reader === reader) session.reader = undefined;
     }
   })();
   session.readTask = readTask;
@@ -1186,6 +1205,11 @@ async function sendFromComposer(view: SerialView) {
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function serialReadErrorName(error: unknown) {
+  if (error && typeof error === "object" && "name" in error && typeof error.name === "string") return error.name;
+  return /buffer\s*overrun/i.test(errorMessage(error)) ? "BufferOverrunError" : "";
 }
 
 function warnClipboardAccess(content: string) {
