@@ -88,18 +88,23 @@ drogon::ContentType StaticAssetContentType(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 12> hashed_asset_prefixes{
+    const std::array<std::string_view, 17> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/TimeManagerTool-",
         "/assets/HabitTool-",
         "/assets/DatePicker-",
         "/assets/FileShareTool-",
         "/assets/TransferTool-",
+        "/assets/TextCompareTool-",
         "/assets/SshTool-",
         "/assets/SerialTool-",
         "/assets/TerminalPluginTool-",
         "/assets/AuthenticatorTool-",
         "/assets/WebTerminal-",
+        "/assets/editor.worker-",
+        "/assets/binaryCompare.worker-",
+        "/assets/folderCompare.worker-",
+        "/assets/codicon-",
         "/assets/_plugin-vue_export-helper-",
     };
 

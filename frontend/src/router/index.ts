@@ -16,6 +16,7 @@ const SshTool = defineAsyncComponent(() => import("@/components/tools/SshTool.vu
 const SerialTool = defineAsyncComponent(() => import("@/components/tools/SerialTool.vue"));
 const AuthenticatorTool = defineAsyncComponent(() => import("@/components/tools/AuthenticatorTool.vue"));
 const TerminalPluginTool = defineAsyncComponent(() => import("@/components/tools/TerminalPluginTool.vue"));
+const TextCompareTool = defineAsyncComponent(() => import("@/components/tools/TextCompareTool.vue"));
 
 const router = createRouter({
   history: createWebHistory("/web/"),
@@ -24,6 +25,18 @@ const router = createRouter({
       path: "/",
       name: "home",
       component: HomeView,
+    },
+    {
+      path: "/tools/file-compare",
+      alias: "/tools/text-compare",
+      name: "file-compare",
+      component: ToolView,
+      meta: { hideChrome: true },
+      props: {
+        tool: findTool("textCompare"),
+        component: TextCompareTool,
+        hideHeader: true,
+      },
     },
     {
       path: "/tools/json-formatter",
