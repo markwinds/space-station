@@ -4,6 +4,7 @@ import {
   CodeSlashOutline,
   CubeOutline,
   FolderOpenOutline,
+  GitCompareOutline,
   KeyOutline,
   KeypadOutline,
   SwapHorizontalOutline,
@@ -11,7 +12,7 @@ import {
   HardwareChipOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "runtime";
+export type ToolId = "jsonFormatter" | "textCompare" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -24,6 +25,14 @@ export interface ToolDefinition {
 }
 
 export const tools: ToolDefinition[] = [
+  {
+    id: "textCompare",
+    title: "文件对比",
+    description: "比较文本和二进制文件差异",
+    category: "Compare",
+    icon: GitCompareOutline,
+    path: "/tools/file-compare",
+  },
   {
     id: "jsonFormatter",
     title: "JSON 格式化",
