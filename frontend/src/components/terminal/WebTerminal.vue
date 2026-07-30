@@ -1,5 +1,24 @@
 <template>
   <div class="web-terminal__root" :style="{ backgroundColor: props.background }">
+    <div
+      v-if="gutterVisible"
+      class="web-terminal__gutter"
+      :style="{ fontFamily: props.fontFamily, fontSize: `${props.fontSize}px` }"
+      aria-hidden="true"
+    >
+      <div class="web-terminal__gutter-rows" :style="{ transform: `translateY(${gutterOffsetTop}px)` }">
+        <div
+          v-for="row in gutterRows"
+          :key="row.key"
+          class="web-terminal__gutter-row"
+          :class="{ 'web-terminal__gutter-row--wrapped': row.wrapped }"
+          :style="{ height: `${gutterRowHeight}px`, lineHeight: `${gutterRowHeight}px` }"
+        >
+          <span v-if="props.showLineNumbers" class="web-terminal__line-number">{{ row.visible ? row.number : "" }}</span>
+          <span v-if="props.showLineTimestamps" class="web-terminal__line-time">{{ row.visible ? row.timestamp : "" }}</span>
+        </div>
+      </div>
+    </div>
     <div ref="mountElement" class="web-terminal__mount" />
     <div
       v-if="mobileSelectionToolbar"
@@ -23,8 +42,8 @@ import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal, type IDisposable } from "@xterm/xterm";
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { Terminal, type IDisposable, type IMarker } from "@xterm/xterm";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { writeClipboard } from "@/utils/clipboard";
 import type {
   TerminalRenderer,
@@ -48,6 +67,8 @@ const props = withDefaults(defineProps<{
   searchHighlightLimit?: number;
   autofocus?: boolean;
   enableWebgl?: boolean;
+  showLineNumbers?: boolean;
+  showLineTimestamps?: boolean;
 }>(), {
   scrollback: 50000,
   fontSize: 14,
@@ -62,6 +83,8 @@ const props = withDefaults(defineProps<{
   searchHighlightLimit: 1000,
   autofocus: true,
   enableWebgl: true,
+  showLineNumbers: false,
+  showLineTimestamps: false,
 });
 
 const emit = defineEmits<{
@@ -74,6 +97,16 @@ const emit = defineEmits<{
 }>();
 
 const mountElement = ref<HTMLElement>();
+const gutterVisible = computed(() => props.showLineNumbers || props.showLineTimestamps);
+const gutterRows = ref<Array<{
+  key: string;
+  number: number;
+  timestamp: string;
+  wrapped: boolean;
+  visible: boolean;
+}>>([]);
+const gutterOffsetTop = ref(0);
+const gutterRowHeight = ref(0);
 const mobileSelectionToolbar = ref<{ left: number; top: number }>();
 const mobileCopyLabel = ref("复制");
 let terminal: Terminal | undefined;
@@ -85,6 +118,7 @@ let resizeObserver: ResizeObserver | undefined;
 let resizeFrame = 0;
 let fitStabilizeFrame = 0;
 let appearanceFrame = 0;
+let gutterFrame = 0;
 let touchCleanup: (() => void) | undefined;
 let focusBoundaryCleanup: (() => void) | undefined;
 let mobileCopyLabelTimer = 0;
@@ -109,6 +143,14 @@ let userSelectionPointerActive = false;
 let userSelectionEventActive = false;
 let restoringUserSelection = false;
 let protectedSelection: { startX: number; startY: number; endX: number; endY: number } | undefined;
+
+type BufferType = "normal" | "alternate";
+interface LineTimestamp {
+  marker: IMarker;
+  value: string;
+}
+const lineTimestamps: Record<BufferType, LineTimestamp[]> = { normal: [], alternate: [] };
+const timestampOrderDirty: Record<BufferType, boolean> = { normal: false, alternate: false };
 
 type SearchAddonInternals = SearchAddon & {
   _highlightTimeout?: { clear: () => void };
@@ -168,6 +210,7 @@ function fitNow() {
   fitAddon.fit();
   preserveScrollbackForColumns(terminal.cols);
   reportSize();
+  scheduleGutterUpdate();
 }
 
 function fit() {
@@ -180,6 +223,104 @@ function fit() {
     fitNow();
     terminal?.refresh(0, Math.max(0, terminal.rows - 1));
   });
+}
+
+function formatLineTimestamp(value = new Date()) {
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+}
+
+function addLineTimestamp(instance = terminal) {
+  if (!instance || !props.showLineTimestamps) return;
+  const type = instance.buffer.active.type as BufferType;
+  const entries = lineTimestamps[type];
+  while (entries[entries.length - 1]?.marker.isDisposed) entries.pop();
+  const previous = entries[entries.length - 1];
+  const targetLine = instance.buffer.active.baseY + instance.buffer.active.cursorY;
+  if (previous?.marker.line === targetLine) return;
+  const marker = instance.registerMarker(0);
+  if (previous && !previous.marker.isDisposed && marker.line < previous.marker.line) {
+    timestampOrderDirty[type] = true;
+  }
+  entries.push({ marker, value: formatLineTimestamp() });
+}
+
+function clearLineTimestamps() {
+  for (const type of ["normal", "alternate"] as const) {
+    lineTimestamps[type].forEach(({ marker }) => marker.dispose());
+    lineTimestamps[type] = [];
+    timestampOrderDirty[type] = false;
+  }
+}
+
+function activeLineTimestamps(type: BufferType) {
+  const entries = lineTimestamps[type];
+  while (entries[0]?.marker.isDisposed) entries.shift();
+  if (timestampOrderDirty[type]) {
+    lineTimestamps[type] = entries
+      .filter(({ marker }) => !marker.isDisposed && marker.line >= 0)
+      .sort((left, right) => left.marker.line - right.marker.line);
+    timestampOrderDirty[type] = false;
+  }
+  return lineTimestamps[type];
+}
+
+function timestampForBufferRow(entries: LineTimestamp[], row: number, wrapped: boolean) {
+  let low = 0;
+  let high = entries.length - 1;
+  let found: LineTimestamp | undefined;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const candidate = entries[middle];
+    if (candidate.marker.line <= row) {
+      found = candidate;
+      low = middle + 1;
+    } else high = middle - 1;
+  }
+  if (!found || (found.marker.line !== row && !wrapped)) return "--:--:--";
+  return found.value;
+}
+
+function updateGutter() {
+  gutterFrame = 0;
+  const instance = terminal;
+  const element = mountElement.value;
+  if (!instance || !element || !gutterVisible.value) {
+    gutterRows.value = [];
+    return;
+  }
+  const screen = element.querySelector<HTMLElement>(".xterm-screen");
+  const screenBounds = screen?.getBoundingClientRect();
+  const elementBounds = element.getBoundingClientRect();
+  const measuredHeight = screenBounds?.height ?? 0;
+  gutterOffsetTop.value = Math.max(0, (screenBounds?.top ?? elementBounds.top) - elementBounds.top);
+  gutterRowHeight.value = measuredHeight > 0
+    ? measuredHeight / Math.max(1, instance.rows)
+    : props.fontSize * props.lineHeight;
+
+  const buffer = instance.buffer.active;
+  const timestamps = props.showLineTimestamps ? activeLineTimestamps(buffer.type as BufferType) : [];
+  const lastCursorRow = buffer.baseY + buffer.cursorY;
+  const rows = [];
+  for (let viewportRow = 0; viewportRow < instance.rows; viewportRow += 1) {
+    const bufferRow = buffer.viewportY + viewportRow;
+    const line = buffer.getLine(bufferRow);
+    const wrapped = line?.isWrapped === true;
+    const visible = bufferRow <= lastCursorRow || wrapped || Boolean(line?.translateToString(true));
+    rows.push({
+      key: `${buffer.type}:${bufferRow}`,
+      number: bufferRow + 1,
+      timestamp: props.showLineTimestamps ? timestampForBufferRow(timestamps, bufferRow, wrapped) : "",
+      wrapped,
+      visible,
+    });
+  }
+  gutterRows.value = rows;
+}
+
+function scheduleGutterUpdate() {
+  if (gutterFrame || !gutterVisible.value) return;
+  gutterFrame = window.requestAnimationFrame(updateGutter);
 }
 
 function write(data: string | Uint8Array, callback?: () => void) {
@@ -685,7 +826,8 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
   };
   const showSelectionToolbar = (clientX: number, clientY: number) => {
     const bounds = element.getBoundingClientRect();
-    const left = Math.max(58, Math.min(bounds.width - 58, clientX - bounds.left));
+    const rootBounds = element.parentElement?.getBoundingClientRect() ?? bounds;
+    const left = Math.max(58, Math.min(rootBounds.width - 58, clientX - rootBounds.left));
     const pointY = clientY - bounds.top;
     const top = pointY >= 58 ? pointY - 48 : Math.min(bounds.height - 40, pointY + 24);
     mobileSelectionToolbar.value = { left, top: Math.max(8, top) };
@@ -990,7 +1132,25 @@ onMounted(() => {
   terminal.loadAddon(searchAddon);
   terminal.loadAddon(serializeAddon);
   terminal.open(element);
+  if (props.showLineTimestamps) addLineTimestamp(terminal);
   terminal.onSelectionChange(() => preserveUserSelection(terminal!));
+  terminal.onLineFeed(() => {
+    addLineTimestamp(terminal);
+    scheduleGutterUpdate();
+  });
+  terminal.onRender(scheduleGutterUpdate);
+  terminal.onScroll(scheduleGutterUpdate);
+  terminal.onResize(() => {
+    // Reflow can dispose markers in the middle of the list and move the
+    // remaining markers. Re-sort only on resize, not on every output chunk.
+    timestampOrderDirty.normal = true;
+    timestampOrderDirty.alternate = true;
+    scheduleGutterUpdate();
+  });
+  terminal.buffer.onBufferChange(() => {
+    addLineTimestamp(terminal);
+    scheduleGutterUpdate();
+  });
   searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
     addonSearchIndex = resultIndex;
     addonSearchCount = resultCount;
@@ -1050,10 +1210,29 @@ onMounted(() => {
   emit("ready", { terminal, element, handle: terminalHandle });
 });
 
+watch(() => props.showLineTimestamps, async (enabled) => {
+  if (terminal) {
+    if (enabled) addLineTimestamp(terminal);
+    else clearLineTimestamps();
+  }
+  if (!gutterVisible.value) gutterRows.value = [];
+  await nextTick();
+  fit();
+  scheduleGutterUpdate();
+});
+
+watch(() => props.showLineNumbers, async () => {
+  if (!gutterVisible.value) gutterRows.value = [];
+  await nextTick();
+  fit();
+  scheduleGutterUpdate();
+});
+
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(resizeFrame);
   window.cancelAnimationFrame(fitStabilizeFrame);
   window.cancelAnimationFrame(appearanceFrame);
+  window.cancelAnimationFrame(gutterFrame);
   window.clearTimeout(searchCountTimer);
   window.clearTimeout(mobileCopyLabelTimer);
   searchCountRequestId += 1;
@@ -1073,13 +1252,38 @@ defineExpose(terminalHandle);
 <style scoped>
 .web-terminal__root {
   position: relative;
+  display: flex;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
-.web-terminal__mount { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.web-terminal__gutter {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: 100%;
+  padding: 0 6px;
+  overflow: hidden;
+  color: #6f7d87;
+  background: rgba(0, 0, 0, 0.12);
+  border-right: 1px solid rgba(132, 151, 164, 0.18);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+.web-terminal__gutter-rows { will-change: transform; }
+.web-terminal__gutter-row {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  overflow: hidden;
+}
+.web-terminal__gutter-row--wrapped { opacity: 0.62; }
+.web-terminal__line-number { display: inline-block; width: 6ch; text-align: right; }
+.web-terminal__line-time { display: inline-block; width: 8ch; text-align: left; }
+.web-terminal__mount { flex: 1 1 auto; width: 0; height: 100%; min-width: 0; min-height: 0; }
 .web-terminal__mount :deep(.xterm) {
   box-sizing: border-box;
   height: 100%;

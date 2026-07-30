@@ -1,5 +1,5 @@
 <template>
-  <div class="ssh-app" :class="{ 'ssh-app--terminal-open': activeTabId }" :style="mobileViewportStyle">
+  <div class="ssh-app" :class="{ 'ssh-app--terminal-open': activeTabId, 'ssh-app--sidebar-collapsed': sidebarCollapsed }" :style="mobileViewportStyle">
     <aside class="ssh-sidebar">
       <div class="ssh-brand-row">
         <router-link class="ssh-home" to="/" aria-label="返回首页">SS</router-link>
@@ -11,6 +11,7 @@
           <template #icon><n-icon><AddOutline /></n-icon></template>
           添加
         </n-button>
+        <n-button class="ssh-sidebar-collapse" quaternary circle size="small" aria-label="收起主机侧栏" title="收起主机侧栏" @click="collapseSidebar">«</n-button>
       </div>
 
       <n-input v-model:value="keyword" clearable size="small" placeholder="搜索主机" />
@@ -99,6 +100,10 @@
     <main class="ssh-workspace">
       <div class="ssh-tabs">
         <div class="ssh-tab-list" @wheel="handleTabListWheel" @dragover.prevent="handleTabListDragOver">
+          <n-button class="ssh-sidebar-expand" quaternary size="small" @click="expandSidebar">
+            <template #icon><n-icon><MenuOutline /></n-icon></template>
+            主机
+          </n-button>
           <n-button class="ssh-mobile-hosts" quaternary size="small" @click="activeTabId = ''">
             <template #icon><n-icon><MenuOutline /></n-icon></template>
             主机
@@ -197,6 +202,8 @@
           :font-size="terminalSettings.fontSize"
           :line-height="terminalSettings.lineHeight"
           :letter-spacing="terminalSettings.letterSpacing"
+          :show-line-numbers="terminalSettings.showLineNumbers"
+          :show-line-timestamps="terminalSettings.showLineTimestamps"
           :restore-buffer="tab.restoreBuffer"
           :search-highlight-limit="searchHighlightLimit"
           @ready="handleTerminalReady(tab, $event)"
@@ -448,41 +455,60 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showTerminalSettings" preset="card" title="终端设置" class="ssh-dialog" :style="dialogStyle">
+    <n-modal v-model:show="showTerminalSettings" preset="card" title="终端设置" class="ssh-dialog ssh-terminal-settings-dialog" :style="dialogStyle">
       <n-form label-placement="top">
-        <n-form-item label="终端回滚缓冲区（输出行）">
-          <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
-          <template #feedback>按 120 列终端折算；窄屏自动增加内部屏幕行容量，避免自动折行占满缓存。</template>
-        </n-form-item>
-        <p class="ssh-field-hint">保存后对新打开或重新连接的终端生效。</p>
-        <n-form-item label="字体大小">
-          <n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" :step="1" />
-        </n-form-item>
-        <n-form-item label="行高">
-          <n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" />
-        </n-form-item>
-        <n-form-item label="字符间距">
-          <n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" />
-        </n-form-item>
-        <n-form-item label="命令编辑区">
-          <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示命令编辑和发送框</n-checkbox>
-        </n-form-item>
-        <p class="ssh-field-hint">字体和间距会立即应用到已打开终端；较小字体和行高可以显示更多行。</p>
-        <n-form-item class="ssh-settings-recording" label="单次录制缓冲区上限（MiB）">
-          <n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" />
-        </n-form-item>
-        <p class="ssh-field-hint">录制内容仅保存在当前浏览器标签内；达到上限后会停止追加并提示。</p>
-        <n-form-item class="ssh-settings-recording" label="剪贴板操作">
-          <div class="ssh-settings-switches">
-            <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
-            <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+        <div class="ssh-terminal-settings-layout">
+          <section class="ssh-terminal-settings-card">
+            <h3>显示</h3>
+            <div class="ssh-terminal-settings-grid ssh-terminal-settings-grid--three">
+              <n-form-item label="字体大小">
+                <n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" :step="1" />
+              </n-form-item>
+              <n-form-item label="行高">
+                <n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" />
+              </n-form-item>
+              <n-form-item label="字符间距">
+                <n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" />
+              </n-form-item>
+            </div>
+            <n-form-item label="行信息侧栏">
+              <div class="ssh-settings-switches ssh-settings-switches--inline">
+                <n-checkbox v-model:checked="terminalSettingsDraft.showLineNumbers">显示行号</n-checkbox>
+                <n-checkbox v-model:checked="terminalSettingsDraft.showLineTimestamps">显示时间</n-checkbox>
+              </div>
+              <template #feedback>时间取浏览器收到并解析该行时的本地时间；启用前的历史行不补记时间。</template>
+            </n-form-item>
+            <p class="ssh-field-hint">字体和间距会立即应用到已打开终端。</p>
+          </section>
+
+          <section class="ssh-terminal-settings-card">
+            <h3>缓存与录制</h3>
+            <div class="ssh-terminal-settings-grid">
+              <n-form-item label="回滚缓冲区（输出行）">
+                <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
+                <template #feedback>按 120 列折算；窄屏自动增加内部屏幕行容量。</template>
+              </n-form-item>
+              <n-form-item label="单次录制上限（MiB）">
+                <n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" />
+              </n-form-item>
+            </div>
+            <p class="ssh-field-hint">回滚设置对新打开或重新连接的终端生效；录制达到上限后停止追加并提示。</p>
+          </section>
+
+          <section class="ssh-terminal-settings-card ssh-terminal-settings-card--wide">
+            <h3>交互</h3>
+            <div class="ssh-terminal-settings-options">
+              <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示命令编辑和发送框</n-checkbox>
+              <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
+              <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+            </div>
             <div class="ssh-clipboard-permission">
-              <span>读取权限：{{ clipboardPermissionLabel }}</span>
+              <span>剪贴板读取权限：{{ clipboardPermissionLabel }}</span>
               <n-button size="small" secondary :loading="clipboardPermissionState === 'checking'" @click="requestClipboardAccess">检测/授权</n-button>
             </div>
-          </div>
-        </n-form-item>
-        <p class="ssh-field-hint">已授权时右键自动粘贴；无权限时保留浏览器原生右键菜单。不会额外发送回车，但多行内容仍可能被远程 Shell 执行。</p>
+            <p class="ssh-field-hint">无读取权限时保留浏览器原生右键菜单；不会额外发送回车，但多行内容仍可能被远程 Shell 执行。</p>
+          </section>
+        </div>
       </n-form>
       <template #footer>
         <div class="ssh-dialog-actions ssh-dialog-actions--end">
@@ -659,6 +685,7 @@ const {
 const hosts = ref<SshHost[]>([]);
 const tabs = ref<TerminalTab[]>([]);
 const activeTabId = ref("");
+const sidebarCollapsed = ref(localStorage.getItem("space-station:ssh-sidebar-collapsed") === "true");
 const draggedTabId = ref("");
 const activePane = ref<"terminal" | "sftp">("terminal");
 const openedSftpTabIds = ref<string[]>([]);
@@ -749,6 +776,16 @@ const snippetActionOptions = [
 const collapsedHostSectionsKey = "space-station:ssh-collapsed-host-sections";
 const collapsedHostSections = ref<Set<string>>(loadCollapsedHostSections());
 let hostSaveQueue: Promise<void> = Promise.resolve();
+
+function collapseSidebar() {
+  sidebarCollapsed.value = true;
+  localStorage.setItem("space-station:ssh-sidebar-collapsed", "true");
+}
+
+function expandSidebar() {
+  sidebarCollapsed.value = false;
+  localStorage.setItem("space-station:ssh-sidebar-collapsed", "false");
+}
 
 const filteredHosts = computed(() => {
   const query = keyword.value.trim().toLowerCase();
@@ -1875,6 +1912,8 @@ function saveTerminalSettings() {
   terminalSettings.fontSize = clampNumber(terminalSettingsDraft.fontSize, 10, 28, 14);
   terminalSettings.lineHeight = clampDecimal(terminalSettingsDraft.lineHeight, 1, 2, 1.2);
   terminalSettings.letterSpacing = clampDecimal(terminalSettingsDraft.letterSpacing, 0, 4, 0);
+  terminalSettings.showLineNumbers = terminalSettingsDraft.showLineNumbers === true;
+  terminalSettings.showLineTimestamps = terminalSettingsDraft.showLineTimestamps === true;
   terminalSettings.showCommandComposer = terminalSettingsDraft.showCommandComposer !== false;
   terminalSettings.copyOnSelect = terminalSettingsDraft.copyOnSelect === true;
   terminalSettings.pasteOnRightClick = terminalSettingsDraft.pasteOnRightClick === true;
@@ -2095,6 +2134,8 @@ async function importConfiguration(event: Event) {
       terminalSettings.fontSize = clampNumber(data.terminalSettings.fontSize, 10, 28, terminalSettings.fontSize);
       terminalSettings.lineHeight = clampDecimal(data.terminalSettings.lineHeight, 1, 2, terminalSettings.lineHeight);
       terminalSettings.letterSpacing = clampDecimal(data.terminalSettings.letterSpacing, 0, 4, terminalSettings.letterSpacing);
+      if (typeof data.terminalSettings.showLineNumbers === "boolean") terminalSettings.showLineNumbers = data.terminalSettings.showLineNumbers;
+      if (typeof data.terminalSettings.showLineTimestamps === "boolean") terminalSettings.showLineTimestamps = data.terminalSettings.showLineTimestamps;
       if (typeof data.terminalSettings.showCommandComposer === "boolean") terminalSettings.showCommandComposer = data.terminalSettings.showCommandComposer;
       if (typeof data.terminalSettings.copyOnSelect === "boolean") terminalSettings.copyOnSelect = data.terminalSettings.copyOnSelect;
       if (typeof data.terminalSettings.pasteOnRightClick === "boolean") terminalSettings.pasteOnRightClick = data.terminalSettings.pasteOnRightClick;
@@ -2189,10 +2230,13 @@ function disposeTab(tab: TerminalTab) {
 :global(body.ssh-page-lock #app),
 :global(body.ssh-page-lock .app-shell) { margin: 0; overflow: hidden; background: #101418; }
 .ssh-app { height: 100dvh; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); overflow: hidden; background: #101418; color: #d8dee9; }
+.ssh-app--sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+.ssh-app--sidebar-collapsed .ssh-sidebar { display: none; }
 .ssh-sidebar { box-sizing: border-box; min-width: 0; min-height: 0; height: 100%; padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; border-right: 1px solid #27313a; background: #171d22; }
-.ssh-brand-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.ssh-brand-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto 28px; align-items: center; gap: 8px; }
 .ssh-brand-row strong, .ssh-brand-row small { display: block; }
 .ssh-brand-row small { margin-top: 2px; color: #7f8d99; font-size: 11px; }
+.ssh-sidebar-collapse { color: #aab7bf; font-size: 18px; }
 .ssh-home { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: #79a8a5; color: #101418; font-weight: 900; text-decoration: none; }
 .ssh-host-scroll { min-height: 0; flex: 1 1 0; }
 .ssh-host-list { min-height: 100%; padding-right: 9px; display: flex; flex-direction: column; gap: 12px; }
@@ -2225,6 +2269,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-tab-list::-webkit-scrollbar, .ssh-tab-actions::-webkit-scrollbar { display: none; }
 .ssh-tab-actions { max-width: 70vw; padding: 0 4px; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; background: #151a1f; box-shadow: -8px 0 12px #101418aa; }
 .ssh-mobile-hosts { display: none; }
+.ssh-sidebar-expand { display: none; flex: 0 0 auto; align-self: center; min-height: 34px; margin: 4px; color: #dce6eb; }
+.ssh-app--sidebar-collapsed .ssh-sidebar-expand { display: inline-flex; }
 .ssh-mobile-more { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
 .ssh-tab.active { border-bottom-color: #79a8a5; background: #101418; color: #e5e9ef; }
@@ -2312,13 +2358,24 @@ function disposeTab(tab: TerminalTab) {
 .ssh-forward-row small { margin-top: 3px; color: #687783; }
 .ssh-recording-options { display: grid; gap: 12px; }
 .ssh-recording-options p { margin: 4px 0 0; color: #687783; font-size: 12px; }
-.ssh-settings-recording { margin-top: 18px; }
 .ssh-settings-switches { display: grid; gap: 10px; }
+.ssh-settings-switches--inline { grid-template-columns: repeat(2, minmax(0, max-content)); gap: 10px 22px; }
+.ssh-terminal-settings-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ssh-terminal-settings-card { min-width: 0; padding: 14px 14px 10px; border: 1px solid #dfe5e8; border-radius: 9px; background: #f8fafb; }
+.ssh-terminal-settings-card--wide { grid-column: 1 / -1; }
+.ssh-terminal-settings-card h3 { margin: 0 0 10px; color: #34434d; font-size: 14px; }
+.ssh-terminal-settings-card :deep(.n-form-item) { margin-bottom: 10px; }
+.ssh-terminal-settings-card > :last-child { margin-bottom: 0; }
+.ssh-terminal-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.ssh-terminal-settings-grid--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ssh-terminal-settings-grid :deep(.n-input-number) { width: 100%; }
+.ssh-terminal-settings-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 18px; }
 .ssh-clipboard-permission { padding-top: 2px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #687783; font-size: 12px; }
 .ssh-fingerprint { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 10px; margin: 18px 0 0; }
 .ssh-fingerprint dt { color: #637382; }
 .ssh-fingerprint dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
 :global(.ssh-dialog) { --ssh-dialog-width: min(560px, calc(100vw - 32px)); }
+:global(.ssh-terminal-settings-dialog) { --ssh-dialog-width: min(860px, calc(100vw - 32px)); }
 @media (max-width: 760px) {
   .ssh-app {
     position: fixed;
@@ -2340,8 +2397,10 @@ function disposeTab(tab: TerminalTab) {
       calc(10px + env(safe-area-inset-left, 0px));
     border-right: 0;
   }
+  .ssh-app--sidebar-collapsed .ssh-sidebar { display: flex; }
   .ssh-app:not(.ssh-app--terminal-open) .ssh-workspace { display: none; }
   .ssh-app--terminal-open .ssh-sidebar { display: none; }
+  .ssh-sidebar-collapse, .ssh-sidebar-expand { display: none !important; }
   .ssh-workspace { box-sizing: border-box; width: 100%; height: 100%; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
   .ssh-tabs { grid-template-columns: minmax(0, 1fr) auto; }
   .ssh-tab-list .ssh-tab:not(.active) { display: none; }
@@ -2388,6 +2447,8 @@ function disposeTab(tab: TerminalTab) {
   .ssh-snippet-row { align-items: flex-start; flex-wrap: wrap; }
   .ssh-snippet-row > .ssh-snippet-content { flex-basis: calc(100% - 50px); }
   .ssh-shared-snippet-list .ssh-snippet-content { flex-basis: 100%; }
+  .ssh-terminal-settings-layout, .ssh-terminal-settings-grid, .ssh-terminal-settings-grid--three, .ssh-terminal-settings-options { grid-template-columns: 1fr; }
+  .ssh-terminal-settings-card--wide { grid-column: auto; }
   :global(.ssh-dialog) {
     --ssh-dialog-width: 100vw;
     max-width: 100vw;

@@ -4,6 +4,8 @@ export interface TerminalPreferences {
   fontSize: number;
   lineHeight: number;
   letterSpacing: number;
+  showLineNumbers: boolean;
+  showLineTimestamps: boolean;
   showCommandComposer: boolean;
   copyOnSelect: boolean;
   pasteOnRightClick: boolean;
@@ -17,6 +19,8 @@ export const defaultTerminalPreferences: TerminalPreferences = {
   fontSize: 14,
   lineHeight: 1.2,
   letterSpacing: 0,
+  showLineNumbers: false,
+  showLineTimestamps: false,
   showCommandComposer: true,
   copyOnSelect: false,
   pasteOnRightClick: false,
@@ -40,6 +44,8 @@ export function normalizeTerminalPreferences(value: Partial<TerminalPreferences>
     fontSize: clampTerminalInteger(value.fontSize, 10, 28, defaults.fontSize),
     lineHeight: clampTerminalDecimal(value.lineHeight, 1, 2, defaults.lineHeight),
     letterSpacing: clampTerminalDecimal(value.letterSpacing, 0, 4, defaults.letterSpacing),
+    showLineNumbers: value.showLineNumbers === true,
+    showLineTimestamps: value.showLineTimestamps === true,
     showCommandComposer: value.showCommandComposer !== false,
     copyOnSelect: value.copyOnSelect === true,
     pasteOnRightClick: value.pasteOnRightClick === true,

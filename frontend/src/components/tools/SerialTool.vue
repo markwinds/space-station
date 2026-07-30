@@ -1,9 +1,10 @@
 <template>
-  <div class="serial-app" :class="{ 'serial-app--session-open': activeView && !mobileSetup }" :style="mobileViewportStyle">
+  <div class="serial-app" :class="{ 'serial-app--session-open': activeView && !mobileSetup, 'serial-app--sidebar-collapsed': sidebarCollapsed }" :style="mobileViewportStyle">
     <aside class="serial-sidebar">
       <div class="serial-brand">
         <router-link to="/" aria-label="返回首页">SS</router-link>
         <div><strong>串口终端</strong><small>本机 / 共享 / 服务器</small></div>
+        <n-button class="serial-sidebar-collapse" quaternary circle size="small" aria-label="收起串口侧栏" title="收起串口侧栏" @click="collapseSidebar">«</n-button>
       </div>
 
       <div class="serial-source-switch">
@@ -89,6 +90,7 @@
 
     <main class="serial-workspace">
       <header class="serial-tabs">
+        <n-button class="serial-sidebar-expand" secondary size="small" @click="expandSidebar">☰ 串口</n-button>
         <n-button class="serial-mobile-menu" secondary size="small" @click="mobileSetup = true">串口</n-button>
         <div class="serial-tab-list">
           <button
@@ -162,6 +164,8 @@
             :font-size="terminalSettings.fontSize"
             :line-height="terminalSettings.lineHeight"
             :letter-spacing="terminalSettings.letterSpacing"
+            :show-line-numbers="terminalSettings.showLineNumbers"
+            :show-line-timestamps="terminalSettings.showLineTimestamps"
             @ready="handleTerminalReady(view, $event)"
             @data="handleTerminalData(view, $event)"
             @renderer="view.renderer = $event"
@@ -273,30 +277,51 @@
       <template #footer><div class="serial-dialog-actions"><n-button @click="showRecordingOptions = false">取消</n-button><n-button type="primary" @click="startRecording">开始录制</n-button></div></template>
     </n-modal>
 
-    <n-modal v-model:show="showTerminalSettings" preset="card" title="终端设置（SSH 与串口共用）" :style="dialogStyle">
+    <n-modal v-model:show="showTerminalSettings" preset="card" title="终端设置（SSH 与串口共用）" class="serial-terminal-settings-dialog" :style="dialogStyle">
       <n-form label-placement="top">
-        <div class="serial-settings-grid">
-          <n-form-item label="回滚缓冲区（输出行）">
-            <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
-            <template #feedback>按 120 列终端折算；窄屏会自动增加内部屏幕行容量。</template>
-          </n-form-item>
-          <n-form-item label="字体大小"><n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" /></n-form-item>
-          <n-form-item label="行高"><n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" /></n-form-item>
-          <n-form-item label="字符间距"><n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" /></n-form-item>
-          <n-form-item label="录制缓冲区上限（MiB）"><n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" /></n-form-item>
-        </div>
-        <n-form-item label="公共交互">
-          <div class="serial-setting-switches">
-            <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示底部命令编辑和发送框</n-checkbox>
-            <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
-            <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+        <div class="serial-terminal-settings-layout">
+          <section class="serial-terminal-settings-card">
+            <h3>显示</h3>
+            <div class="serial-terminal-settings-grid serial-terminal-settings-grid--three">
+              <n-form-item label="字体大小"><n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" /></n-form-item>
+              <n-form-item label="行高"><n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" /></n-form-item>
+              <n-form-item label="字符间距"><n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" /></n-form-item>
+            </div>
+            <n-form-item label="行信息侧栏">
+              <div class="serial-setting-switches serial-setting-switches--inline">
+                <n-checkbox v-model:checked="terminalSettingsDraft.showLineNumbers">显示行号</n-checkbox>
+                <n-checkbox v-model:checked="terminalSettingsDraft.showLineTimestamps">显示时间</n-checkbox>
+              </div>
+              <template #feedback>时间取浏览器收到并解析该行时的本地时间；启用前的历史行不补记时间。</template>
+            </n-form-item>
+          </section>
+
+          <section class="serial-terminal-settings-card">
+            <h3>缓存与录制</h3>
+            <div class="serial-terminal-settings-grid">
+              <n-form-item label="回滚缓冲区（输出行）">
+                <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
+                <template #feedback>按 120 列折算；窄屏自动增加内部屏幕行容量。</template>
+              </n-form-item>
+              <n-form-item label="单次录制上限（MiB）"><n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" /></n-form-item>
+            </div>
+            <p class="serial-settings-hint">回滚设置对新打开或重新连接的终端生效；录制达到上限后停止追加并提示。</p>
+          </section>
+
+          <section class="serial-terminal-settings-card serial-terminal-settings-card--wide">
+            <h3>交互</h3>
+            <div class="serial-terminal-settings-options">
+              <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示底部命令编辑和发送框</n-checkbox>
+              <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
+              <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+            </div>
             <div class="serial-clipboard-permission">
-              <span>读取权限：{{ clipboardPermissionLabel }}</span>
+              <span>剪贴板读取权限：{{ clipboardPermissionLabel }}</span>
               <n-button size="small" secondary :loading="clipboardPermissionState === 'checking'" @click="requestClipboardAccess">检测/授权</n-button>
             </div>
-          </div>
-        </n-form-item>
-        <p class="serial-settings-hint">已明确授权时右键自动粘贴；Safari 或无权限时直接显示浏览器原生右键菜单。</p>
+            <p class="serial-settings-hint">无读取权限时直接显示浏览器原生右键菜单。</p>
+          </section>
+        </div>
       </n-form>
       <template #footer><div class="serial-dialog-actions"><n-button @click="showTerminalSettings = false">取消</n-button><n-button type="primary" @click="saveTerminalSettings">保存</n-button></div></template>
     </n-modal>
@@ -429,6 +454,7 @@ const sessions = reactive(new Map<string, SerialSession>());
 const views = reactive<SerialView[]>([]);
 const activeViewId = ref("");
 const mobileSetup = ref(false);
+const sidebarCollapsed = ref(localStorage.getItem("space-station:serial-sidebar-collapsed") === "true");
 const terminalSettings = reactive<TerminalPreferences>(loadTerminalPreferences());
 const terminalSettingsDraft = reactive<TerminalPreferences>({ ...terminalSettings });
 const showTerminalSettings = ref(false);
@@ -469,6 +495,16 @@ const {
 } = useSharedCommandSnippetLibrary();
 const showQuickSnippets = ref(localStorage.getItem("serial-show-quick-snippets") !== "false");
 const showRecordingOptions = ref(false);
+
+function collapseSidebar() {
+  sidebarCollapsed.value = true;
+  localStorage.setItem("space-station:serial-sidebar-collapsed", "true");
+}
+
+function expandSidebar() {
+  sidebarCollapsed.value = false;
+  localStorage.setItem("space-station:serial-sidebar-collapsed", "false");
+}
 const recordingTargetId = ref("");
 const recordingDraft = reactive({ stripAnsi: true, timestamps: false });
 const browserIds = new WeakMap<SerialPort, string>();
@@ -1563,14 +1599,18 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .serial-app { height: 100dvh; min-width: 0; display: grid; grid-template-columns: 310px minmax(0, 1fr); overflow: hidden; background: #0d1318; color: #d7e0e7; }
+.serial-app--sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+.serial-app--sidebar-collapsed .serial-sidebar { display: none; }
 .serial-sidebar { min-height: 0; padding: 18px; display: flex; flex-direction: column; gap: 13px; overflow: auto; background: #151d23; border-right: 1px solid #2d3b45; scrollbar-color: #445865 #151d23; scrollbar-width: thin; }
 .serial-sidebar::-webkit-scrollbar, .serial-tab-list::-webkit-scrollbar { width: 8px; height: 8px; }
 .serial-sidebar::-webkit-scrollbar-thumb, .serial-tab-list::-webkit-scrollbar-thumb { background: #445865; border: 2px solid #151d23; border-radius: 8px; }
 .serial-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 3px; }
 .serial-brand > a { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 10px; background: #85b8b5; color: #102128; font-weight: 900; text-decoration: none; }
 .serial-brand > div { display: grid; gap: 2px; }
+.serial-brand > div { min-width: 0; flex: 1; }
 .serial-brand strong { font-size: 18px; }
 .serial-brand small, .serial-hint { color: #8fa0ad; }
+.serial-sidebar-collapse { flex: 0 0 auto; color: #aab7bf; font-size: 18px; }
 .serial-source-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 3px; border-radius: 8px; background: #0e151a; }
 .serial-source-switch button { min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: #9caab4; cursor: pointer; }
 .serial-source-switch button.active { background: #283842; color: #e9f0f4; font-weight: 700; }
@@ -1618,6 +1658,8 @@ onBeforeUnmount(() => {
 .serial-status-label.open { background: rgba(39, 135, 83, .26); color: #78d7a1; }
 .serial-status-label.error { background: rgba(169, 62, 62, .28); color: #f0a0a0; }
 .serial-mobile-menu { display: none; align-self: center; margin-left: 8px; }
+.serial-sidebar-expand { display: none; align-self: center; flex: 0 0 auto; min-height: 34px; margin-left: 8px; }
+.serial-app--sidebar-collapsed .serial-sidebar-expand { display: inline-flex; }
 .serial-empty { flex: 1; display: grid; place-content: center; justify-items: center; padding: 30px; text-align: center; }
 .serial-empty > div { color: #85b8b5; font: 700 54px/1 monospace; }
 .serial-empty h1 { margin: 20px 0 8px; font-size: 24px; }
@@ -1658,9 +1700,20 @@ onBeforeUnmount(() => {
 .serial-snippet-row code { overflow: hidden; color: #687783; text-overflow: ellipsis; white-space: nowrap; }
 .serial-recording-options, .serial-setting-switches { display: grid; gap: 12px; }
 .serial-recording-options p { margin: 0; color: #687783; font-size: 12px; }
+.serial-setting-switches--inline { grid-template-columns: repeat(2, minmax(0, max-content)); gap: 10px 22px; }
 .serial-clipboard-permission { padding-top: 2px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #687783; font-size: 12px; }
-.serial-settings-hint { margin: -10px 0 10px; color: #687783; font-size: 12px; line-height: 1.5; }
-.serial-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+.serial-settings-hint { margin: 7px 0 0; color: #687783; font-size: 12px; line-height: 1.5; }
+.serial-terminal-settings-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.serial-terminal-settings-card { min-width: 0; padding: 14px 14px 10px; border: 1px solid #dfe5e8; border-radius: 9px; background: #f8fafb; }
+.serial-terminal-settings-card--wide { grid-column: 1 / -1; }
+.serial-terminal-settings-card h3 { margin: 0 0 10px; color: #34434d; font-size: 14px; }
+.serial-terminal-settings-card :deep(.n-form-item) { margin-bottom: 10px; }
+.serial-terminal-settings-card > :last-child { margin-bottom: 0; }
+.serial-terminal-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.serial-terminal-settings-grid--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.serial-terminal-settings-grid :deep(.n-input-number) { width: 100%; }
+.serial-terminal-settings-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 18px; }
+:global(.serial-terminal-settings-dialog) { width: min(860px, calc(100vw - 32px)) !important; }
 .serial-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 760px) {
@@ -1676,7 +1729,9 @@ onBeforeUnmount(() => {
     overflow: hidden;
   }
   .serial-sidebar { width: 100%; border-right: 0; padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom)); }
+  .serial-app--sidebar-collapsed .serial-sidebar { display: flex; }
   .serial-app--session-open .serial-sidebar { display: none; }
+  .serial-sidebar-collapse, .serial-sidebar-expand { display: none !important; }
   .serial-workspace { display: none; }
   .serial-app--session-open .serial-workspace { display: flex; }
   .serial-mobile-menu {
@@ -1719,6 +1774,8 @@ onBeforeUnmount(() => {
   .serial-snippet-row { align-items: flex-start; flex-wrap: wrap; }
   .serial-snippet-row > .serial-snippet-content { flex-basis: calc(100% - 50px); }
   .serial-shared-snippet-list .serial-snippet-content { flex-basis: 100%; }
-  .serial-settings-grid { grid-template-columns: 1fr; }
+  .serial-terminal-settings-layout, .serial-terminal-settings-grid, .serial-terminal-settings-grid--three, .serial-terminal-settings-options { grid-template-columns: 1fr; }
+  .serial-terminal-settings-card--wide { grid-column: auto; }
+  :global(.serial-terminal-settings-dialog) { width: 100vw !important; max-width: 100vw; max-height: 100dvh; margin: 0; border-radius: 0; }
 }
 </style>
