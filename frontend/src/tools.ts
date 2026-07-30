@@ -11,9 +11,10 @@ import {
   TerminalOutline,
   HardwareChipOutline,
   ExtensionPuzzleOutline,
+  CameraOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "textCompare" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
+export type ToolId = "jsonFormatter" | "textCompare" | "screenshot" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -26,6 +27,14 @@ export interface ToolDefinition {
 }
 
 export const tools: ToolDefinition[] = [
+  {
+    id: "screenshot",
+    title: "浏览器截屏",
+    description: "捕获页面并裁剪、打码和添加常用标注",
+    category: "Capture",
+    icon: CameraOutline,
+    path: "/tools/screenshot",
+  },
   {
     id: "textCompare",
     title: "文件对比",

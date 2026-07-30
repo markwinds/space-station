@@ -17,6 +17,7 @@ const SerialTool = defineAsyncComponent(() => import("@/components/tools/SerialT
 const AuthenticatorTool = defineAsyncComponent(() => import("@/components/tools/AuthenticatorTool.vue"));
 const TerminalPluginTool = defineAsyncComponent(() => import("@/components/tools/TerminalPluginTool.vue"));
 const TextCompareTool = defineAsyncComponent(() => import("@/components/tools/TextCompareTool.vue"));
+const ScreenshotTool = defineAsyncComponent(() => import("@/components/tools/ScreenshotTool.vue"));
 
 const router = createRouter({
   history: createWebHistory("/web/"),
@@ -25,6 +26,17 @@ const router = createRouter({
       path: "/",
       name: "home",
       component: HomeView,
+    },
+    {
+      path: "/tools/screenshot",
+      name: "screenshot",
+      component: ToolView,
+      meta: { hideChrome: true },
+      props: {
+        tool: findTool("screenshot"),
+        component: ScreenshotTool,
+        hideHeader: true,
+      },
     },
     {
       path: "/tools/file-compare",
