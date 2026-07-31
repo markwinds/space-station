@@ -103,9 +103,9 @@
             class="serial-tab"
             :class="{
               active: view.id === activeViewId,
-              'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === view.id,
-              'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === view.id,
+              'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(view.id),
             }"
+            :style="terminalSplit.tabStyle(view.id)"
             @click="activateView(view.id)"
           >
             <span class="serial-status-dot" :class="sessionFor(view)?.status" />
@@ -115,8 +115,8 @@
         </div>
         <div v-if="activeSession" class="serial-tab-actions">
           <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
-            <n-button class="serial-desktop-actions" secondary size="tiny" title="分屏后点击标签可替换当前活动窗格" :disabled="views.length < 2 && !terminalSplit.isSplit.value">
-              {{ terminalSplit.isSplit.value ? terminalSplit.directionLabel.value : "分屏" }}
+            <n-button class="serial-desktop-actions" secondary size="tiny" title="在当前窗格继续分屏；点击其他标签可替换当前活动窗格" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
+              {{ terminalSplit.splitLabel.value }}
             </n-button>
           </n-dropdown>
           <terminal-action-bar
@@ -174,11 +174,8 @@
         class="serial-terminal-split"
         :class="{
           'is-split': terminalSplit.isSplit.value,
-          'is-columns': terminalSplit.direction.value === 'columns',
-          'is-rows': terminalSplit.direction.value === 'rows',
           'is-resizing': terminalSplit.resizing.value,
         }"
-        :style="terminalSplit.gridStyle.value"
       >
         <section
           v-for="view in views"
@@ -187,8 +184,7 @@
           class="serial-terminal-section"
           :class="{
             focused: terminalSplit.isPaneFocused(view.id),
-            'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === view.id,
-            'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === view.id,
+            'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(view.id),
           }"
           :style="terminalSplit.paneStyle(view.id)"
           @pointerdown.capture="terminalSplit.focusPane(view.id)"
@@ -232,13 +228,15 @@
             </terminal-command-panel>
         </section>
         <div
-          v-if="terminalSplit.isSplit.value"
+          v-for="divider in terminalSplit.dividers.value"
+          :key="divider.id"
           class="serial-terminal-divider"
-          :style="terminalSplit.dividerStyle.value"
+          :class="[`is-${divider.direction}`, { active: terminalSplit.resizingBranchId.value === divider.id }]"
+          :style="divider.style"
           role="separator"
-          :aria-orientation="terminalSplit.direction.value === 'columns' ? 'vertical' : 'horizontal'"
+          :aria-orientation="divider.direction === 'columns' ? 'vertical' : 'horizontal'"
           title="拖动调整分屏比例"
-          @pointerdown="terminalSplit.startResize"
+          @pointerdown="terminalSplit.startResize($event, divider.id)"
           @pointermove="terminalSplit.resize"
           @pointerup="finishTerminalSplitResize"
           @pointercancel="finishTerminalSplitResize"
@@ -654,10 +652,14 @@ const selectedPortAvailable = computed(() => source.value === "browser"
 const activeView = computed(() => views.find((view) => view.id === activeViewId.value));
 const activeSession = computed(() => activeView.value ? sessions.get(activeView.value.sessionKey) : undefined);
 const terminalSplitOptions = computed(() => [
-  { label: "左右分屏", key: "columns", disabled: views.length < 2 && !terminalSplit.isSplit.value },
-  { label: "上下分屏", key: "rows", disabled: views.length < 2 && !terminalSplit.isSplit.value },
+  { label: "当前窗格左右分屏", key: "columns", disabled: !terminalSplit.canSplit.value },
+  { label: "当前窗格上下分屏", key: "rows", disabled: !terminalSplit.canSplit.value },
   ...(terminalSplit.isSplit.value
-    ? [{ type: "divider" as const, key: "split-divider" }, { label: "关闭分屏", key: "close" }]
+    ? [
+        { type: "divider" as const, key: "split-divider" },
+        { label: "关闭当前窗格", key: "close-pane" },
+        { label: "退出全部分屏", key: "close-all" },
+      ]
     : []),
 ]);
 const activePluginContext = computed(() => {
@@ -1169,7 +1171,8 @@ function activateView(viewId: string) {
 }
 
 function handleTerminalSplitAction(key: string | number) {
-  if (key === "close") terminalSplit.closeSplit();
+  if (key === "close-pane") terminalSplit.closeFocusedPane();
+  else if (key === "close-all") terminalSplit.closeSplit();
   else if (key === "columns" || key === "rows") terminalSplit.split(key);
 }
 
@@ -1713,8 +1716,7 @@ onBeforeUnmount(() => {
 .serial-tab-list { min-width: 0; flex: 1; display: flex; align-items: stretch; overflow-x: auto; }
 .serial-tab { flex: 0 0 auto; min-width: 130px; max-width: 230px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #2b3841; background: #151d23; color: #9eacb6; cursor: pointer; }
 .serial-tab.active { box-shadow: inset 0 -2px #9bc7c4; background: #2a3a44; color: #f4f9fb; }
-.serial-tab.split-pane-primary { box-shadow: inset 0 -2px var(--terminal-split-primary); }
-.serial-tab.split-pane-secondary { box-shadow: inset 0 -2px var(--terminal-split-secondary); }
+.serial-tab.split-pane-bound { box-shadow: inset 0 -2px var(--terminal-pane-color); }
 .serial-tab > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .serial-tab i { margin-left: auto; color: #82919c; font-size: 18px; font-style: normal; }
 .serial-status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #73818b; }
@@ -1751,19 +1753,18 @@ onBeforeUnmount(() => {
 .serial-empty h1 { margin: 20px 0 8px; font-size: 24px; }
 .serial-empty p { margin: 0; color: #83939e; }
 .serial-empty-mobile { display: none; margin-top: 18px; }
-.serial-terminal-split { min-width: 0; min-height: 0; flex: 1; display: grid; overflow: hidden; background: #101418; }
-.serial-terminal-section { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.serial-terminal-split.is-split .serial-terminal-section.split-pane-primary { outline: 1px solid var(--terminal-split-primary); outline-offset: -1px; }
-.serial-terminal-split.is-split .serial-terminal-section.split-pane-secondary { outline: 1px solid var(--terminal-split-secondary); outline-offset: -1px; }
+.serial-terminal-split { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; background: #101418; }
+.serial-terminal-section { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.serial-terminal-split.is-split .serial-terminal-section.split-pane-bound { outline: 1px solid var(--terminal-pane-color); outline-offset: -1px; }
 .serial-terminal-split.is-split .serial-terminal-section.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
-.serial-terminal-divider { position: relative; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
+.serial-terminal-divider { position: absolute; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
 .serial-terminal-divider::after { position: absolute; border-radius: 999px; background: #607783; content: ""; transition: background .14s ease; }
-.serial-terminal-split.is-columns .serial-terminal-divider { cursor: col-resize; }
-.serial-terminal-split.is-columns .serial-terminal-divider::after { top: 42%; bottom: 42%; left: 2px; width: 2px; }
-.serial-terminal-split.is-rows .serial-terminal-divider { cursor: row-resize; }
-.serial-terminal-split.is-rows .serial-terminal-divider::after { top: 2px; right: 42%; height: 2px; left: 42%; }
-.serial-terminal-divider:hover, .serial-terminal-split.is-resizing .serial-terminal-divider { background: #3d555f; }
-.serial-terminal-divider:hover::after, .serial-terminal-split.is-resizing .serial-terminal-divider::after { background: #9bc7c4; }
+.serial-terminal-divider.is-columns { cursor: col-resize; }
+.serial-terminal-divider.is-columns::after { top: 42%; bottom: 42%; left: 2px; width: 2px; }
+.serial-terminal-divider.is-rows { cursor: row-resize; }
+.serial-terminal-divider.is-rows::after { top: 2px; right: 42%; height: 2px; left: 42%; }
+.serial-terminal-divider:hover, .serial-terminal-divider.active { background: #3d555f; }
+.serial-terminal-divider:hover::after, .serial-terminal-divider.active::after { background: #9bc7c4; }
 .serial-terminal { min-height: 0; flex: 1; overflow: hidden; background: #101418; }
 .serial-error { padding: 8px 12px; border-top: 1px solid #653b3b; background: #3a2222; color: #f3b3b3; font-size: 13px; }
 .serial-command-toolbar { padding: 7px 12px; display: flex; align-items: center; gap: 7px; border-top: 1px solid #2c3942; background: #151d23; }
@@ -1863,8 +1864,7 @@ onBeforeUnmount(() => {
   .serial-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .serial-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .serial-empty-mobile { display: inline-flex; }
-  .serial-terminal-split.is-split { display: grid; grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 1fr) !important; }
-  .serial-terminal-split.is-split .serial-terminal-section { grid-area: 1 / 1 / 2 / 2 !important; }
+  .serial-terminal-split.is-split .serial-terminal-section.focused { position: relative !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
   .serial-terminal-split.is-split .serial-terminal-section:not(.focused), .serial-terminal-divider { display: none !important; }
   .serial-composer { padding-bottom: max(10px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
   .serial-command { order: -1; flex-basis: 100%; }

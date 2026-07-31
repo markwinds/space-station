@@ -116,9 +116,9 @@
             :class="{
               active: tab.id === activeTabId,
               dragging: draggedTabId === tab.id,
-              'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === tab.id,
-              'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === tab.id,
+              'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(tab.id),
             }"
+            :style="terminalSplit.tabStyle(tab.id)"
             draggable="true"
             @click="activateTab(tab.id)"
             @dragstart="handleTabDragStart($event, tab.id)"
@@ -137,8 +137,8 @@
             <button type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
           </div>
           <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
-            <n-button class="ssh-desktop-action" secondary size="tiny" title="分屏后点击标签可替换当前活动窗格" :disabled="tabs.length < 2 && !terminalSplit.isSplit.value">
-              {{ terminalSplit.isSplit.value ? terminalSplit.directionLabel.value : "分屏" }}
+            <n-button class="ssh-desktop-action" secondary size="tiny" title="在当前窗格继续分屏；点击其他标签可替换当前活动窗格" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
+              {{ terminalSplit.splitLabel.value }}
             </n-button>
           </n-dropdown>
           <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" class="ssh-desktop-action" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
@@ -206,11 +206,8 @@
         class="ssh-terminal-split"
         :class="{
           'is-split': terminalSplit.isSplit.value,
-          'is-columns': terminalSplit.direction.value === 'columns',
-          'is-rows': terminalSplit.direction.value === 'rows',
           'is-resizing': terminalSplit.resizing.value,
         }"
-        :style="terminalSplit.gridStyle.value"
       >
         <div
           v-for="tab in tabs"
@@ -219,8 +216,7 @@
           class="ssh-terminal-pane"
           :class="{
             focused: terminalSplit.isPaneFocused(tab.id),
-            'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === tab.id,
-            'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === tab.id,
+            'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(tab.id),
           }"
           :style="terminalSplit.paneStyle(tab.id)"
           @pointerdown.capture="terminalSplit.focusPane(tab.id)"
@@ -280,13 +276,15 @@
           </terminal-command-panel>
         </div>
         <div
-          v-if="terminalSplit.isSplit.value"
+          v-for="divider in terminalSplit.dividers.value"
+          :key="divider.id"
           class="ssh-terminal-divider"
-          :style="terminalSplit.dividerStyle.value"
+          :class="[`is-${divider.direction}`, { active: terminalSplit.resizingBranchId.value === divider.id }]"
+          :style="divider.style"
           role="separator"
-          :aria-orientation="terminalSplit.direction.value === 'columns' ? 'vertical' : 'horizontal'"
+          :aria-orientation="divider.direction === 'columns' ? 'vertical' : 'horizontal'"
           title="拖动调整分屏比例"
-          @pointerdown="terminalSplit.startResize"
+          @pointerdown="terminalSplit.startResize($event, divider.id)"
           @pointermove="terminalSplit.resize"
           @pointerup="finishTerminalSplitResize"
           @pointercancel="finishTerminalSplitResize"
@@ -868,10 +866,14 @@ const hostSections = computed(() => {
 });
 const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeTabId.value));
 const terminalSplitOptions = computed(() => [
-  { label: "左右分屏", key: "columns", disabled: tabs.value.length < 2 && !terminalSplit.isSplit.value },
-  { label: "上下分屏", key: "rows", disabled: tabs.value.length < 2 && !terminalSplit.isSplit.value },
+  { label: "当前窗格左右分屏", key: "columns", disabled: !terminalSplit.canSplit.value },
+  { label: "当前窗格上下分屏", key: "rows", disabled: !terminalSplit.canSplit.value },
   ...(terminalSplit.isSplit.value
-    ? [{ type: "divider" as const, key: "split-divider" }, { label: "关闭分屏", key: "close" }]
+    ? [
+        { type: "divider" as const, key: "split-divider" },
+        { label: "关闭当前窗格", key: "close-pane" },
+        { label: "退出全部分屏", key: "close-all" },
+      ]
     : []),
 ]);
 const jumpHostOptions = computed(() => hosts.value
@@ -1690,7 +1692,8 @@ function activateTab(id: string) {
 }
 
 function handleTerminalSplitAction(key: string | number) {
-  if (key === "close") terminalSplit.closeSplit();
+  if (key === "close-pane") terminalSplit.closeFocusedPane();
+  else if (key === "close-all") terminalSplit.closeSplit();
   else if (key === "columns" || key === "rows") terminalSplit.split(key);
   activePane.value = "terminal";
 }
@@ -2352,8 +2355,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-mobile-more { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
 .ssh-tab.active { border-bottom-color: #9bc7c4; background: #2a3a44; color: #f4f9fb; }
-.ssh-tab.split-pane-primary { border-bottom-color: var(--terminal-split-primary); }
-.ssh-tab.split-pane-secondary { border-bottom-color: var(--terminal-split-secondary); }
+.ssh-tab.split-pane-bound { border-bottom-color: var(--terminal-pane-color); }
 .ssh-tab.dragging { opacity: .45; }
 .ssh-tab span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ssh-tab-close { margin-left: auto; flex: 0 0 auto; }
@@ -2377,19 +2379,18 @@ function disposeTab(tab: TerminalTab) {
 .ssh-status-text.connecting, .ssh-status-text.authenticating { border-color: #816b35; color: #e4c36e; background: #382e18; }
 .ssh-status-text.error { border-color: #814751; color: #f08a95; background: #381d22; }
 .ssh-status-text.closed { border-color: #56616a; color: #a8b2ba; background: #252c31; }
-.ssh-terminal-split { min-width: 0; min-height: 0; display: grid; overflow: hidden; background: #101418; }
-.ssh-terminal-pane { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
-.ssh-terminal-split.is-split .ssh-terminal-pane.split-pane-primary { outline: 1px solid var(--terminal-split-primary); outline-offset: -1px; }
-.ssh-terminal-split.is-split .ssh-terminal-pane.split-pane-secondary { outline: 1px solid var(--terminal-split-secondary); outline-offset: -1px; }
+.ssh-terminal-split { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #101418; }
+.ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
+.ssh-terminal-split.is-split .ssh-terminal-pane.split-pane-bound { outline: 1px solid var(--terminal-pane-color); outline-offset: -1px; }
 .ssh-terminal-split.is-split .ssh-terminal-pane.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
-.ssh-terminal-divider { position: relative; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
+.ssh-terminal-divider { position: absolute; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
 .ssh-terminal-divider::after { position: absolute; border-radius: 999px; background: #607783; content: ""; transition: background .14s ease; }
-.ssh-terminal-split.is-columns .ssh-terminal-divider { cursor: col-resize; }
-.ssh-terminal-split.is-columns .ssh-terminal-divider::after { top: 42%; bottom: 42%; left: 2px; width: 2px; }
-.ssh-terminal-split.is-rows .ssh-terminal-divider { cursor: row-resize; }
-.ssh-terminal-split.is-rows .ssh-terminal-divider::after { top: 2px; right: 42%; height: 2px; left: 42%; }
-.ssh-terminal-divider:hover, .ssh-terminal-split.is-resizing .ssh-terminal-divider { background: #3d555f; }
-.ssh-terminal-divider:hover::after, .ssh-terminal-split.is-resizing .ssh-terminal-divider::after { background: #9bc7c4; }
+.ssh-terminal-divider.is-columns { cursor: col-resize; }
+.ssh-terminal-divider.is-columns::after { top: 42%; bottom: 42%; left: 2px; width: 2px; }
+.ssh-terminal-divider.is-rows { cursor: row-resize; }
+.ssh-terminal-divider.is-rows::after { top: 2px; right: 42%; height: 2px; left: 42%; }
+.ssh-terminal-divider:hover, .ssh-terminal-divider.active { background: #3d555f; }
+.ssh-terminal-divider:hover::after, .ssh-terminal-divider.active::after { background: #9bc7c4; }
 .ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; overflow: hidden; background: #101418; }
 .ssh-terminal :deep(.xterm) { touch-action: pan-y; }
 .ssh-terminal :deep(.xterm-viewport) { overflow-y: auto !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
@@ -2528,8 +2529,7 @@ function disposeTab(tab: TerminalTab) {
   .ssh-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ssh-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport), .ssh-terminal :deep(.xterm-screen) { touch-action: none; }
-  .ssh-terminal-split.is-split { display: grid; grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 1fr) !important; }
-  .ssh-terminal-split.is-split .ssh-terminal-pane { grid-area: 1 / 1 / 2 / 2 !important; }
+  .ssh-terminal-split.is-split .ssh-terminal-pane.focused { position: relative !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
   .ssh-terminal-split.is-split .ssh-terminal-pane:not(.focused), .ssh-terminal-divider { display: none !important; }
   .ssh-command-panel { display: none; }
   .ssh-form-grid, .ssh-form-grid--connection { grid-template-columns: 1fr; gap: 0; }
