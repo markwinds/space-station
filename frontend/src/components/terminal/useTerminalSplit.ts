@@ -89,6 +89,19 @@ function replaceLeaf(node: TerminalSplitNode, paneId: string, replacement: Termi
   };
 }
 
+function swapLeafPaneIds(node: TerminalSplitNode, firstId: string, secondId: string): TerminalSplitNode {
+  if (node.type === "leaf") {
+    if (node.paneId === firstId) return leaf(secondId);
+    if (node.paneId === secondId) return leaf(firstId);
+    return node;
+  }
+  return {
+    ...node,
+    first: swapLeafPaneIds(node.first, firstId, secondId),
+    second: swapLeafPaneIds(node.second, firstId, secondId),
+  };
+}
+
 function updateBranchRatio(node: TerminalSplitNode, branchId: string, ratio: number): TerminalSplitNode {
   if (node.type === "leaf") return node;
   if (node.id === branchId) return { ...node, ratio };
@@ -274,6 +287,17 @@ export function useTerminalSplit(activeId: Ref<string>, availableIds: () => stri
     activeId.value = id;
   }
 
+  function movePaneTo(sourceId: string, targetId: string) {
+    if (!layout.value || sourceId === targetId || !availableIds().includes(sourceId)) return false;
+    const visibleIds = collectPaneIds(layout.value);
+    if (!visibleIds.includes(targetId)) return false;
+    layout.value = visibleIds.includes(sourceId)
+      ? swapLeafPaneIds(layout.value, sourceId, targetId)
+      : replaceLeaf(layout.value, targetId, leaf(sourceId));
+    activeId.value = sourceId;
+    return true;
+  }
+
   function isPaneVisible(id: string) {
     return paneIds.value.includes(id);
   }
@@ -409,6 +433,7 @@ export function useTerminalSplit(activeId: Ref<string>, availableIds: () => stri
     closeFocusedPane,
     closeSplit,
     focusPane,
+    movePaneTo,
     isPaneVisible,
     isPaneFocused,
     paneStyle,

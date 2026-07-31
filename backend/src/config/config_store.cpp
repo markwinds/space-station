@@ -933,46 +933,6 @@ void ConfigStore::SaveTransferConfig(const nlohmann::json& transfer_config)
     SaveJsonUnlocked(json);
 }
 
-nlohmann::json ConfigStore::LoadFileShares()
-{
-    std::lock_guard lock(mutex_);
-    auto shares = LoadBusinessJsonUnlocked("fileShares", BuildDefaultFileSharesJson());
-    if (!shares.is_array())
-    {
-        shares = BuildDefaultFileSharesJson();
-    }
-    return shares;
-}
-
-void ConfigStore::SaveFileShares(const nlohmann::json& json)
-{
-    std::lock_guard lock(mutex_);
-    auto shares = nlohmann::json::array();
-    if (json.is_array())
-    {
-        for (const auto& item : json)
-        {
-            if (!item.is_object())
-            {
-                continue;
-            }
-            const auto id = item.value("id", "");
-            const auto name = item.value("name", "");
-            const auto path = item.value("path", "");
-            if (id.empty() || name.empty() || path.empty())
-            {
-                continue;
-            }
-            shares.push_back({
-                {"id", id},
-                {"name", name},
-                {"path", path},
-            });
-        }
-    }
-    SaveBusinessJsonUnlocked("fileShares", shares);
-}
-
 nlohmann::json ConfigStore::LoadSshHosts()
 {
     std::lock_guard lock(mutex_);
@@ -1254,17 +1214,6 @@ nlohmann::json ConfigStore::BuildDefaultHabitStateJson() const
         {"logs", nlohmann::json::array()},
         {"settings", {{"weekStartsOn", 1}}},
     };
-}
-
-nlohmann::json ConfigStore::BuildDefaultFileSharesJson() const
-{
-    return nlohmann::json::array({
-        {
-            {"id", "default"},
-            {"name", "默认共享"},
-            {"path", (RelativeDefaultDataPath() / "shared").generic_string()},
-        },
-    });
 }
 
 std::filesystem::path ConfigStore::DatabasePathForConfigJson(const nlohmann::json& json) const

@@ -3,7 +3,6 @@ import {
   CheckmarkCircleOutline,
   CodeSlashOutline,
   CubeOutline,
-  FolderOpenOutline,
   GitCompareOutline,
   KeyOutline,
   KeypadOutline,
@@ -14,7 +13,7 @@ import {
   CameraOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "textCompare" | "screenshot" | "certificate" | "authenticator" | "timeManager" | "habits" | "fileShare" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
+export type ToolId = "jsonFormatter" | "textCompare" | "screenshot" | "certificate" | "authenticator" | "timeManager" | "habits" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -82,14 +81,6 @@ export const tools: ToolDefinition[] = [
     category: "Wellbeing",
     icon: CheckmarkCircleOutline,
     path: "/tools/habits",
-  },
-  {
-    id: "fileShare",
-    title: "共享文件",
-    description: "映射本机目录并上传下载文件",
-    category: "Storage",
-    icon: FolderOpenOutline,
-    path: "/tools/file-share",
   },
   {
     id: "transfer",

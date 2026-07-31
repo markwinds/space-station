@@ -37,8 +37,6 @@ class ConfigStore
     nlohmann::json LoadCommandSnippets();
     nlohmann::json SaveCommandSnippet(const nlohmann::json& json);
     bool DeleteCommandSnippet(const std::string& id);
-    nlohmann::json LoadFileShares();
-    void SaveFileShares(const nlohmann::json& json);
     nlohmann::json LoadSshHosts();
     void SaveSshHosts(const nlohmann::json& json);
     bool SaveSshHostFingerprint(const std::string& id, const std::string& fingerprint);
@@ -63,7 +61,6 @@ class ConfigStore
     nlohmann::json BuildDefaultJson() const;
     nlohmann::json BuildDefaultTimeManagerStateJson() const;
     nlohmann::json BuildDefaultHabitStateJson() const;
-    nlohmann::json BuildDefaultFileSharesJson() const;
     std::filesystem::path DatabasePathForConfigJson(const nlohmann::json& json) const;
     nlohmann::json LoadBusinessJsonUnlocked(const std::string& key, const nlohmann::json& fallback);
     void SaveBusinessJsonUnlocked(const std::string& key, const nlohmann::json& json);

@@ -124,7 +124,7 @@
             @dragstart="handleTabDragStart($event, tab.id)"
             @dragover.prevent
             @drop.prevent="handleTabDrop($event, tab.id)"
-            @dragend="draggedTabId = ''"
+            @dragend="finishTabDrag"
           >
             <span class="ssh-status-dot" :class="tab.status" />
             <span>{{ tab.host.name }}</span>
@@ -137,7 +137,7 @@
             <button type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
           </div>
           <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
-            <n-button class="ssh-desktop-action" secondary size="tiny" title="在当前窗格继续分屏；点击其他标签可替换当前活动窗格" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
+            <n-button class="ssh-desktop-action" secondary size="tiny" title="在当前窗格继续分屏；点击标签替换活动窗格，或拖动标签到指定分屏" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
               {{ terminalSplit.splitLabel.value }}
             </n-button>
           </n-dropdown>
@@ -211,15 +211,20 @@
       >
         <div
           v-for="tab in tabs"
-          v-show="terminalSplit.isPaneVisible(tab.id)"
           :key="tab.id"
           class="ssh-terminal-pane"
           :class="{
             focused: terminalSplit.isPaneFocused(tab.id),
+            'is-pane-hidden': !terminalSplit.isPaneVisible(tab.id),
+            'is-pane-drop-target': draggedTabId && paneDropTargetId === tab.id,
             'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(tab.id),
           }"
+          :aria-hidden="!terminalSplit.isPaneVisible(tab.id)"
           :style="terminalSplit.paneStyle(tab.id)"
           @pointerdown.capture="terminalSplit.focusPane(tab.id)"
+          @dragover.prevent="handlePaneDragOver($event, tab.id)"
+          @dragleave="handlePaneDragLeave($event, tab.id)"
+          @drop.prevent.stop="handlePaneDrop($event, tab.id)"
         >
           <web-terminal
             class="ssh-terminal"
@@ -229,6 +234,7 @@
             :letter-spacing="terminalSettings.letterSpacing"
             :show-line-numbers="terminalSettings.showLineNumbers"
             :show-line-timestamps="terminalSettings.showLineTimestamps"
+            :visible="terminalSplit.isPaneVisible(tab.id) && activePane === 'terminal'"
             :restore-buffer="tab.restoreBuffer"
             :search-highlight-limit="searchHighlightLimit"
             @ready="handleTerminalReady(tab, $event)"
@@ -730,6 +736,7 @@ const terminalSplit = useTerminalSplit(activeTabId, () => tabs.value.map((tab) =
 const terminalSplitContainerRef = terminalSplit.containerRef;
 const sidebarCollapsed = ref(localStorage.getItem("space-station:ssh-sidebar-collapsed") === "true");
 const draggedTabId = ref("");
+const paneDropTargetId = ref("");
 const activePane = ref<"terminal" | "sftp">("terminal");
 const openedSftpTabIds = ref<string[]>([]);
 const openedSftpTabs = computed(() => tabs.value.filter((tab) => openedSftpTabIds.value.includes(tab.id)));
@@ -1704,6 +1711,7 @@ function finishTerminalSplitResize(event: PointerEvent) {
 
 function handleTabDragStart(event: DragEvent, id: string) {
   draggedTabId.value = id;
+  paneDropTargetId.value = "";
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", id);
@@ -1737,7 +1745,34 @@ function handleTabDrop(event: DragEvent, targetId: string) {
   let targetIndex = tabs.value.findIndex((tab) => tab.id === targetId);
   if (insertAfter) targetIndex += 1;
   tabs.value.splice(Math.max(0, targetIndex), 0, sourceTab);
+  finishTabDrag();
+}
+
+function handlePaneDragOver(event: DragEvent, targetId: string) {
+  const sourceId = draggedTabId.value || event.dataTransfer?.getData("text/plain") || "";
+  if (!sourceId || sourceId === targetId || !tabs.value.some((tab) => tab.id === sourceId)) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  paneDropTargetId.value = targetId;
+}
+
+function handlePaneDragLeave(event: DragEvent, targetId: string) {
+  const current = event.currentTarget as HTMLElement;
+  if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
+  if (paneDropTargetId.value === targetId) paneDropTargetId.value = "";
+}
+
+function handlePaneDrop(event: DragEvent, targetId: string) {
+  const sourceId = draggedTabId.value || event.dataTransfer?.getData("text/plain") || "";
+  if (terminalSplit.movePaneTo(sourceId, targetId)) {
+    activePane.value = "terminal";
+    nextTick(() => tabs.value.find((tab) => tab.id === sourceId)?.terminalView?.focus());
+  }
+  finishTabDrag();
+}
+
+function finishTabDrag() {
   draggedTabId.value = "";
+  paneDropTargetId.value = "";
 }
 
 function showTerminalPane() {
@@ -2380,7 +2415,10 @@ function disposeTab(tab: TerminalTab) {
 .ssh-status-text.error { border-color: #814751; color: #f08a95; background: #381d22; }
 .ssh-status-text.closed { border-color: #56616a; color: #a8b2ba; background: #252c31; }
 .ssh-terminal-split { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #101418; }
-.ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
+.ssh-terminal-pane { position: absolute; inset: 0; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
+.ssh-terminal-pane.is-pane-hidden { visibility: hidden; pointer-events: none; }
+.ssh-terminal-pane.is-pane-drop-target { z-index: 3; outline: 2px solid #9bc7c4; outline-offset: -3px; }
+.ssh-terminal-pane.is-pane-drop-target::after { position: absolute; z-index: 5; inset: 8px; display: grid; place-items: center; border: 1px dashed #9bc7c4; border-radius: 8px; background: rgba(33, 67, 73, .6); color: #e0f4f2; font-size: 13px; font-weight: 700; content: "拖放到此分屏"; pointer-events: none; }
 .ssh-terminal-split.is-split .ssh-terminal-pane.split-pane-bound { outline: 1px solid var(--terminal-pane-color); outline-offset: -1px; }
 .ssh-terminal-split.is-split .ssh-terminal-pane.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
 .ssh-terminal-divider { position: absolute; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
@@ -2529,8 +2567,9 @@ function disposeTab(tab: TerminalTab) {
   .ssh-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ssh-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport), .ssh-terminal :deep(.xterm-screen) { touch-action: none; }
-  .ssh-terminal-split.is-split .ssh-terminal-pane.focused { position: relative !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
-  .ssh-terminal-split.is-split .ssh-terminal-pane:not(.focused), .ssh-terminal-divider { display: none !important; }
+  .ssh-terminal-split.is-split .ssh-terminal-pane { position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
+  .ssh-terminal-split.is-split .ssh-terminal-pane:not(.focused) { visibility: hidden; pointer-events: none; }
+  .ssh-terminal-divider { display: none !important; }
   .ssh-command-panel { display: none; }
   .ssh-form-grid, .ssh-form-grid--connection { grid-template-columns: 1fr; gap: 0; }
   .ssh-persist-credential { display: flex; margin: 10px 0 0; }

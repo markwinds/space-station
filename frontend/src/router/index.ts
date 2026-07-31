@@ -10,7 +10,6 @@ import { recordRecentTool } from "@/toolPreferences";
 
 const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/TimeManagerTool.vue"));
 const HabitTool = defineAsyncComponent(() => import("@/components/tools/HabitTool.vue"));
-const FileShareTool = defineAsyncComponent(() => import("@/components/tools/FileShareTool.vue"));
 const TransferTool = defineAsyncComponent(() => import("@/components/tools/TransferTool.vue"));
 const SshTool = defineAsyncComponent(() => import("@/components/tools/SshTool.vue"));
 const SerialTool = defineAsyncComponent(() => import("@/components/tools/SerialTool.vue"));
@@ -95,15 +94,6 @@ const router = createRouter({
       props: {
         tool: findTool("habits"),
         component: HabitTool,
-      },
-    },
-    {
-      path: "/tools/file-share",
-      name: "file-share",
-      component: ToolView,
-      props: {
-        tool: findTool("fileShare"),
-        component: FileShareTool,
       },
     },
     {

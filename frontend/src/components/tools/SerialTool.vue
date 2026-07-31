@@ -103,10 +103,14 @@
             class="serial-tab"
             :class="{
               active: view.id === activeViewId,
+              dragging: draggedViewId === view.id,
               'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(view.id),
             }"
             :style="terminalSplit.tabStyle(view.id)"
+            draggable="true"
             @click="activateView(view.id)"
+            @dragstart="handleViewDragStart($event, view.id)"
+            @dragend="finishViewDrag"
           >
             <span class="serial-status-dot" :class="sessionFor(view)?.status" />
             <span>{{ view.title }}</span>
@@ -115,7 +119,7 @@
         </div>
         <div v-if="activeSession" class="serial-tab-actions">
           <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
-            <n-button class="serial-desktop-actions" secondary size="tiny" title="在当前窗格继续分屏；点击其他标签可替换当前活动窗格" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
+            <n-button class="serial-desktop-actions" secondary size="tiny" title="在当前窗格继续分屏；点击标签替换活动窗格，或拖动标签到指定分屏" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
               {{ terminalSplit.splitLabel.value }}
             </n-button>
           </n-dropdown>
@@ -179,15 +183,20 @@
       >
         <section
           v-for="view in views"
-          v-show="terminalSplit.isPaneVisible(view.id)"
           :key="view.id"
           class="serial-terminal-section"
           :class="{
             focused: terminalSplit.isPaneFocused(view.id),
+            'is-pane-hidden': !terminalSplit.isPaneVisible(view.id),
+            'is-pane-drop-target': draggedViewId && paneDropTargetId === view.id,
             'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(view.id),
           }"
+          :aria-hidden="!terminalSplit.isPaneVisible(view.id)"
           :style="terminalSplit.paneStyle(view.id)"
           @pointerdown.capture="terminalSplit.focusPane(view.id)"
+          @dragover.prevent="handlePaneDragOver($event, view.id)"
+          @dragleave="handlePaneDragLeave($event, view.id)"
+          @drop.prevent.stop="handlePaneDrop($event, view.id)"
         >
             <web-terminal
               class="serial-terminal"
@@ -197,6 +206,7 @@
               :letter-spacing="terminalSettings.letterSpacing"
               :show-line-numbers="terminalSettings.showLineNumbers"
               :show-line-timestamps="terminalSettings.showLineTimestamps"
+              :visible="terminalSplit.isPaneVisible(view.id)"
               @ready="handleTerminalReady(view, $event)"
               @data="handleTerminalData(view, $event)"
               @renderer="view.renderer = $event"
@@ -502,6 +512,8 @@ const views = reactive<SerialView[]>([]);
 const activeViewId = ref("");
 const terminalSplit = useTerminalSplit(activeViewId, () => views.map((view) => view.id), "space-station:serial-terminal-split");
 const terminalSplitContainerRef = terminalSplit.containerRef;
+const draggedViewId = ref("");
+const paneDropTargetId = ref("");
 const mobileSetup = ref(false);
 const sidebarCollapsed = ref(localStorage.getItem("space-station:serial-sidebar-collapsed") === "true");
 const terminalSettings = reactive<TerminalPreferences>(loadTerminalPreferences());
@@ -1170,6 +1182,42 @@ function activateView(viewId: string) {
   mobileSetup.value = false;
 }
 
+function handleViewDragStart(event: DragEvent, viewId: string) {
+  draggedViewId.value = viewId;
+  paneDropTargetId.value = "";
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", viewId);
+  }
+}
+
+function handlePaneDragOver(event: DragEvent, targetId: string) {
+  const sourceId = draggedViewId.value || event.dataTransfer?.getData("text/plain") || "";
+  if (!sourceId || sourceId === targetId || !views.some((view) => view.id === sourceId)) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  paneDropTargetId.value = targetId;
+}
+
+function handlePaneDragLeave(event: DragEvent, targetId: string) {
+  const current = event.currentTarget as HTMLElement;
+  if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
+  if (paneDropTargetId.value === targetId) paneDropTargetId.value = "";
+}
+
+function handlePaneDrop(event: DragEvent, targetId: string) {
+  const sourceId = draggedViewId.value || event.dataTransfer?.getData("text/plain") || "";
+  if (terminalSplit.movePaneTo(sourceId, targetId)) {
+    mobileSetup.value = false;
+    nextTick(() => views.find((view) => view.id === sourceId)?.terminalView?.focus());
+  }
+  finishViewDrag();
+}
+
+function finishViewDrag() {
+  draggedViewId.value = "";
+  paneDropTargetId.value = "";
+}
+
 function handleTerminalSplitAction(key: string | number) {
   if (key === "close-pane") terminalSplit.closeFocusedPane();
   else if (key === "close-all") terminalSplit.closeSplit();
@@ -1717,6 +1765,7 @@ onBeforeUnmount(() => {
 .serial-tab { flex: 0 0 auto; min-width: 130px; max-width: 230px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #2b3841; background: #151d23; color: #9eacb6; cursor: pointer; }
 .serial-tab.active { box-shadow: inset 0 -2px #9bc7c4; background: #2a3a44; color: #f4f9fb; }
 .serial-tab.split-pane-bound { box-shadow: inset 0 -2px var(--terminal-pane-color); }
+.serial-tab.dragging { opacity: .45; }
 .serial-tab > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .serial-tab i { margin-left: auto; color: #82919c; font-size: 18px; font-style: normal; }
 .serial-status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #73818b; }
@@ -1754,7 +1803,10 @@ onBeforeUnmount(() => {
 .serial-empty p { margin: 0; color: #83939e; }
 .serial-empty-mobile { display: none; margin-top: 18px; }
 .serial-terminal-split { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; background: #101418; }
-.serial-terminal-section { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.serial-terminal-section { position: absolute; inset: 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.serial-terminal-section.is-pane-hidden { visibility: hidden; pointer-events: none; }
+.serial-terminal-section.is-pane-drop-target { z-index: 3; outline: 2px solid #9bc7c4; outline-offset: -3px; }
+.serial-terminal-section.is-pane-drop-target::after { position: absolute; z-index: 5; inset: 8px; display: grid; place-items: center; border: 1px dashed #9bc7c4; border-radius: 8px; background: rgba(33, 67, 73, .6); color: #e0f4f2; font-size: 13px; font-weight: 700; content: "拖放到此分屏"; pointer-events: none; }
 .serial-terminal-split.is-split .serial-terminal-section.split-pane-bound { outline: 1px solid var(--terminal-pane-color); outline-offset: -1px; }
 .serial-terminal-split.is-split .serial-terminal-section.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
 .serial-terminal-divider { position: absolute; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
@@ -1864,8 +1916,9 @@ onBeforeUnmount(() => {
   .serial-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .serial-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .serial-empty-mobile { display: inline-flex; }
-  .serial-terminal-split.is-split .serial-terminal-section.focused { position: relative !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
-  .serial-terminal-split.is-split .serial-terminal-section:not(.focused), .serial-terminal-divider { display: none !important; }
+  .serial-terminal-split.is-split .serial-terminal-section { position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
+  .serial-terminal-split.is-split .serial-terminal-section:not(.focused) { visibility: hidden; pointer-events: none; }
+  .serial-terminal-divider { display: none !important; }
   .serial-composer { padding-bottom: max(10px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
   .serial-command { order: -1; flex-basis: 100%; }
   .serial-send-mode { flex: 1; }

@@ -259,21 +259,6 @@ export interface HabitState {
   };
 }
 
-export interface FileShare {
-  id: string;
-  name: string;
-  path: string;
-  exists?: boolean;
-}
-
-export interface FileShareItem {
-  name: string;
-  path: string;
-  type: "directory" | "file" | "symlink";
-  size: number;
-  modifiedAt: number;
-}
-
 export interface SshHost {
   id: string;
   name: string;
@@ -311,13 +296,6 @@ export interface SshPortForward {
   remotePort: number;
   running: boolean;
   message: string;
-}
-
-export interface FileShareListResponse {
-  share: FileShare;
-  path: string;
-  parentPath: string;
-  items: FileShareItem[];
 }
 
 export interface TransferServerConfig {
@@ -628,11 +606,6 @@ export async function deleteSharedCommandSnippet(id: string): Promise<void> {
   await api.delete("/tools/terminal/snippets", { params: { id } });
 }
 
-export async function fetchFileShareState(): Promise<{ shares: FileShare[] }> {
-  const { data } = await api.get<{ shares: FileShare[] }>("/tools/file-share/state");
-  return data;
-}
-
 export async function fetchSshHosts(): Promise<{ hosts: SshHost[] }> {
   const { data } = await api.get<{ hosts: SshHost[] }>("/tools/ssh/hosts");
   return data;
@@ -810,43 +783,6 @@ export async function startSshPortForward(payload: { hostId: string; localPort: 
 
 export async function stopSshPortForward(id: string): Promise<void> {
   await api.delete(`/tools/ssh/forwards/${encodeURIComponent(id)}`);
-}
-
-export async function saveFileShares(shares: FileShare[]): Promise<void> {
-  await api.put("/tools/file-share/shares", { shares });
-}
-
-export async function listFileShare(shareId: string, path = ""): Promise<FileShareListResponse> {
-  const { data } = await api.get<FileShareListResponse>("/tools/file-share/list", {
-    params: { shareId, path },
-  });
-  return data;
-}
-
-export async function uploadFileShareFiles(shareId: string, path: string, files: FileList | File[]): Promise<void> {
-  const formData = new FormData();
-  formData.append("shareId", shareId);
-  formData.append("path", path);
-  Array.from(files).forEach((file) => {
-    formData.append("files", file);
-  });
-  await api.post("/tools/file-share/upload", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-    timeout: 120000,
-  });
-}
-
-export async function createFileShareFolder(payload: { shareId: string; path: string; name: string }): Promise<void> {
-  await api.post("/tools/file-share/folder", payload);
-}
-
-export async function deleteFileShareItem(payload: { shareId: string; path: string }): Promise<void> {
-  await api.delete("/tools/file-share/item", { data: payload });
-}
-
-export function fileShareDownloadUrl(shareId: string, path: string) {
-  const params = new URLSearchParams({ shareId, path });
-  return `/api/tools/file-share/download?${params.toString()}`;
 }
 
 export async function fetchTransferState(): Promise<TransferState> {

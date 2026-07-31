@@ -69,6 +69,7 @@ const props = withDefaults(defineProps<{
   enableWebgl?: boolean;
   showLineNumbers?: boolean;
   showLineTimestamps?: boolean;
+  visible?: boolean;
 }>(), {
   scrollback: 50000,
   fontSize: 14,
@@ -85,6 +86,7 @@ const props = withDefaults(defineProps<{
   enableWebgl: true,
   showLineNumbers: false,
   showLineTimestamps: false,
+  visible: true,
 });
 
 const emit = defineEmits<{
@@ -1230,6 +1232,17 @@ watch(() => props.showLineNumbers, async () => {
   await nextTick();
   fit();
   scheduleGutterUpdate();
+});
+
+watch(() => props.visible, async (visible) => {
+  if (!visible) return;
+  // Pane switches only change visibility, so the terminal keeps its canvas and
+  // dimensions while inactive. When a split layout also changes its bounds,
+  // fit synchronously after Vue applies the new style and before the browser's
+  // next paint; otherwise xterm briefly exposes the old-sized canvas.
+  await nextTick();
+  fitNow();
+  terminal?.refresh(0, Math.max(0, terminal.rows - 1));
 });
 
 onBeforeUnmount(() => {
