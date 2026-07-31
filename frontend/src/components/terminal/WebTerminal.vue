@@ -115,7 +115,7 @@ let searchAddon: SearchAddon | undefined;
 let serializeAddon: SerializeAddon | undefined;
 let webglAddon: WebglAddon | undefined;
 let resizeObserver: ResizeObserver | undefined;
-let resizeFrame = 0;
+let fitFrame = 0;
 let fitStabilizeFrame = 0;
 let appearanceFrame = 0;
 let gutterFrame = 0;
@@ -214,14 +214,21 @@ function fitNow() {
 }
 
 function fit() {
-  fitNow();
-  // Removing a sibling panel changes the available grid/flex height. A second
-  // frame lets xterm apply its new canvas dimensions before refreshing the
-  // final row, avoiding a half-clipped line after the command panel is hidden.
-  window.cancelAnimationFrame(fitStabilizeFrame);
-  fitStabilizeFrame = window.requestAnimationFrame(() => {
+  // Visibility, grid and sidebar changes can all report the same resize. Merge
+  // them into one fit cycle so switching a tab does not synchronously reflow
+  // xterm several times before the new pane can paint.
+  if (fitFrame) return;
+  fitFrame = window.requestAnimationFrame(() => {
+    fitFrame = 0;
     fitNow();
-    terminal?.refresh(0, Math.max(0, terminal.rows - 1));
+    // Removing a sibling panel changes the available grid/flex height. A second
+    // frame lets xterm apply its new canvas dimensions before refreshing the
+    // final row, avoiding a half-clipped line after the command panel is hidden.
+    window.cancelAnimationFrame(fitStabilizeFrame);
+    fitStabilizeFrame = window.requestAnimationFrame(() => {
+      fitNow();
+      terminal?.refresh(0, Math.max(0, terminal.rows - 1));
+    });
   });
 }
 
@@ -1200,10 +1207,7 @@ onMounted(() => {
   });
   setupTouchScrolling(element, terminal);
   setupFocusBoundary(element, terminal);
-  resizeObserver = new ResizeObserver(() => {
-    window.cancelAnimationFrame(resizeFrame);
-    resizeFrame = window.requestAnimationFrame(fit);
-  });
+  resizeObserver = new ResizeObserver(fit);
   resizeObserver.observe(element);
   fit();
   if (props.autofocus && document.hasFocus()) terminal.focus();
@@ -1229,7 +1233,7 @@ watch(() => props.showLineNumbers, async () => {
 });
 
 onBeforeUnmount(() => {
-  window.cancelAnimationFrame(resizeFrame);
+  window.cancelAnimationFrame(fitFrame);
   window.cancelAnimationFrame(fitStabilizeFrame);
   window.cancelAnimationFrame(appearanceFrame);
   window.cancelAnimationFrame(gutterFrame);

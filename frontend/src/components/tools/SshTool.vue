@@ -113,7 +113,12 @@
             :key="tab.id"
             type="button"
             class="ssh-tab"
-            :class="{ active: tab.id === activeTabId, dragging: draggedTabId === tab.id }"
+            :class="{
+              active: tab.id === activeTabId,
+              dragging: draggedTabId === tab.id,
+              'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === tab.id,
+              'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === tab.id,
+            }"
             draggable="true"
             @click="activateTab(tab.id)"
             @dragstart="handleTabDragStart($event, tab.id)"
@@ -131,6 +136,11 @@
             <button type="button" :class="{ active: activePane === 'terminal' }" @click="showTerminalPane">终端</button>
             <button type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
           </div>
+          <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
+            <n-button class="ssh-desktop-action" secondary size="tiny" title="分屏后点击标签可替换当前活动窗格" :disabled="tabs.length < 2 && !terminalSplit.isSplit.value">
+              {{ terminalSplit.isSplit.value ? terminalSplit.directionLabel.value : "分屏" }}
+            </n-button>
+          </n-dropdown>
           <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" class="ssh-desktop-action" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
           <terminal-action-bar
             v-if="activePane === 'terminal'"
@@ -191,64 +201,96 @@
         </template>
       </section>
       <div
-        v-for="tab in tabs"
-        v-show="tab.id === activeTabId && activePane === 'terminal'"
-        :key="tab.id"
-        class="ssh-terminal-pane"
+        v-show="tabs.length > 0 && activePane === 'terminal'"
+        ref="terminalSplitContainerRef"
+        class="ssh-terminal-split"
+        :class="{
+          'is-split': terminalSplit.isSplit.value,
+          'is-columns': terminalSplit.direction.value === 'columns',
+          'is-rows': terminalSplit.direction.value === 'rows',
+          'is-resizing': terminalSplit.resizing.value,
+        }"
+        :style="terminalSplit.gridStyle.value"
       >
-        <web-terminal
-          class="ssh-terminal"
-          :scrollback="terminalSettings.scrollbackLines"
-          :font-size="terminalSettings.fontSize"
-          :line-height="terminalSettings.lineHeight"
-          :letter-spacing="terminalSettings.letterSpacing"
-          :show-line-numbers="terminalSettings.showLineNumbers"
-          :show-line-timestamps="terminalSettings.showLineTimestamps"
-          :restore-buffer="tab.restoreBuffer"
-          :search-highlight-limit="searchHighlightLimit"
-          @ready="handleTerminalReady(tab, $event)"
-          @data="handleTerminalData(tab, $event)"
-          @resize="handleTerminalResize(tab, $event)"
-          @renderer="updateRenderer(tab, $event)"
-          @search-results="updateSearchResults(tab, $event)"
-          @user-selection-start="cancelPendingSearch"
-        />
-        <terminal-special-key-bar
-          :ctrl="tab.ctrlModifier"
-          :alt="tab.altModifier"
-          :disabled="tab.status !== 'connected'"
-          @key="sendSpecialKey(tab, $event)"
-          @modifier="toggleTerminalModifier(tab, $event)"
-          @focus="tab.terminal?.focus()"
-        />
-        <terminal-command-panel
-          :show-quick="showQuickSnippets"
-          :show-composer="terminalSettings.showCommandComposer"
-          :snippets="pinnedSnippets"
-          @toggle-quick="toggleQuickSnippets"
-          @toggle-composer="toggleCommandComposer"
-          @use-snippet="useSnippet(tab, $event, false)"
+        <div
+          v-for="tab in tabs"
+          v-show="terminalSplit.isPaneVisible(tab.id)"
+          :key="tab.id"
+          class="ssh-terminal-pane"
+          :class="{
+            focused: terminalSplit.isPaneFocused(tab.id),
+            'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === tab.id,
+            'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === tab.id,
+          }"
+          :style="terminalSplit.paneStyle(tab.id)"
+          @pointerdown.capture="terminalSplit.focusPane(tab.id)"
         >
-          <template #composer><div class="ssh-command-editor">
-            <n-input
-              v-model:value="tab.commandDraft"
-              type="textarea"
-              :autosize="{ minRows: 1, maxRows: 4 }"
-              placeholder="输入要发送的命令，Ctrl/⌘ + Enter 发送"
-              enterkeyhint="enter"
-              @keydown="handleCommandKeydown(tab, $event)"
-            />
-            <n-dropdown
-              trigger="click"
-              :options="commandHistoryOptions(tab)"
-              :disabled="tab.commandHistory.length === 0"
-              @select="selectCommandHistory(tab, $event)"
-            >
-              <n-button class="ssh-history-button" secondary :disabled="tab.commandHistory.length === 0">历史</n-button>
-            </n-dropdown>
-            <n-button type="primary" :disabled="!tab.commandDraft.trim()" @click="sendCommand(tab)">发送</n-button>
-          </div></template>
-        </terminal-command-panel>
+          <web-terminal
+            class="ssh-terminal"
+            :scrollback="terminalSettings.scrollbackLines"
+            :font-size="terminalSettings.fontSize"
+            :line-height="terminalSettings.lineHeight"
+            :letter-spacing="terminalSettings.letterSpacing"
+            :show-line-numbers="terminalSettings.showLineNumbers"
+            :show-line-timestamps="terminalSettings.showLineTimestamps"
+            :restore-buffer="tab.restoreBuffer"
+            :search-highlight-limit="searchHighlightLimit"
+            @ready="handleTerminalReady(tab, $event)"
+            @data="handleTerminalData(tab, $event)"
+            @resize="handleTerminalResize(tab, $event)"
+            @renderer="updateRenderer(tab, $event)"
+            @search-results="updateSearchResults(tab, $event)"
+            @user-selection-start="cancelPendingSearch"
+          />
+          <terminal-special-key-bar
+            :ctrl="tab.ctrlModifier"
+            :alt="tab.altModifier"
+            :disabled="tab.status !== 'connected'"
+            @key="sendSpecialKey(tab, $event)"
+            @modifier="toggleTerminalModifier(tab, $event)"
+            @focus="tab.terminal?.focus()"
+          />
+          <terminal-command-panel
+            :show-quick="showQuickSnippets"
+            :show-composer="terminalSettings.showCommandComposer"
+            :snippets="pinnedSnippets"
+            @toggle-quick="toggleQuickSnippets"
+            @toggle-composer="toggleCommandComposer"
+            @use-snippet="useSnippet(tab, $event, false)"
+          >
+            <template #composer><div class="ssh-command-editor">
+              <n-input
+                v-model:value="tab.commandDraft"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 4 }"
+                placeholder="输入要发送的命令，Ctrl/⌘ + Enter 发送"
+                enterkeyhint="enter"
+                @keydown="handleCommandKeydown(tab, $event)"
+              />
+              <n-dropdown
+                trigger="click"
+                :options="commandHistoryOptions(tab)"
+                :disabled="tab.commandHistory.length === 0"
+                @select="selectCommandHistory(tab, $event)"
+              >
+                <n-button class="ssh-history-button" secondary :disabled="tab.commandHistory.length === 0">历史</n-button>
+              </n-dropdown>
+              <n-button type="primary" :disabled="!tab.commandDraft.trim()" @click="sendCommand(tab)">发送</n-button>
+            </div></template>
+          </terminal-command-panel>
+        </div>
+        <div
+          v-if="terminalSplit.isSplit.value"
+          class="ssh-terminal-divider"
+          :style="terminalSplit.dividerStyle.value"
+          role="separator"
+          :aria-orientation="terminalSplit.direction.value === 'columns' ? 'vertical' : 'horizontal'"
+          title="拖动调整分屏比例"
+          @pointerdown="terminalSplit.startResize"
+          @pointermove="terminalSplit.resize"
+          @pointerup="finishTerminalSplitResize"
+          @pointercancel="finishTerminalSplitResize"
+        />
       </div>
       <sftp-panel
         v-for="tab in openedSftpTabs"
@@ -575,6 +617,7 @@ import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
+import { useTerminalSplit } from "../terminal/useTerminalSplit";
 import {
   clampTerminalDecimal as clampDecimal,
   clampTerminalInteger as clampNumber,
@@ -685,6 +728,8 @@ const {
 const hosts = ref<SshHost[]>([]);
 const tabs = ref<TerminalTab[]>([]);
 const activeTabId = ref("");
+const terminalSplit = useTerminalSplit(activeTabId, () => tabs.value.map((tab) => tab.id), "space-station:ssh-terminal-split");
+const terminalSplitContainerRef = terminalSplit.containerRef;
 const sidebarCollapsed = ref(localStorage.getItem("space-station:ssh-sidebar-collapsed") === "true");
 const draggedTabId = ref("");
 const activePane = ref<"terminal" | "sftp">("terminal");
@@ -822,6 +867,13 @@ const hostSections = computed(() => {
   return sections;
 });
 const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeTabId.value));
+const terminalSplitOptions = computed(() => [
+  { label: "左右分屏", key: "columns", disabled: tabs.value.length < 2 && !terminalSplit.isSplit.value },
+  { label: "上下分屏", key: "rows", disabled: tabs.value.length < 2 && !terminalSplit.isSplit.value },
+  ...(terminalSplit.isSplit.value
+    ? [{ type: "divider" as const, key: "split-divider" }, { label: "关闭分屏", key: "close" }]
+    : []),
+]);
 const jumpHostOptions = computed(() => hosts.value
   .filter((host) => host.id !== editingId.value && !host.jumpHostId)
   .map((host) => ({ label: `${host.name} (${host.username}@${host.host})`, value: host.id })));
@@ -1631,12 +1683,20 @@ function activateTab(id: string) {
   nextTick(() => {
     const tab = tabs.value.find((item) => item.id === id);
     if (activePane.value === "terminal") {
-      tab?.terminalView?.fit();
       tab?.terminal?.focus();
-      if (tab) sendResize(tab);
       if (tab && showSearch.value && searchQuery.value) searchTerminal(true, true);
     }
   });
+}
+
+function handleTerminalSplitAction(key: string | number) {
+  if (key === "close") terminalSplit.closeSplit();
+  else if (key === "columns" || key === "rows") terminalSplit.split(key);
+  activePane.value = "terminal";
+}
+
+function finishTerminalSplitResize(event: PointerEvent) {
+  terminalSplit.stopResize(event);
 }
 
 function handleTabDragStart(event: DragEvent, id: string) {
@@ -2229,7 +2289,7 @@ function disposeTab(tab: TerminalTab) {
 :global(body.ssh-page-lock),
 :global(body.ssh-page-lock #app),
 :global(body.ssh-page-lock .app-shell) { margin: 0; overflow: hidden; background: #101418; }
-.ssh-app { height: 100dvh; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); overflow: hidden; background: #101418; color: #d8dee9; }
+.ssh-app { --terminal-split-primary: #56b8c8; --terminal-split-secondary: #d5a44d; height: 100dvh; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); overflow: hidden; background: #101418; color: #d8dee9; }
 .ssh-app--sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
 .ssh-app--sidebar-collapsed .ssh-sidebar { display: none; }
 .ssh-sidebar { box-sizing: border-box; min-width: 0; min-height: 0; height: 100%; padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; border-right: 1px solid #27313a; background: #171d22; }
@@ -2291,7 +2351,9 @@ function disposeTab(tab: TerminalTab) {
 .ssh-sidebar-expand:focus-visible { outline: 2px solid #b9d9d7; outline-offset: 1px; }
 .ssh-mobile-more { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
-.ssh-tab.active { border-bottom-color: #79a8a5; background: #101418; color: #e5e9ef; }
+.ssh-tab.active { border-bottom-color: #9bc7c4; background: #2a3a44; color: #f4f9fb; }
+.ssh-tab.split-pane-primary { border-bottom-color: var(--terminal-split-primary); }
+.ssh-tab.split-pane-secondary { border-bottom-color: var(--terminal-split-secondary); }
 .ssh-tab.dragging { opacity: .45; }
 .ssh-tab span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ssh-tab-close { margin-left: auto; flex: 0 0 auto; }
@@ -2315,7 +2377,19 @@ function disposeTab(tab: TerminalTab) {
 .ssh-status-text.connecting, .ssh-status-text.authenticating { border-color: #816b35; color: #e4c36e; background: #382e18; }
 .ssh-status-text.error { border-color: #814751; color: #f08a95; background: #381d22; }
 .ssh-status-text.closed { border-color: #56616a; color: #a8b2ba; background: #252c31; }
-.ssh-terminal-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
+.ssh-terminal-split { min-width: 0; min-height: 0; display: grid; overflow: hidden; background: #101418; }
+.ssh-terminal-pane { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
+.ssh-terminal-split.is-split .ssh-terminal-pane.split-pane-primary { outline: 1px solid var(--terminal-split-primary); outline-offset: -1px; }
+.ssh-terminal-split.is-split .ssh-terminal-pane.split-pane-secondary { outline: 1px solid var(--terminal-split-secondary); outline-offset: -1px; }
+.ssh-terminal-split.is-split .ssh-terminal-pane.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
+.ssh-terminal-divider { position: relative; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
+.ssh-terminal-divider::after { position: absolute; border-radius: 999px; background: #607783; content: ""; transition: background .14s ease; }
+.ssh-terminal-split.is-columns .ssh-terminal-divider { cursor: col-resize; }
+.ssh-terminal-split.is-columns .ssh-terminal-divider::after { top: 42%; bottom: 42%; left: 2px; width: 2px; }
+.ssh-terminal-split.is-rows .ssh-terminal-divider { cursor: row-resize; }
+.ssh-terminal-split.is-rows .ssh-terminal-divider::after { top: 2px; right: 42%; height: 2px; left: 42%; }
+.ssh-terminal-divider:hover, .ssh-terminal-split.is-resizing .ssh-terminal-divider { background: #3d555f; }
+.ssh-terminal-divider:hover::after, .ssh-terminal-split.is-resizing .ssh-terminal-divider::after { background: #9bc7c4; }
 .ssh-terminal { box-sizing: border-box; min-width: 0; min-height: 0; overflow: hidden; background: #101418; }
 .ssh-terminal :deep(.xterm) { touch-action: pan-y; }
 .ssh-terminal :deep(.xterm-viewport) { overflow-y: auto !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
@@ -2454,6 +2528,9 @@ function disposeTab(tab: TerminalTab) {
   .ssh-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ssh-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport), .ssh-terminal :deep(.xterm-screen) { touch-action: none; }
+  .ssh-terminal-split.is-split { display: grid; grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 1fr) !important; }
+  .ssh-terminal-split.is-split .ssh-terminal-pane { grid-area: 1 / 1 / 2 / 2 !important; }
+  .ssh-terminal-split.is-split .ssh-terminal-pane:not(.focused), .ssh-terminal-divider { display: none !important; }
   .ssh-command-panel { display: none; }
   .ssh-form-grid, .ssh-form-grid--connection { grid-template-columns: 1fr; gap: 0; }
   .ssh-persist-credential { display: flex; margin: 10px 0 0; }

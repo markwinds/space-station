@@ -101,7 +101,11 @@
             :key="view.id"
             type="button"
             class="serial-tab"
-            :class="{ active: view.id === activeViewId }"
+            :class="{
+              active: view.id === activeViewId,
+              'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === view.id,
+              'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === view.id,
+            }"
             @click="activateView(view.id)"
           >
             <span class="serial-status-dot" :class="sessionFor(view)?.status" />
@@ -110,6 +114,11 @@
           </button>
         </div>
         <div v-if="activeSession" class="serial-tab-actions">
+          <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
+            <n-button class="serial-desktop-actions" secondary size="tiny" title="分屏后点击标签可替换当前活动窗格" :disabled="views.length < 2 && !terminalSplit.isSplit.value">
+              {{ terminalSplit.isSplit.value ? terminalSplit.directionLabel.value : "分屏" }}
+            </n-button>
+          </n-dropdown>
           <terminal-action-bar
             class="serial-desktop-actions"
             :recording="Boolean(activeView?.recording)"
@@ -159,47 +168,82 @@
         <n-button class="serial-empty-mobile" type="primary" @click="mobileSetup = true">选择串口</n-button>
       </section>
 
-      <template v-for="view in views" :key="view.id">
-        <section v-show="view.id === activeViewId" class="serial-terminal-section">
-          <web-terminal
-            class="serial-terminal"
-            :scrollback="terminalSettings.scrollbackLines"
-            :font-size="terminalSettings.fontSize"
-            :line-height="terminalSettings.lineHeight"
-            :letter-spacing="terminalSettings.letterSpacing"
-            :show-line-numbers="terminalSettings.showLineNumbers"
-            :show-line-timestamps="terminalSettings.showLineTimestamps"
-            @ready="handleTerminalReady(view, $event)"
-            @data="handleTerminalData(view, $event)"
-            @renderer="view.renderer = $event"
-            @search-results="updateSearchResults(view, $event)"
-            @user-selection-start="cancelPendingSearch"
-          />
-          <div v-if="sessionFor(view)?.error" class="serial-error">{{ sessionFor(view)?.error }}</div>
-          <terminal-command-panel
-            :show-quick="showQuickSnippets"
-            :show-composer="terminalSettings.showCommandComposer"
-            :snippets="pinnedSnippets"
-            label="发送框"
-            @toggle-quick="showQuickSnippets = !showQuickSnippets"
-            @toggle-composer="toggleCommandComposer"
-            @use-snippet="useSnippet(view, $event)"
-          >
-            <template #composer><div class="serial-composer">
-            <n-select v-model:value="view.sendMode" class="serial-send-mode" :options="sendModeOptions" size="small" />
-            <n-input
-              v-model:value="view.command"
-              class="serial-command"
-              :placeholder="view.sendMode === 'hex' ? '例如：48 65 6C 6C 6F' : '输入要发送的内容'"
-              @keyup.ctrl.enter="sendFromComposer(view)"
-              @keyup.meta.enter="sendFromComposer(view)"
+      <div
+        v-show="views.length > 0"
+        ref="terminalSplitContainerRef"
+        class="serial-terminal-split"
+        :class="{
+          'is-split': terminalSplit.isSplit.value,
+          'is-columns': terminalSplit.direction.value === 'columns',
+          'is-rows': terminalSplit.direction.value === 'rows',
+          'is-resizing': terminalSplit.resizing.value,
+        }"
+        :style="terminalSplit.gridStyle.value"
+      >
+        <section
+          v-for="view in views"
+          v-show="terminalSplit.isPaneVisible(view.id)"
+          :key="view.id"
+          class="serial-terminal-section"
+          :class="{
+            focused: terminalSplit.isPaneFocused(view.id),
+            'split-pane-primary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[0] === view.id,
+            'split-pane-secondary': terminalSplit.isSplit.value && terminalSplit.paneIds.value[1] === view.id,
+          }"
+          :style="terminalSplit.paneStyle(view.id)"
+          @pointerdown.capture="terminalSplit.focusPane(view.id)"
+        >
+            <web-terminal
+              class="serial-terminal"
+              :scrollback="terminalSettings.scrollbackLines"
+              :font-size="terminalSettings.fontSize"
+              :line-height="terminalSettings.lineHeight"
+              :letter-spacing="terminalSettings.letterSpacing"
+              :show-line-numbers="terminalSettings.showLineNumbers"
+              :show-line-timestamps="terminalSettings.showLineTimestamps"
+              @ready="handleTerminalReady(view, $event)"
+              @data="handleTerminalData(view, $event)"
+              @renderer="view.renderer = $event"
+              @search-results="updateSearchResults(view, $event)"
+              @user-selection-start="cancelPendingSearch"
             />
-            <n-select v-if="view.sendMode === 'text'" v-model:value="view.lineEnding" class="serial-line-ending" :options="lineEndingOptions" size="small" />
-            <n-button type="primary" :disabled="!canWrite(view)" @click="sendFromComposer(view)">发送</n-button>
-            </div></template>
-          </terminal-command-panel>
+            <div v-if="sessionFor(view)?.error" class="serial-error">{{ sessionFor(view)?.error }}</div>
+            <terminal-command-panel
+              :show-quick="showQuickSnippets"
+              :show-composer="terminalSettings.showCommandComposer"
+              :snippets="pinnedSnippets"
+              label="发送框"
+              @toggle-quick="showQuickSnippets = !showQuickSnippets"
+              @toggle-composer="toggleCommandComposer"
+              @use-snippet="useSnippet(view, $event)"
+            >
+              <template #composer><div class="serial-composer">
+              <n-select v-model:value="view.sendMode" class="serial-send-mode" :options="sendModeOptions" size="small" />
+              <n-input
+                v-model:value="view.command"
+                class="serial-command"
+                :placeholder="view.sendMode === 'hex' ? '例如：48 65 6C 6C 6F' : '输入要发送的内容'"
+                @keyup.ctrl.enter="sendFromComposer(view)"
+                @keyup.meta.enter="sendFromComposer(view)"
+              />
+              <n-select v-if="view.sendMode === 'text'" v-model:value="view.lineEnding" class="serial-line-ending" :options="lineEndingOptions" size="small" />
+              <n-button type="primary" :disabled="!canWrite(view)" @click="sendFromComposer(view)">发送</n-button>
+              </div></template>
+            </terminal-command-panel>
         </section>
-      </template>
+        <div
+          v-if="terminalSplit.isSplit.value"
+          class="serial-terminal-divider"
+          :style="terminalSplit.dividerStyle.value"
+          role="separator"
+          :aria-orientation="terminalSplit.direction.value === 'columns' ? 'vertical' : 'horizontal'"
+          title="拖动调整分屏比例"
+          @pointerdown="terminalSplit.startResize"
+          @pointermove="terminalSplit.resize"
+          @pointerup="finishTerminalSplitResize"
+          @pointercancel="finishTerminalSplitResize"
+        />
+      </div>
     </main>
 
     <n-modal v-model:show="showSnippets" preset="card" title="命令片段" :style="dialogStyle">
@@ -347,6 +391,7 @@ import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPref
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
+import { useTerminalSplit } from "../terminal/useTerminalSplit";
 import {
   persistCommandSnippets,
   useCommandSnippets,
@@ -457,6 +502,8 @@ const loadingSharedPorts = ref(false);
 const sessions = reactive(new Map<string, SerialSession>());
 const views = reactive<SerialView[]>([]);
 const activeViewId = ref("");
+const terminalSplit = useTerminalSplit(activeViewId, () => views.map((view) => view.id), "space-station:serial-terminal-split");
+const terminalSplitContainerRef = terminalSplit.containerRef;
 const mobileSetup = ref(false);
 const sidebarCollapsed = ref(localStorage.getItem("space-station:serial-sidebar-collapsed") === "true");
 const terminalSettings = reactive<TerminalPreferences>(loadTerminalPreferences());
@@ -606,6 +653,13 @@ const selectedPortAvailable = computed(() => source.value === "browser"
   : source.value === "shared" ? Boolean(sharedPortId.value) : Boolean(serverPortId.value));
 const activeView = computed(() => views.find((view) => view.id === activeViewId.value));
 const activeSession = computed(() => activeView.value ? sessions.get(activeView.value.sessionKey) : undefined);
+const terminalSplitOptions = computed(() => [
+  { label: "左右分屏", key: "columns", disabled: views.length < 2 && !terminalSplit.isSplit.value },
+  { label: "上下分屏", key: "rows", disabled: views.length < 2 && !terminalSplit.isSplit.value },
+  ...(terminalSplit.isSplit.value
+    ? [{ type: "divider" as const, key: "split-divider" }, { label: "关闭分屏", key: "close" }]
+    : []),
+]);
 const activePluginContext = computed(() => {
   const session = activeSession.value;
   if (!session) return { transport: undefined, target: undefined, hint: "当前没有打开终端。" };
@@ -1112,7 +1166,15 @@ function handleTerminalData(view: SerialView, data: string) {
 function activateView(viewId: string) {
   activeViewId.value = viewId;
   mobileSetup.value = false;
-  nextTick(() => views.find((view) => view.id === viewId)?.terminalView?.fit());
+}
+
+function handleTerminalSplitAction(key: string | number) {
+  if (key === "close") terminalSplit.closeSplit();
+  else if (key === "columns" || key === "rows") terminalSplit.split(key);
+}
+
+function finishTerminalSplitResize(event: PointerEvent) {
+  terminalSplit.stopResize(event);
 }
 
 async function closeView(viewId: string) {
@@ -1602,7 +1664,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.serial-app { height: 100dvh; min-width: 0; display: grid; grid-template-columns: 310px minmax(0, 1fr); overflow: hidden; background: #0d1318; color: #d7e0e7; }
+.serial-app { --terminal-split-primary: #56b8c8; --terminal-split-secondary: #d5a44d; height: 100dvh; min-width: 0; display: grid; grid-template-columns: 310px minmax(0, 1fr); overflow: hidden; background: #0d1318; color: #d7e0e7; }
 .serial-app--sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
 .serial-app--sidebar-collapsed .serial-sidebar { display: none; }
 .serial-sidebar { min-height: 0; padding: 18px; display: flex; flex-direction: column; gap: 13px; overflow: auto; background: #151d23; border-right: 1px solid #2d3b45; scrollbar-color: #445865 #151d23; scrollbar-width: thin; }
@@ -1650,7 +1712,9 @@ onBeforeUnmount(() => {
 .serial-tabs { min-height: 48px; display: flex; align-items: stretch; border-bottom: 1px solid #2c3942; background: #151d23; }
 .serial-tab-list { min-width: 0; flex: 1; display: flex; align-items: stretch; overflow-x: auto; }
 .serial-tab { flex: 0 0 auto; min-width: 130px; max-width: 230px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #2b3841; background: #151d23; color: #9eacb6; cursor: pointer; }
-.serial-tab.active { background: #0d1318; color: #eef4f7; }
+.serial-tab.active { box-shadow: inset 0 -2px #9bc7c4; background: #2a3a44; color: #f4f9fb; }
+.serial-tab.split-pane-primary { box-shadow: inset 0 -2px var(--terminal-split-primary); }
+.serial-tab.split-pane-secondary { box-shadow: inset 0 -2px var(--terminal-split-secondary); }
 .serial-tab > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .serial-tab i { margin-left: auto; color: #82919c; font-size: 18px; font-style: normal; }
 .serial-status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #73818b; }
@@ -1687,7 +1751,19 @@ onBeforeUnmount(() => {
 .serial-empty h1 { margin: 20px 0 8px; font-size: 24px; }
 .serial-empty p { margin: 0; color: #83939e; }
 .serial-empty-mobile { display: none; margin-top: 18px; }
-.serial-terminal-section { position: relative; min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.serial-terminal-split { min-width: 0; min-height: 0; flex: 1; display: grid; overflow: hidden; background: #101418; }
+.serial-terminal-section { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.serial-terminal-split.is-split .serial-terminal-section.split-pane-primary { outline: 1px solid var(--terminal-split-primary); outline-offset: -1px; }
+.serial-terminal-split.is-split .serial-terminal-section.split-pane-secondary { outline: 1px solid var(--terminal-split-secondary); outline-offset: -1px; }
+.serial-terminal-split.is-split .serial-terminal-section.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
+.serial-terminal-divider { position: relative; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
+.serial-terminal-divider::after { position: absolute; border-radius: 999px; background: #607783; content: ""; transition: background .14s ease; }
+.serial-terminal-split.is-columns .serial-terminal-divider { cursor: col-resize; }
+.serial-terminal-split.is-columns .serial-terminal-divider::after { top: 42%; bottom: 42%; left: 2px; width: 2px; }
+.serial-terminal-split.is-rows .serial-terminal-divider { cursor: row-resize; }
+.serial-terminal-split.is-rows .serial-terminal-divider::after { top: 2px; right: 42%; height: 2px; left: 42%; }
+.serial-terminal-divider:hover, .serial-terminal-split.is-resizing .serial-terminal-divider { background: #3d555f; }
+.serial-terminal-divider:hover::after, .serial-terminal-split.is-resizing .serial-terminal-divider::after { background: #9bc7c4; }
 .serial-terminal { min-height: 0; flex: 1; overflow: hidden; background: #101418; }
 .serial-error { padding: 8px 12px; border-top: 1px solid #653b3b; background: #3a2222; color: #f3b3b3; font-size: 13px; }
 .serial-command-toolbar { padding: 7px 12px; display: flex; align-items: center; gap: 7px; border-top: 1px solid #2c3942; background: #151d23; }
@@ -1787,6 +1863,9 @@ onBeforeUnmount(() => {
   .serial-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .serial-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
   .serial-empty-mobile { display: inline-flex; }
+  .serial-terminal-split.is-split { display: grid; grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 1fr) !important; }
+  .serial-terminal-split.is-split .serial-terminal-section { grid-area: 1 / 1 / 2 / 2 !important; }
+  .serial-terminal-split.is-split .serial-terminal-section:not(.focused), .serial-terminal-divider { display: none !important; }
   .serial-composer { padding-bottom: max(10px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
   .serial-command { order: -1; flex-basis: 100%; }
   .serial-send-mode { flex: 1; }
