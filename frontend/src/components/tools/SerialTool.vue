@@ -90,7 +90,10 @@
 
     <main class="serial-workspace">
       <header class="serial-tabs">
-        <n-button class="serial-sidebar-expand" secondary size="small" @click="expandSidebar">☰ 串口</n-button>
+        <n-button class="serial-sidebar-expand" quaternary size="small" @click="expandSidebar">
+          <template #icon><n-icon><MenuOutline /></n-icon></template>
+          串口
+        </n-button>
         <n-button class="serial-mobile-menu" secondary size="small" @click="mobileSetup = true">串口</n-button>
         <div class="serial-tab-list">
           <button
@@ -329,7 +332,8 @@
 </template>
 
 <script setup lang="ts">
-import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NTabPane, NTabs, useMessage } from "naive-ui";
+import { MenuOutline } from "@vicons/ionicons5";
+import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NIcon, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NTabPane, NTabs, useMessage } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { fetchBackendSerialPorts, fetchBrowserSerialShares, type BackendSerialPort, type BrowserSerialShare, type SharedCommandSnippet } from "@/api";
 import WebTerminal from "../terminal/WebTerminal.vue";
@@ -1610,7 +1614,9 @@ onBeforeUnmount(() => {
 .serial-brand > div { min-width: 0; flex: 1; }
 .serial-brand strong { font-size: 18px; }
 .serial-brand small, .serial-hint { color: #8fa0ad; }
-.serial-sidebar-collapse { flex: 0 0 auto; color: #aab7bf; font-size: 18px; }
+.serial-sidebar-collapse { flex: 0 0 auto; background: transparent !important; color: #b9c6ce !important; font-size: 18px; }
+.serial-sidebar-collapse:hover, .serial-sidebar-collapse:active { background: #30434e !important; color: #f4f9fb !important; }
+.serial-sidebar-collapse:focus-visible { outline: 2px solid #9bc7c4; outline-offset: 1px; }
 .serial-source-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 3px; border-radius: 8px; background: #0e151a; }
 .serial-source-switch button { min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: #9caab4; cursor: pointer; }
 .serial-source-switch button.active { background: #283842; color: #e9f0f4; font-weight: 700; }
@@ -1658,8 +1664,24 @@ onBeforeUnmount(() => {
 .serial-status-label.open { background: rgba(39, 135, 83, .26); color: #78d7a1; }
 .serial-status-label.error { background: rgba(169, 62, 62, .28); color: #f0a0a0; }
 .serial-mobile-menu { display: none; align-self: center; margin-left: 8px; }
-.serial-sidebar-expand { display: none; align-self: center; flex: 0 0 auto; min-height: 34px; margin-left: 8px; }
+.serial-sidebar-expand {
+  display: none;
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 34px;
+  margin: 4px;
+  border: 1px solid #526671 !important;
+  background: #2a3a44 !important;
+  color: #f4f9fb !important;
+  font-weight: 700;
+}
 .serial-app--sidebar-collapsed .serial-sidebar-expand { display: inline-flex; }
+.serial-sidebar-expand:hover, .serial-sidebar-expand:active {
+  border-color: #9bc7c4 !important;
+  background: #9bc7c4 !important;
+  color: #102027 !important;
+}
+.serial-sidebar-expand:focus-visible { outline: 2px solid #b9d9d7; outline-offset: 1px; }
 .serial-empty { flex: 1; display: grid; place-content: center; justify-items: center; padding: 30px; text-align: center; }
 .serial-empty > div { color: #85b8b5; font: 700 54px/1 monospace; }
 .serial-empty h1 { margin: 20px 0 8px; font-size: 24px; }

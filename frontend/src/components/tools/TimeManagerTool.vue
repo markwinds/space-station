@@ -80,6 +80,20 @@
         >
           <template #icon><n-icon><CalendarOutline /></n-icon></template>
         </n-button>
+        <n-popover trigger="click" placement="bottom-end" :show-arrow="false">
+          <template #trigger>
+            <n-button class="tm-desktop-settings" tertiary circle title="桌面端设置">
+              <template #icon><n-icon><SettingsOutline /></n-icon></template>
+            </n-button>
+          </template>
+          <div class="tm-settings-popover">
+            <strong>桌面端交互</strong>
+            <n-checkbox v-model:checked="state.settings.openDetailsOnNodeClick">
+              点击节点后自动打开详情
+            </n-checkbox>
+            <p>关闭时点击节点只会选中，仍可通过底部“详情”按钮打开。</p>
+          </div>
+        </n-popover>
       </div>
     </header>
 
@@ -332,6 +346,7 @@ import {
   FunnelOutline,
   LocateOutline,
   SearchOutline,
+  SettingsOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import MindElixir, { RIGHT, type MindElixirData, type MindElixirInstance, type NodeObj } from "mind-elixir";
@@ -379,7 +394,7 @@ const state = reactive<TimeManagerState>({
   tasks: [],
   tags: [],
   filters: [],
-  settings: { calendarStartHour: 7, calendarEndHour: 22 },
+  settings: { calendarStartHour: 7, calendarEndHour: 22, openDetailsOnNodeClick: false },
 });
 
 const viewMode = ref<ViewMode>("map");
@@ -1160,7 +1175,17 @@ function clearSelectionOnBlankTap(event: PointerEvent) {
     return;
   }
   const target = event.target instanceof Element ? event.target : null;
-  if (target?.closest("me-tpc, .tm-toolbar, .tm-floating-bottom, .tm-drawer, .context-menu")) {
+  const topic = target?.closest("me-tpc") as (HTMLElement & { nodeObj?: NodeObj<TaskNodeMeta> }) | null;
+  if (topic) {
+    const nodeId = topic.nodeObj?.id;
+    const desktop = window.matchMedia("(min-width: 761px)").matches;
+    if (desktop && state.settings.openDetailsOnNodeClick && nodeId && nodeId !== rootId) {
+      selectedTaskId.value = nodeId;
+      openTaskEditor();
+    }
+    return;
+  }
+  if (target?.closest(".tm-toolbar, .tm-floating-bottom, .tm-drawer, .context-menu")) {
     return;
   }
   mind.value?.clearSelection();
@@ -1258,6 +1283,7 @@ function normalizeState(input: TimeManagerState): TimeManagerState {
     settings: {
       calendarStartHour: input.settings?.calendarStartHour ?? 7,
       calendarEndHour: input.settings?.calendarEndHour ?? 22,
+      openDetailsOnNodeClick: input.settings?.openDetailsOnNodeClick ?? false,
     },
   };
 }
@@ -1422,6 +1448,25 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
 
 .tm-search {
   width: 210px;
+}
+
+.tm-settings-popover {
+  width: min(300px, calc(100vw - 40px));
+  display: grid;
+  gap: 12px;
+  padding: 2px;
+  color: #243746;
+}
+
+.tm-settings-popover strong {
+  font-size: 14px;
+}
+
+.tm-settings-popover p {
+  margin: 0;
+  color: #71808b;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .tm-floating-bottom {
@@ -1904,6 +1949,10 @@ const palette = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2
   .tm-search {
     width: 132px;
     flex: 0 0 132px;
+  }
+
+  .tm-desktop-settings {
+    display: none !important;
   }
 
   .tm-mind-elixir :deep(me-parent me-tpc .insert-preview) {

@@ -208,6 +208,7 @@ export interface TimeManagerSavedFilter {
 export interface TimeManagerSettings {
   calendarStartHour: number;
   calendarEndHour: number;
+  openDetailsOnNodeClick: boolean;
 }
 
 export interface TimeManagerState {

@@ -2236,7 +2236,9 @@ function disposeTab(tab: TerminalTab) {
 .ssh-brand-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto 28px; align-items: center; gap: 8px; }
 .ssh-brand-row strong, .ssh-brand-row small { display: block; }
 .ssh-brand-row small { margin-top: 2px; color: #7f8d99; font-size: 11px; }
-.ssh-sidebar-collapse { color: #aab7bf; font-size: 18px; }
+.ssh-sidebar-collapse { background: transparent !important; color: #b9c6ce !important; font-size: 18px; }
+.ssh-sidebar-collapse:hover, .ssh-sidebar-collapse:active { background: #30434e !important; color: #f4f9fb !important; }
+.ssh-sidebar-collapse:focus-visible { outline: 2px solid #9bc7c4; outline-offset: 1px; }
 .ssh-home { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: #79a8a5; color: #101418; font-weight: 900; text-decoration: none; }
 .ssh-host-scroll { min-height: 0; flex: 1 1 0; }
 .ssh-host-list { min-height: 100%; padding-right: 9px; display: flex; flex-direction: column; gap: 12px; }
@@ -2269,8 +2271,24 @@ function disposeTab(tab: TerminalTab) {
 .ssh-tab-list::-webkit-scrollbar, .ssh-tab-actions::-webkit-scrollbar { display: none; }
 .ssh-tab-actions { max-width: 70vw; padding: 0 4px; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; background: #151a1f; box-shadow: -8px 0 12px #101418aa; }
 .ssh-mobile-hosts { display: none; }
-.ssh-sidebar-expand { display: none; flex: 0 0 auto; align-self: center; min-height: 34px; margin: 4px; color: #dce6eb; }
+.ssh-sidebar-expand {
+  display: none;
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 34px;
+  margin: 4px;
+  border: 1px solid #526671 !important;
+  background: #2a3a44 !important;
+  color: #f4f9fb !important;
+  font-weight: 700;
+}
 .ssh-app--sidebar-collapsed .ssh-sidebar-expand { display: inline-flex; }
+.ssh-sidebar-expand:hover, .ssh-sidebar-expand:active {
+  border-color: #9bc7c4 !important;
+  background: #9bc7c4 !important;
+  color: #102027 !important;
+}
+.ssh-sidebar-expand:focus-visible { outline: 2px solid #b9d9d7; outline-offset: 1px; }
 .ssh-mobile-more { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
 .ssh-tab.active { border-bottom-color: #79a8a5; background: #101418; color: #e5e9ef; }

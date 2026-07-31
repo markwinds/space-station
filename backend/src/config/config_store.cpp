@@ -1241,6 +1241,7 @@ nlohmann::json ConfigStore::BuildDefaultTimeManagerStateJson() const
          {
              {"calendarStartHour", 7},
              {"calendarEndHour", 22},
+             {"openDetailsOnNodeClick", false},
          }},
     };
 }
