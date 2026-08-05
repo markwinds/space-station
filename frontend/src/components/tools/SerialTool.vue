@@ -201,6 +201,7 @@
             <web-terminal
               class="serial-terminal"
               :scrollback="terminalSettings.scrollbackLines"
+              :font-family="terminalSettings.fontFamily"
               :font-size="terminalSettings.fontSize"
               :line-height="terminalSettings.lineHeight"
               :letter-spacing="terminalSettings.letterSpacing"
@@ -336,11 +337,24 @@
       <n-form label-placement="top">
         <div class="serial-terminal-settings-layout">
           <section class="serial-terminal-settings-card">
-            <h3>显示</h3>
+            <div class="serial-terminal-settings-heading">
+              <h3>显示</h3>
+              <n-button size="tiny" secondary @click="resetTerminalAppearanceDraft">恢复默认显示</n-button>
+            </div>
+            <n-form-item label="终端字体">
+              <n-input
+                v-model:value="terminalSettingsDraft.fontFamily"
+                placeholder='例如："DejaVu Sans Mono", monospace'
+                clearable
+              />
+              <template #feedback>按顺序尝试本机已安装字体；也可以直接输入自定义 CSS 字体栈。</template>
+            </n-form-item>
             <div class="serial-terminal-settings-grid serial-terminal-settings-grid--three">
               <n-form-item label="字体大小"><n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" /></n-form-item>
               <n-form-item label="行高"><n-input-number v-model:value="terminalSettingsDraft.lineHeight" :min="1" :max="2" :step="0.05" /></n-form-item>
-              <n-form-item label="字符间距"><n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" /></n-form-item>
+              <n-form-item label="字符间距">
+                <n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" />
+              </n-form-item>
             </div>
             <n-form-item label="行信息侧栏">
               <div class="serial-setting-switches serial-setting-switches--inline">
@@ -395,7 +409,7 @@ import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
-import { loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
+import { defaultTerminalPreferences, loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
@@ -1457,6 +1471,15 @@ function openTerminalSettings() {
   showTerminalSettings.value = true;
 }
 
+function resetTerminalAppearanceDraft() {
+  Object.assign(terminalSettingsDraft, {
+    fontFamily: defaultTerminalPreferences.fontFamily,
+    fontSize: defaultTerminalPreferences.fontSize,
+    lineHeight: defaultTerminalPreferences.lineHeight,
+    letterSpacing: defaultTerminalPreferences.letterSpacing,
+  });
+}
+
 function saveTerminalSettings() {
   Object.assign(terminalSettings, saveTerminalPreferences(normalizeTerminalPreferences(terminalSettingsDraft)));
   views.forEach((view) => view.terminalView?.setAppearance(terminalSettings));
@@ -1858,6 +1881,8 @@ onBeforeUnmount(() => {
 .serial-terminal-settings-card { min-width: 0; padding: 14px 14px 10px; border: 1px solid #dfe5e8; border-radius: 9px; background: #f8fafb; }
 .serial-terminal-settings-card--wide { grid-column: 1 / -1; }
 .serial-terminal-settings-card h3 { margin: 0 0 10px; color: #34434d; font-size: 14px; }
+.serial-terminal-settings-heading { min-height: 28px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.serial-terminal-settings-heading h3 { margin: 0; }
 .serial-terminal-settings-card :deep(.n-form-item) { margin-bottom: 10px; }
 .serial-terminal-settings-card > :last-child { margin-bottom: 0; }
 .serial-terminal-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }

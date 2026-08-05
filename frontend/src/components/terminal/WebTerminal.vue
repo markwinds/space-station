@@ -72,10 +72,10 @@ const props = withDefaults(defineProps<{
   visible?: boolean;
 }>(), {
   scrollback: 50000,
-  fontSize: 14,
-  lineHeight: 1.2,
+  fontSize: 13,
+  lineHeight: 1,
   letterSpacing: 0,
-  fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+  fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace',
   restoreBuffer: "",
   background: "#101418",
   foreground: "#d8dee9",
@@ -706,8 +706,9 @@ function clearSearch() {
   searchAddon?.clearDecorations();
 }
 
-function setAppearance(options: { fontSize?: number; lineHeight?: number; letterSpacing?: number }) {
+function setAppearance(options: { fontFamily?: string; fontSize?: number; lineHeight?: number; letterSpacing?: number }) {
   if (!terminal) return;
+  if (options.fontFamily !== undefined) terminal.options.fontFamily = options.fontFamily;
   if (options.fontSize !== undefined) terminal.options.fontSize = options.fontSize;
   if (options.lineHeight !== undefined) terminal.options.lineHeight = options.lineHeight;
   if (options.letterSpacing !== undefined) terminal.options.letterSpacing = options.letterSpacing;
