@@ -2175,7 +2175,7 @@ function useSnippet(tab: TerminalTab, snippet: CommandSnippet, closeModal = true
     return;
   }
   if (tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") return message.warning("SSH 尚未连接");
-  tab.socket.send(new TextEncoder().encode(`${snippet.command}\n`));
+  sendTerminalCommand(tab, snippet.command);
   rememberCommand(tab, snippet.command);
   if (closeModal) showSnippets.value = false;
   tab.terminal?.focus();
@@ -2203,10 +2203,17 @@ function sendCommand(tab: TerminalTab) {
     message.warning("SSH 尚未连接");
     return;
   }
-  tab.socket.send(new TextEncoder().encode(`${command}\n`));
+  sendTerminalCommand(tab, command);
   rememberCommand(tab, command);
   tab.commandDraft = "";
   tab.terminal?.focus();
+}
+
+function sendTerminalCommand(tab: TerminalTab, command: string) {
+  // xterm sends Enter as CR. Keep injected commands on the same terminal
+  // protocol path so shells and interactive programs do not interpret a
+  // snippet submission differently from a physical Enter press.
+  tab.socket.send(new TextEncoder().encode(`${command}\r`));
 }
 
 function rememberCommand(tab: TerminalTab, command: string) {

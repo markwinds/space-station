@@ -724,31 +724,39 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
 
         std::string pending_input;
         std::size_t pending_offset = 0;
+        bool retrying_input_write = false;
         std::optional<std::pair<int, int>> pending_resize;
         std::array<char, 32768> output{};
         auto last_keepalive = std::chrono::steady_clock::now();
         while (!stop_token.stop_requested() && !libssh2_channel_eof(channel.get()))
         {
-            std::deque<Command> commands;
+            // libssh2's non-blocking write must be retried with the exact same
+            // buffer and length after EAGAIN. Do not append newly arrived input
+            // (which may reallocate the string) or start another channel
+            // operation until that retry has completed.
+            if (!retrying_input_write)
             {
-                std::lock_guard lock(mutex_);
-                commands.swap(commands_);
-            }
-            for (auto& command : commands)
-            {
-                if (command.type == CommandType::Resize)
+                std::deque<Command> commands;
                 {
-                    // Keep only the latest dimensions, but retry it if libssh2's
-                    // non-blocking state machine cannot send the request yet.
-                    pending_resize = std::pair(command.columns, command.rows);
+                    std::lock_guard lock(mutex_);
+                    commands.swap(commands_);
                 }
-                else
+                for (auto& command : commands)
                 {
-                    pending_input.append(command.data);
+                    if (command.type == CommandType::Resize)
+                    {
+                        // Keep only the latest dimensions, but retry it if libssh2's
+                        // non-blocking state machine cannot send the request yet.
+                        pending_resize = std::pair(command.columns, command.rows);
+                    }
+                    else
+                    {
+                        pending_input.append(command.data);
+                    }
                 }
             }
 
-            if (pending_resize)
+            if (pending_resize && !retrying_input_write)
             {
                 const auto resize_result = libssh2_channel_request_pty_size(
                     channel.get(), pending_resize->first, pending_resize->second);
@@ -771,12 +779,14 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
                 }
             }
 
+            bool input_write_blocked = false;
             while (pending_offset < pending_input.size())
             {
                 const auto written = libssh2_channel_write(channel.get(), pending_input.data() + pending_offset,
                                                            pending_input.size() - pending_offset);
                 if (written == 0 || written == LIBSSH2_ERROR_EAGAIN)
                 {
+                    input_write_blocked = true;
                     break;
                 }
                 if (written < 0)
@@ -785,6 +795,13 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
                 }
                 pending_offset += static_cast<std::size_t>(written);
             }
+            if (input_write_blocked)
+            {
+                retrying_input_write = true;
+                WaitSocket(socket.value, session.get());
+                continue;
+            }
+            retrying_input_write = false;
             if (pending_offset == pending_input.size())
             {
                 pending_input.clear();

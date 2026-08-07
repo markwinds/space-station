@@ -1601,7 +1601,10 @@ function deleteSnippet(id: string) {
 async function useSnippet(view: SerialView, snippet: CommandSnippet) {
   view.command = snippet.command;
   showSnippets.value = false;
-  if (snippet.action === "run") await sendFromComposer(view);
+  if (snippet.action === "run") {
+    await sendFromComposer(view);
+    view.terminalView?.focus();
+  }
 }
 
 function appendRecording(view: SerialView, data: Uint8Array) {

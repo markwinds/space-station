@@ -29,6 +29,7 @@
           secondary
           size="tiny"
           :title="snippet.action === 'insert' ? `插入：${snippet.command}` : `立即执行：${snippet.command}`"
+          @mousedown.prevent
           @click="$emit('useSnippet', snippet)"
         >
           {{ snippet.name }}<span v-if="snippet.action !== 'insert'" aria-hidden="true">↵</span>
