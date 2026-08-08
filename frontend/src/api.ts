@@ -288,6 +288,32 @@ export interface SftpListResponse {
   items: SftpItem[];
 }
 
+export interface LocalFileBreadcrumb {
+  label: string;
+  path: string;
+}
+
+export interface LocalFileItem {
+  name: string;
+  path: string;
+  type: "directory" | "file" | "symlink" | "other";
+  size: number;
+  modifiedAt: number;
+  hidden: boolean;
+}
+
+export interface LocalFileListResponse {
+  ok: boolean;
+  path: string;
+  parentPath: string;
+  homePath: string;
+  rootPath: string;
+  availableBytes: number;
+  trashSupported: boolean;
+  breadcrumbs: LocalFileBreadcrumb[];
+  items: LocalFileItem[];
+}
+
 export interface SshPortForward {
   id: string;
   hostId: string;
@@ -617,6 +643,76 @@ export async function saveSshHosts(hosts: SshHost[]): Promise<void> {
 
 export async function deleteSshCredential(hostId: string): Promise<void> {
   await api.delete("/tools/ssh/credential", { params: { hostId } });
+}
+
+export async function listLocalFiles(path = ""): Promise<LocalFileListResponse> {
+  const { data } = await api.get<LocalFileListResponse>("/tools/files/list", { params: { path }, timeout: 30000 });
+  return data;
+}
+
+export async function createLocalFolder(parent: string, name: string): Promise<void> {
+  await api.post("/tools/files/folder", { parent, name });
+}
+
+export async function renameLocalFile(path: string, name: string): Promise<void> {
+  await api.put("/tools/files/rename", { path, name });
+}
+
+export async function deleteLocalFile(path: string): Promise<void> {
+  await api.delete("/tools/files/item", { data: { path }, timeout: 30000 });
+}
+
+export async function moveLocalFilesToTrash(paths: string[]): Promise<void> {
+  await api.post("/tools/files/trash", { paths }, { timeout: 300000 });
+}
+
+export type LocalFileConflictPolicy = "error" | "replace" | "keepBoth" | "skip";
+
+export async function transferLocalFiles(
+  sources: string[],
+  destination: string,
+  operation: "copy" | "move",
+  conflictPolicy: LocalFileConflictPolicy = "error",
+): Promise<{ completed: number; skipped: number }> {
+  const { data } = await api.post<{ completed: number; skipped: number }>("/tools/files/transfer", {
+    sources,
+    destination,
+    operation,
+    conflictPolicy,
+  }, { timeout: 300000 });
+  return data;
+}
+
+export async function uploadLocalFile(
+  directory: string,
+  file: File,
+  onProgress?: (loaded: number) => void,
+): Promise<void> {
+  const chunkSize = 8 * 1024 * 1024;
+  const uploadId = crypto.randomUUID();
+  let offset = 0;
+  do {
+    const end = Math.min(file.size, offset + chunkSize);
+    const chunk = file.slice(offset, end);
+    const formData = new FormData();
+    formData.append("uploadId", uploadId);
+    formData.append("directory", directory);
+    formData.append("fileName", file.name);
+    formData.append("offset", String(offset));
+    formData.append("totalSize", String(file.size));
+    formData.append("files", chunk, "chunk");
+    const chunkStart = offset;
+    await api.post("/tools/files/upload", formData, {
+      timeout: 300000,
+      onUploadProgress: (event) => onProgress?.(Math.min(file.size, chunkStart + Math.min(chunk.size, event.loaded))),
+    });
+    offset = end;
+    onProgress?.(offset);
+  } while (offset < file.size);
+}
+
+export function localFileDownloadUrl(path: string) {
+  return `/api/tools/files/download?${new URLSearchParams({ path }).toString()}`;
 }
 
 export async function listSftp(hostId: string, path = "/"): Promise<SftpListResponse> {

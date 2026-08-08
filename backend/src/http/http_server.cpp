@@ -87,9 +87,10 @@ drogon::ContentType StaticAssetContentType(const std::string& path)
 
 const EmbeddedAsset* FindCurrentHashedAsset(const std::string& path)
 {
-    const std::array<std::string_view, 16> hashed_asset_prefixes{
+    const std::array<std::string_view, 17> hashed_asset_prefixes{
         "/assets/index-",
         "/assets/TimeManagerTool-",
+        "/assets/FileManagerTool-",
         "/assets/HabitTool-",
         "/assets/DatePicker-",
         "/assets/TransferTool-",
@@ -156,6 +157,19 @@ bool RequireSecureRequest(const drogon::HttpRequestPtr& request,
         return true;
     }
     callback(JsonResponse({{"code", "https_required"}, {"message", "SSH 管理接口只允许通过 HTTPS 访问。"}},
+                          drogon::k403Forbidden));
+    return false;
+}
+
+bool RequireLoopbackRequest(const drogon::HttpRequestPtr& request,
+                            std::function<void(const drogon::HttpResponsePtr&)>& callback)
+{
+    if (request->peerAddr().isLoopbackIp())
+    {
+        return true;
+    }
+    callback(JsonResponse({{"code", "local_access_required"},
+                           {"message", "文件管理器只允许从运行 Space Station 的本机访问。"}},
                           drogon::k403Forbidden));
     return false;
 }
@@ -1165,6 +1179,175 @@ void HttpServer::RegisterRoutes()
             callback(JsonResponse({{"ok", true}}));
         },
         {drogon::Delete});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/list",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            try
+            {
+                auto response = JsonResponse(file_manager_service_.List(req->getParameter("path")));
+                response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+                callback(response);
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/folder",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                file_manager_service_.CreateDirectory(body.value("parent", ""), body.value("name", ""));
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/rename",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                file_manager_service_.Rename(body.value("path", ""), body.value("name", ""));
+                callback(JsonResponse({{"ok", true}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Put});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/item",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                callback(JsonResponse({{"ok", true}, {"removed", file_manager_service_.Remove(body.value("path", ""))}}));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Delete});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/transfer",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                const auto sources = body.value("sources", std::vector<std::string>{});
+                callback(JsonResponse(file_manager_service_.Transfer(
+                    sources,
+                    body.value("destination", ""),
+                    body.value("operation", "copy") == "move",
+                    body.value("conflictPolicy", "error"))));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/trash",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            nlohmann::json body;
+            if (!ParseJsonBody(req, body, callback)) return;
+            try
+            {
+                callback(JsonResponse(file_manager_service_.MoveToTrash(
+                    body.value("paths", std::vector<std::string>{}))));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/upload",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            drogon::MultiPartParser parser;
+            if (parser.parse(req) != 0)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", "上传请求格式无效。"}}, drogon::k400BadRequest));
+                return;
+            }
+            const auto& files = parser.getFiles();
+            if (files.size() != 1)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", "每个上传分块必须包含一个文件。"}}, drogon::k400BadRequest));
+                return;
+            }
+            try
+            {
+                const auto offset_text = parser.getParameter<std::string>("offset");
+                const auto total_size_text = parser.getParameter<std::string>("totalSize");
+                if (offset_text.empty() || total_size_text.empty())
+                {
+                    throw std::invalid_argument("上传请求缺少文件大小或分块偏移。");
+                }
+                const auto& file = files.front();
+                callback(JsonResponse(file_manager_service_.WriteUploadChunk(
+                    parser.getParameter<std::string>("uploadId"),
+                    parser.getParameter<std::string>("directory"),
+                    parser.getParameter<std::string>("fileName"),
+                    std::stoull(offset_text),
+                    std::stoull(total_size_text),
+                    std::string_view(file.fileData(), file.fileLength()))));
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/tools/files/download",
+        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            if (!RequireLoopbackRequest(req, callback)) return;
+            try
+            {
+                const auto path = file_manager_service_.DownloadPath(req->getParameter("path"));
+                auto response = drogon::HttpResponse::newFileResponse(
+                    path.string(), SanitizeFileName(path.filename().string()), drogon::CT_APPLICATION_OCTET_STREAM, "", req);
+                response->addHeader("Cache-Control", "no-store");
+                callback(response);
+            }
+            catch (const std::exception& error)
+            {
+                callback(JsonResponse({{"ok", false}, {"message", error.what()}}, drogon::k400BadRequest));
+            }
+        },
+        {drogon::Get});
 
     drogon::app().registerHandlerViaRegex(
         "^/web(?:/.*)?$",

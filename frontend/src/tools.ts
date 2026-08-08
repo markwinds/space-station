@@ -11,9 +11,10 @@ import {
   HardwareChipOutline,
   ExtensionPuzzleOutline,
   CameraOutline,
+  FolderOpenOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "textCompare" | "screenshot" | "certificate" | "authenticator" | "timeManager" | "habits" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
+export type ToolId = "jsonFormatter" | "textCompare" | "screenshot" | "fileManager" | "certificate" | "authenticator" | "timeManager" | "habits" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -26,6 +27,14 @@ export interface ToolDefinition {
 }
 
 export const tools: ToolDefinition[] = [
+  {
+    id: "fileManager",
+    title: "文件管理器",
+    description: "浏览和管理运行 Space Station 的本机文件",
+    category: "Local",
+    icon: FolderOpenOutline,
+    path: "/tools/files",
+  },
   {
     id: "screenshot",
     title: "浏览器截屏",
@@ -123,6 +132,16 @@ export const tools: ToolDefinition[] = [
     path: "/settings/runtime",
   },
 ];
+
+export function isLocalAccess() {
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "::1" ||
+    hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+export function isToolAvailable(tool: ToolDefinition) {
+  return !tool.disabled && (tool.id !== "fileManager" || isLocalAccess());
+}
 
 export function findTool(id: ToolId) {
   return tools.find((tool) => tool.id === id);

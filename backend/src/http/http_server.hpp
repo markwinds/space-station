@@ -2,6 +2,7 @@
 
 #include "authenticator/authenticator_service.hpp"
 #include "config/config_store.hpp"
+#include "files/file_manager_service.hpp"
 #include "plugins/terminal_plugin_service.hpp"
 #include "serial/serial_service.hpp"
 #include "serial/browser_serial_share_service.hpp"
@@ -55,6 +56,7 @@ class HttpServer
     plugins::TerminalPluginService terminal_plugin_service_;
     serial::SerialService serial_service_;
     serial::BrowserSerialShareService browser_serial_share_service_;
+    files::FileManagerService file_manager_service_;
     ssh::SftpService sftp_service_;
     std::shared_ptr<serial::SerialWebSocketController> serial_websocket_controller_;
     std::shared_ptr<serial::BrowserSerialShareWebSocketController> browser_serial_share_websocket_controller_;

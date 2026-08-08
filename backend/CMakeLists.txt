@@ -65,6 +65,7 @@ add_executable(space-station
         src/authenticator/authenticator_service.cpp
         src/cert/certificate_service.cpp
         src/config/config_store.cpp
+        src/files/file_manager_service.cpp
         src/http/http_server.cpp
         src/logging/logger.cpp
         src/plugins/terminal_plugin_service.cpp
@@ -169,6 +170,13 @@ if (BUILD_TESTING)
             qjs
             Threads::Threads)
     add_test(NAME terminal-plugin-test COMMAND terminal-plugin-test)
+
+    add_executable(file-manager-service-test
+            tests/file_manager_service_test.cpp
+            src/files/file_manager_service.cpp)
+    target_include_directories(file-manager-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(file-manager-service-test PRIVATE nlohmann_json::nlohmann_json)
+    add_test(NAME file-manager-service-test COMMAND file-manager-service-test)
 endif ()
 
 if (WIN32)

@@ -102,7 +102,7 @@ import { Star, StarOutline } from "@vicons/ionicons5";
 import { NIcon } from "naive-ui";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { tools, type ToolDefinition, type ToolId } from "@/tools";
+import { isToolAvailable, tools, type ToolDefinition, type ToolId } from "@/tools";
 import {
   loadFavoriteToolIds,
   loadRecentTools,
@@ -110,7 +110,7 @@ import {
   type RecentToolEntry,
 } from "@/toolPreferences";
 
-const dashboardTools = tools.filter((tool) => tool.id !== "runtime");
+const dashboardTools = tools.filter((tool) => tool.id !== "runtime" && isToolAvailable(tool));
 const favoriteIds = ref<ToolId[]>([]);
 const recentEntries = ref<RecentToolEntry[]>([]);
 

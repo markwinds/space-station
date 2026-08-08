@@ -5,7 +5,7 @@ import JsonFormatterTool from "@/components/tools/JsonFormatterTool.vue";
 import RuntimeSettings from "@/components/settings/RuntimeSettings.vue";
 import HomeView from "@/views/HomeView.vue";
 import ToolView from "@/views/ToolView.vue";
-import { findTool, tools } from "@/tools";
+import { findTool, isLocalAccess, tools } from "@/tools";
 import { recordRecentTool } from "@/toolPreferences";
 
 const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/TimeManagerTool.vue"));
@@ -17,6 +17,7 @@ const AuthenticatorTool = defineAsyncComponent(() => import("@/components/tools/
 const TerminalPluginTool = defineAsyncComponent(() => import("@/components/tools/TerminalPluginTool.vue"));
 const TextCompareTool = defineAsyncComponent(() => import("@/components/tools/TextCompareTool.vue"));
 const ScreenshotTool = defineAsyncComponent(() => import("@/components/tools/ScreenshotTool.vue"));
+const FileManagerTool = defineAsyncComponent(() => import("@/components/tools/FileManagerTool.vue"));
 
 const router = createRouter({
   history: createWebHistory("/web/"),
@@ -25,6 +26,17 @@ const router = createRouter({
       path: "/",
       name: "home",
       component: HomeView,
+    },
+    {
+      path: "/tools/files",
+      name: "file-manager",
+      component: ToolView,
+      meta: { hideChrome: true, localOnly: true },
+      props: {
+        tool: findTool("fileManager"),
+        component: FileManagerTool,
+        hideHeader: true,
+      },
     },
     {
       path: "/tools/screenshot",
@@ -150,6 +162,11 @@ const router = createRouter({
       redirect: "/",
     },
   ],
+});
+
+router.beforeEach((to) => {
+  if (to.meta.localOnly === true && !isLocalAccess()) return { name: "home" };
+  return true;
 });
 
 router.onError((error) => {
