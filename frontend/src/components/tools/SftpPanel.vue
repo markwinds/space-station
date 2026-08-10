@@ -68,9 +68,13 @@
     <div class="sftp-list-header">
       <span>名称</span><span>大小</span><span>修改时间</span><span>操作</span>
     </div>
+    <div v-if="loading && items.length" class="sftp-refresh-state"><span />正在更新目录…</div>
+    <div v-if="errorMessage && items.length" class="sftp-refresh-state sftp-refresh-state--error">
+      <span>{{ errorMessage }}</span><button type="button" @click="refresh">重试</button>
+    </div>
     <div class="sftp-list" @dblclick="handleListDoubleClick">
-      <div v-if="loading" class="sftp-empty">正在读取远程目录…</div>
-      <div v-else-if="errorMessage" class="sftp-empty sftp-empty--error">
+      <div v-if="loading && !items.length" class="sftp-empty">正在读取远程目录…</div>
+      <div v-else-if="errorMessage && !items.length" class="sftp-empty sftp-empty--error">
         <span>{{ errorMessage }}</span>
         <n-button size="small" @click="refresh">重试</n-button>
       </div>
@@ -132,6 +136,7 @@ import {
   streamSftpDownload,
   uploadSftpFile,
   type SftpItem,
+  type SftpListResponse,
   type SshHost,
 } from "@/api";
 
@@ -163,6 +168,9 @@ const activeDownloads = computed(() => Array.from(downloadStates.values()));
 const hasPendingUploads = computed(() => activeUploads.value.some((upload) => !isFinished(upload.status)));
 let downloadPollTimer: number | undefined;
 const breadcrumbTrail = ref<Array<{ label: string; path: string }>>([{ label: "/", path: "/" }]);
+const directoryCache = new Map<string, SftpListResponse>();
+const maximumCachedDirectories = 64;
+let directoryRequestSequence = 0;
 function downloadPercentage(state: DownloadState) {
   if (state.status === "success") return 100;
   if (state.total <= 0) return 0;
@@ -228,6 +236,8 @@ onBeforeUnmount(() => {
   if (downloadPollTimer) window.clearInterval(downloadPollTimer);
 });
 watch(() => props.host.id, () => {
+  directoryRequestSequence += 1;
+  directoryCache.clear();
   currentPath.value = "/";
   breadcrumbTrail.value = [{ label: "/", path: "/" }];
   items.value = [];
@@ -239,24 +249,57 @@ watch(() => props.host.hasCredential, (hasCredential) => {
 });
 
 async function refresh() {
+  await loadDirectory(currentPath.value, true);
+}
+
+function applyDirectory(result: SftpListResponse) {
+  rememberPath(result.path);
+  parentPath.value = result.parentPath;
+  items.value = result.items;
+}
+
+function cacheDirectory(result: SftpListResponse) {
+  directoryCache.delete(result.path);
+  directoryCache.set(result.path, result);
+  while (directoryCache.size > maximumCachedDirectories) {
+    const oldest = directoryCache.keys().next().value;
+    if (typeof oldest !== "string") break;
+    directoryCache.delete(oldest);
+  }
+}
+
+async function loadDirectory(path: string, preserveItems: boolean) {
   if (!canAuthenticate.value) return;
+  const requestSequence = ++directoryRequestSequence;
+  if (!preserveItems) items.value = [];
   loading.value = true;
   errorMessage.value = "";
   try {
-    const result = await listSftp(props.host.id, currentPath.value);
-    rememberPath(result.path);
-    parentPath.value = result.parentPath;
-    items.value = result.items;
+    const result = await listSftp(props.host.id, path);
+    if (requestSequence !== directoryRequestSequence || currentPath.value !== path) return;
+    cacheDirectory(result);
+    applyDirectory(result);
   } catch (error) {
+    if (requestSequence !== directoryRequestSequence || currentPath.value !== path) return;
     errorMessage.value = errorText(error, "远程目录读取失败");
   } finally {
-    loading.value = false;
+    if (requestSequence === directoryRequestSequence) loading.value = false;
   }
 }
 
 async function navigate(path: string) {
   rememberPath(path);
-  await refresh();
+  const cached = directoryCache.get(path);
+  if (cached) {
+    directoryCache.delete(path);
+    directoryCache.set(path, cached);
+    applyDirectory(cached);
+  }
+  await loadDirectory(path, Boolean(cached));
+}
+
+function invalidateDirectoryCache() {
+  directoryCache.clear();
 }
 
 function handleListDoubleClick(event: MouseEvent) {
@@ -293,6 +336,7 @@ async function submitNameDialog() {
     if (dialogMode.value === "folder") await createSftpFolder(props.host.id, destination);
     else if (editingItem.value) await renameSftpItem(props.host.id, editingItem.value.path, destination);
     showNameDialog.value = false;
+    invalidateDirectoryCache();
     await refresh();
   } catch (error) {
     message.error(errorText(error, "操作失败"));
@@ -306,6 +350,7 @@ async function remove(item: SftpItem) {
   busy.value = true;
   try {
     await deleteSftpItem(props.host.id, item.path, item.type === "directory");
+    invalidateDirectoryCache();
     await refresh();
   } catch (error) {
     message.error(errorText(error, "删除失败"));
@@ -351,6 +396,7 @@ async function uploadSelectedFiles(event: Event) {
     },
   );
   await Promise.all(workers);
+  invalidateDirectoryCache();
   if (currentPath.value === targetDirectory) await refresh();
 }
 
@@ -539,6 +585,12 @@ function errorText(error: unknown, fallback: string) {
 .sftp-download-progress :deep(.n-progress-graph-line-fill) { background: #9fd0cc; box-shadow: 0 0 8px rgb(159 208 204 / 45%); }
 .sftp-list-header, .sftp-row { display: grid; grid-template-columns: minmax(220px, 1fr) 110px 170px 190px; align-items: center; }
 .sftp-list-header { min-width: 690px; padding: 8px 14px; border-bottom: 1px solid #27313a; color: #71808b; font-size: 11px; }
+.sftp-refresh-state { min-height: 28px; padding: 0 14px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #2f414a; background: #183036; color: #9fd0cc; font-size: 11px; }
+.sftp-refresh-state > span:empty { width: 9px; height: 9px; flex: 0 0 auto; border: 2px solid #527c7a; border-top-color: #b9e3df; border-radius: 50%; animation: sftp-refresh-spin .75s linear infinite; }
+.sftp-refresh-state--error { justify-content: space-between; border-color: #5c3439; background: #351f23; color: #e7a0a6; }
+.sftp-refresh-state--error button { padding: 2px 7px; border: 1px solid #86545b; border-radius: 4px; background: transparent; color: #f0b4b9; cursor: pointer; }
+@keyframes sftp-refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sftp-refresh-state > span:empty { animation: none; } }
 .sftp-list { min-width: 0; min-height: 0; flex: 1; overflow: auto; }
 .sftp-row { min-width: 690px; min-height: 42px; padding: 0 14px; border-bottom: 1px solid #20282f; }
 .sftp-row:hover { background: #171e24; }

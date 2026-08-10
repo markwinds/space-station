@@ -1,5 +1,5 @@
 <template>
-  <div class="web-terminal__root" :style="{ backgroundColor: props.background }">
+  <div class="web-terminal__root" :style="{ backgroundColor: effectiveTheme.background }">
     <div
       v-if="gutterVisible"
       class="web-terminal__gutter"
@@ -42,7 +42,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal, type IDisposable, type IMarker } from "@xterm/xterm";
+import { Terminal, type IDisposable, type IMarker, type ITheme } from "@xterm/xterm";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { writeClipboard } from "@/utils/clipboard";
 import type {
@@ -64,6 +64,7 @@ const props = withDefaults(defineProps<{
   foreground?: string;
   cursor?: string;
   selectionBackground?: string;
+  theme?: ITheme;
   searchHighlightLimit?: number;
   autofocus?: boolean;
   enableWebgl?: boolean;
@@ -99,6 +100,20 @@ const emit = defineEmits<{
 }>();
 
 const mountElement = ref<HTMLElement>();
+const effectiveTheme = computed<ITheme>(() => {
+  const theme = props.theme ?? {
+    background: props.background,
+    foreground: props.foreground,
+    cursor: props.cursor,
+    cursorAccent: props.background,
+    selectionBackground: props.selectionBackground,
+    selectionForeground: "#ffffff",
+  };
+  return {
+    ...theme,
+    selectionInactiveBackground: theme.selectionInactiveBackground ?? theme.selectionBackground,
+  };
+});
 const gutterVisible = computed(() => props.showLineNumbers || props.showLineTimestamps);
 const gutterRows = ref<Array<{
   key: string;
@@ -706,12 +721,16 @@ function clearSearch() {
   searchAddon?.clearDecorations();
 }
 
-function setAppearance(options: { fontFamily?: string; fontSize?: number; lineHeight?: number; letterSpacing?: number }) {
+function setAppearance(options: { fontFamily?: string; fontSize?: number; lineHeight?: number; letterSpacing?: number; theme?: ITheme }) {
   if (!terminal) return;
   if (options.fontFamily !== undefined) terminal.options.fontFamily = options.fontFamily;
   if (options.fontSize !== undefined) terminal.options.fontSize = options.fontSize;
   if (options.lineHeight !== undefined) terminal.options.lineHeight = options.lineHeight;
   if (options.letterSpacing !== undefined) terminal.options.letterSpacing = options.letterSpacing;
+  if (options.theme !== undefined) terminal.options.theme = {
+    ...options.theme,
+    selectionInactiveBackground: options.theme.selectionInactiveBackground ?? options.theme.selectionBackground,
+  };
   // xterm recalculates character metrics asynchronously. Fitting in the same
   // frame can retain the old row height and leave the final row half clipped.
   window.cancelAnimationFrame(appearanceFrame);
@@ -1092,14 +1111,7 @@ onMounted(() => {
     scrollback: props.scrollback,
     // SearchAddon uses xterm's decoration API to highlight all matches.
     allowProposedApi: true,
-    theme: {
-      background: props.background,
-      foreground: props.foreground,
-      cursor: props.cursor,
-      selectionBackground: props.selectionBackground,
-      selectionInactiveBackground: props.selectionBackground,
-      selectionForeground: "#ffffff",
-    },
+    theme: effectiveTheme.value,
   });
   fitAddon = new FitAddon();
   searchAddon = new SearchAddon({ highlightLimit: props.searchHighlightLimit });
@@ -1227,6 +1239,8 @@ watch(() => props.showLineTimestamps, async (enabled) => {
   fit();
   scheduleGutterUpdate();
 });
+
+watch(effectiveTheme, (theme) => setAppearance({ theme }));
 
 watch(() => props.showLineNumbers, async () => {
   if (!gutterVisible.value) gutterRows.value = [];

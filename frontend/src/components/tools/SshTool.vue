@@ -14,13 +14,28 @@
         <n-button class="ssh-sidebar-collapse" quaternary circle size="small" aria-label="收起主机侧栏" title="收起主机侧栏" @click="collapseSidebar">«</n-button>
       </div>
 
-      <n-input v-model:value="keyword" clearable size="small" placeholder="搜索主机" />
+      <n-input v-model:value="keyword" clearable size="small" placeholder="搜索名称、地址或分组" />
+
+      <div class="ssh-host-view-switch" role="tablist" aria-label="主机视图">
+        <button
+          v-for="option in hostViewOptions"
+          :key="option.value"
+          type="button"
+          role="tab"
+          :aria-selected="hostView === option.value"
+          :class="{ active: hostView === option.value }"
+          @click="setHostView(option.value)"
+        >
+          <span>{{ option.label }}</span>
+          <small>{{ option.count }}</small>
+        </button>
+      </div>
 
       <div class="ssh-config-actions">
-        <n-button secondary size="small" @click="openPortForwards">端口转发</n-button>
-        <n-button secondary size="small" @click="openTerminalSettings">终端设置</n-button>
-        <n-button secondary size="small" @click="exportConfiguration">导出</n-button>
-        <n-button secondary size="small" @click="configurationInput?.click()">导入</n-button>
+        <n-button secondary size="small" @click="openQuickLauncher">快速入口 <kbd>⌘K</kbd></n-button>
+        <n-dropdown trigger="click" :options="configurationActionOptions" @select="handleConfigurationAction">
+          <n-button secondary size="small">管理</n-button>
+        </n-dropdown>
         <input ref="configurationInput" type="file" accept="application/json,.json" @change="importConfiguration" />
       </div>
 
@@ -33,9 +48,12 @@
           <div v-for="tab in tabs" :key="`mobile-${tab.id}`" class="ssh-mobile-session">
             <button type="button" @click="resumeMobileSession(tab)">
               <span class="ssh-status-dot" :class="tab.status" />
-              <span>{{ tab.host.name }}</span>
+              <span class="ssh-tab-title">{{ tabTitle(tab) }}</span>
+              <span v-if="tab.pinned" class="ssh-tab-pin" aria-label="已固定">●</span>
+              <span v-if="tab.unreadOutput" class="ssh-tab-unread" aria-label="有新输出" />
             </button>
-            <button type="button" aria-label="关闭会话" @click="closeTab(tab.id)">×</button>
+            <button class="ssh-mobile-session-more" type="button" aria-label="会话菜单" @click="openTabMenuFromElement($event, tab.id)">⋯</button>
+            <button class="ssh-mobile-session-close" type="button" aria-label="关闭会话" @click="closeTab(tab.id)">×</button>
           </div>
         </div>
       </section>
@@ -44,8 +62,8 @@
         <div class="ssh-host-list">
           <div v-if="loading" class="ssh-empty">正在载入主机…</div>
           <div v-else-if="filteredHosts.length === 0" class="ssh-empty">
-            暂无主机
-            <n-button text type="primary" @click="openHostEditor()">添加第一台</n-button>
+            {{ hostEmptyText }}
+            <n-button v-if="hostView === 'all' && !keyword.trim()" text type="primary" @click="openHostEditor()">添加第一台</n-button>
           </div>
           <section v-for="section in hostSections" :key="section.key" class="ssh-host-section">
             <button
@@ -116,18 +134,25 @@
             :class="{
               active: tab.id === activeTabId,
               dragging: draggedTabId === tab.id,
+              pinned: tab.pinned,
+              unread: tab.unreadOutput,
               'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(tab.id),
             }"
             :style="terminalSplit.tabStyle(tab.id)"
             draggable="true"
+            :title="`${tabTitle(tab)} · 双击重命名，右键查看更多操作`"
             @click="activateTab(tab.id)"
+            @dblclick.prevent="openRenameTab(tab)"
+            @contextmenu.prevent="openTabContextMenu($event, tab.id)"
             @dragstart="handleTabDragStart($event, tab.id)"
             @dragover.prevent
             @drop.prevent="handleTabDrop($event, tab.id)"
             @dragend="finishTabDrag"
           >
             <span class="ssh-status-dot" :class="tab.status" />
-            <span>{{ tab.host.name }}</span>
+            <span v-if="tab.pinned" class="ssh-tab-pin" aria-label="已固定">●</span>
+            <span class="ssh-tab-title">{{ tabTitle(tab) }}</span>
+            <span v-if="tab.unreadOutput" class="ssh-tab-unread" aria-label="有新输出" />
             <n-icon class="ssh-tab-close" size="14" @click.stop="closeTab(tab.id)"><CloseOutline /></n-icon>
           </button>
         </div>
@@ -233,6 +258,7 @@
             :font-size="terminalSettings.fontSize"
             :line-height="terminalSettings.lineHeight"
             :letter-spacing="terminalSettings.letterSpacing"
+            :theme="currentTerminalTheme"
             :show-line-numbers="terminalSettings.showLineNumbers"
             :show-line-timestamps="terminalSettings.showLineTimestamps"
             :visible="terminalSplit.isPaneVisible(tab.id) && activePane === 'terminal'"
@@ -305,6 +331,76 @@
         @request-credentials="requestPersistentCredentials(tab.host)"
       />
     </main>
+
+    <div
+      v-if="tabContextMenu.show && contextTab"
+      class="ssh-tab-context-menu"
+      :style="{ left: `${tabContextMenu.x}px`, top: `${tabContextMenu.y}px` }"
+      role="menu"
+      @pointerdown.stop
+    >
+      <div class="ssh-tab-context-heading">
+        <span class="ssh-status-dot" :class="contextTab.status" />
+        <strong>{{ tabTitle(contextTab) }}</strong>
+      </div>
+      <button type="button" role="menuitem" @click="openRenameTab(contextTab)">重命名 <kbd>双击</kbd></button>
+      <button type="button" role="menuitem" @click="toggleTabPinned(contextTab)">{{ contextTab.pinned ? "取消固定" : "固定标签" }}</button>
+      <button type="button" role="menuitem" @click="duplicateTab(contextTab)">复制连接</button>
+      <div class="ssh-tab-context-divider" />
+      <button type="button" role="menuitem" @click="closeContextTab">关闭</button>
+      <button type="button" role="menuitem" :disabled="!canCloseOtherTabs" @click="closeOtherTabs(contextTab.id)">关闭其他标签</button>
+      <button type="button" role="menuitem" :disabled="!canCloseTabsToRight" @click="closeTabsToRight(contextTab.id)">关闭右侧标签</button>
+    </div>
+
+    <n-modal v-model:show="showRenameTab" preset="card" title="重命名会话" class="ssh-dialog ssh-rename-tab-dialog" :style="dialogStyle">
+      <n-form-item label="标签名称">
+        <n-input v-model:value="renameTabDraft" maxlength="48" clearable autofocus placeholder="例如：生产环境日志" @keyup.enter="saveRenamedTab" />
+      </n-form-item>
+      <p class="ssh-dialog-hint">只修改当前会话标签，不会更改主机名称。</p>
+      <template #footer>
+        <n-space justify="end"><n-button @click="showRenameTab = false">取消</n-button><n-button type="primary" @click="saveRenamedTab">保存</n-button></n-space>
+      </template>
+    </n-modal>
+
+    <n-modal
+      v-model:show="showQuickLauncher"
+      preset="card"
+      title="快速入口"
+      class="ssh-dialog ssh-quick-launcher-dialog"
+      :style="dialogStyle"
+    >
+      <n-input
+        ref="quickLauncherInput"
+        v-model:value="quickLauncherQuery"
+        clearable
+        size="large"
+        placeholder="搜索主机、会话或操作"
+        @keydown="handleQuickLauncherKeydown"
+      />
+      <div class="ssh-quick-launcher-list" role="listbox" aria-label="快速入口结果">
+        <button
+          v-for="(item, index) in quickLauncherItems"
+          :key="item.key"
+          type="button"
+          role="option"
+          :aria-selected="index === quickLauncherIndex"
+          :class="{ active: index === quickLauncherIndex }"
+          @mouseenter="quickLauncherIndex = index"
+          @click="runQuickLauncherItem(item)"
+        >
+          <span class="ssh-quick-launcher-kind">{{ item.kindLabel }}</span>
+          <span class="ssh-quick-launcher-copy">
+            <strong>{{ item.label }}</strong>
+            <small>{{ item.detail }}</small>
+          </span>
+          <span class="ssh-quick-launcher-enter">↵</span>
+        </button>
+        <div v-if="quickLauncherItems.length === 0" class="ssh-quick-launcher-empty">没有匹配结果</div>
+      </div>
+      <template #footer>
+        <div class="ssh-quick-launcher-hint"><span>↑↓ 选择</span><span>Enter 打开</span><span>Esc 关闭</span></div>
+      </template>
+    </n-modal>
 
     <n-modal
       v-model:show="showHostEditor"
@@ -510,6 +606,9 @@
               <h3>显示</h3>
               <n-button size="tiny" secondary @click="resetTerminalAppearanceDraft">恢复默认显示</n-button>
             </div>
+            <n-form-item label="配色主题">
+              <terminal-theme-picker v-model="terminalSettingsDraft.themeId" />
+            </n-form-item>
             <n-form-item label="终端字体">
               <n-input
                 v-model:value="terminalSettingsDraft.fontFamily"
@@ -599,6 +698,7 @@ import {
   NTabs,
   NUpload,
   useMessage,
+  type InputInst,
   type UploadFileInfo,
 } from "naive-ui";
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
@@ -628,6 +728,7 @@ import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
 import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
 import TerminalSpecialKeyBar from "../terminal/TerminalSpecialKeyBar.vue";
+import TerminalThemePicker from "../terminal/TerminalThemePicker.vue";
 import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
@@ -635,13 +736,11 @@ import { describeTerminalClipboardError, useTerminalClipboardPermission } from "
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 import { useTerminalSplit } from "../terminal/useTerminalSplit";
 import {
-  clampTerminalDecimal as clampDecimal,
-  clampTerminalInteger as clampNumber,
-  DEFAULT_TERMINAL_FONT_FAMILY,
   defaultTerminalPreferences,
   loadTerminalPreferences,
   normalizeTerminalPreferences,
   saveTerminalPreferences,
+  terminalThemePalette,
   type TerminalPreferences,
 } from "../terminal/terminalPreferences";
 import type {
@@ -653,6 +752,17 @@ import type {
 } from "../terminal/WebTerminal.types";
 
 type ConnectionStatus = "connecting" | "reconnecting" | "authenticating" | "connected" | "closed" | "error";
+type HostView = "all" | "favorites" | "recent";
+type QuickLauncherItem = {
+  key: string;
+  kind: "session" | "host" | "action";
+  kindLabel: string;
+  label: string;
+  detail: string;
+  keywords: string;
+  targetId?: string;
+  action?: "add-host" | "port-forwards" | "terminal-settings" | "snippets" | "export" | "import";
+};
 type TerminalModifier = "ctrl" | "alt";
 type TerminalSpecialKey =
   | "escape"
@@ -673,6 +783,9 @@ type TerminalSpecialKey =
 interface TerminalTab {
   id: string;
   host: SshHost;
+  customTitle: string;
+  pinned: boolean;
+  unreadOutput: boolean;
   status: ConnectionStatus;
   message: string;
   socket: WebSocket;
@@ -751,9 +864,19 @@ const terminalSplitContainerRef = terminalSplit.containerRef;
 const sidebarCollapsed = ref(localStorage.getItem("space-station:ssh-sidebar-collapsed") === "true");
 const draggedTabId = ref("");
 const paneDropTargetId = ref("");
+const tabContextMenu = reactive({ show: false, x: 0, y: 0, tabId: "" });
+const showRenameTab = ref(false);
+const renamingTabId = ref("");
+const renameTabDraft = ref("");
 const activePane = ref<"terminal" | "sftp">("terminal");
 const openedSftpTabIds = ref<string[]>([]);
 const openedSftpTabs = computed(() => tabs.value.filter((tab) => openedSftpTabIds.value.includes(tab.id)));
+const contextTab = computed(() => tabs.value.find((tab) => tab.id === tabContextMenu.tabId));
+const canCloseOtherTabs = computed(() => tabs.value.some((tab) => tab.id !== contextTab.value?.id && !tab.pinned));
+const canCloseTabsToRight = computed(() => {
+  const index = tabs.value.findIndex((tab) => tab.id === contextTab.value?.id);
+  return index >= 0 && tabs.value.slice(index + 1).some((tab) => !tab.pinned);
+});
 const showSearch = ref(false);
 const searchQuery = ref("");
 const searchCaseSensitive = ref(false);
@@ -791,6 +914,14 @@ const {
 } = useSharedCommandSnippetLibrary();
 const showQuickSnippets = ref(localStorage.getItem("ssh-show-quick-snippets") !== "false");
 const configurationInput = ref<HTMLInputElement | null>(null);
+const hostView = ref<HostView>((() => {
+  const stored = localStorage.getItem("space-station:ssh-host-view");
+  return stored === "favorites" || stored === "recent" ? stored : "all";
+})());
+const showQuickLauncher = ref(false);
+const quickLauncherQuery = ref("");
+const quickLauncherIndex = ref(0);
+const quickLauncherInput = ref<InputInst | null>(null);
 const showPortForwards = ref(false);
 const portForwards = ref<SshPortForward[]>([]);
 const forwardDraft = reactive({ hostId: "", localPort: 8080, remoteHost: "127.0.0.1", remotePort: 80 });
@@ -800,6 +931,7 @@ const recordingDraft = reactive({ stripAnsi: true, timestamps: false });
 const terminalSettings = reactive<TerminalSettings>(loadTerminalPreferences());
 const terminalSettingsDraft = reactive<TerminalSettings>({ ...terminalSettings });
 const showTerminalSettings = ref(false);
+const currentTerminalTheme = computed(() => terminalThemePalette(showTerminalSettings.value ? terminalSettingsDraft.themeId : terminalSettings.themeId));
 const credentialCache = new Map<string, CredentialData>();
 let clipboardWarningShown = false;
 let clipboardFallbackHintShown = false;
@@ -837,6 +969,13 @@ const snippetActionOptions = [
   { label: "插入输入框，可编辑后发送", value: "insert" },
   { label: "点击后立即执行", value: "run" },
 ];
+const configurationActionOptions = [
+  { label: "端口转发", key: "port-forwards" },
+  { label: "终端设置", key: "terminal-settings" },
+  { type: "divider" as const, key: "configuration-divider" },
+  { label: "导出配置", key: "export" },
+  { label: "导入配置", key: "import" },
+];
 const collapsedHostSectionsKey = "space-station:ssh-collapsed-host-sections";
 const collapsedHostSections = ref<Set<string>>(loadCollapsedHostSections());
 let hostSaveQueue: Promise<void> = Promise.resolve();
@@ -851,10 +990,78 @@ function expandSidebar() {
   localStorage.setItem("space-station:ssh-sidebar-collapsed", "false");
 }
 
+function setHostView(value: HostView) {
+  hostView.value = value;
+  localStorage.setItem("space-station:ssh-host-view", value);
+}
+
+function openQuickLauncher() {
+  showQuickLauncher.value = true;
+}
+
+function handleConfigurationAction(key: string | number) {
+  if (key === "port-forwards") void openPortForwards();
+  else if (key === "terminal-settings") openTerminalSettings();
+  else if (key === "export") exportConfiguration();
+  else if (key === "import") configurationInput.value?.click();
+}
+
+function handleQuickLauncherKeydown(event: KeyboardEvent) {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!quickLauncherItems.value.length) return;
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    quickLauncherIndex.value = (quickLauncherIndex.value + direction + quickLauncherItems.value.length) % quickLauncherItems.value.length;
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    const item = quickLauncherItems.value[quickLauncherIndex.value];
+    if (item) runQuickLauncherItem(item);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    showQuickLauncher.value = false;
+  }
+}
+
+function runQuickLauncherItem(item: QuickLauncherItem) {
+  showQuickLauncher.value = false;
+  if (item.kind === "session" && item.targetId) {
+    activateTab(item.targetId);
+    return;
+  }
+  if (item.kind === "host" && item.targetId) {
+    const host = hosts.value.find((candidate) => candidate.id === item.targetId);
+    if (host) openCredentials(host);
+    return;
+  }
+  if (item.action === "add-host") openHostEditor();
+  else if (item.action === "port-forwards") void openPortForwards();
+  else if (item.action === "terminal-settings") openTerminalSettings();
+  else if (item.action === "snippets") openSnippets();
+  else if (item.action === "export") exportConfiguration();
+  else if (item.action === "import") configurationInput.value?.click();
+}
+
+const favoriteHosts = computed(() => hosts.value.filter((host) => host.favorite));
+const recentHosts = computed(() => hosts.value
+  .filter((host) => host.lastUsedAt)
+  .slice()
+  .sort((left, right) => Date.parse(right.lastUsedAt || "") - Date.parse(left.lastUsedAt || "")));
+const hostViewOptions = computed(() => [
+  { label: "全部", value: "all" as const, count: hosts.value.length },
+  { label: "收藏", value: "favorites" as const, count: favoriteHosts.value.length },
+  { label: "最近", value: "recent" as const, count: recentHosts.value.length },
+]);
+const hostEmptyText = computed(() => {
+  if (keyword.value.trim()) return "没有匹配的主机";
+  if (hostView.value === "favorites") return "暂无收藏主机";
+  if (hostView.value === "recent") return "暂无最近使用的主机";
+  return "暂无主机";
+});
 const filteredHosts = computed(() => {
   const query = keyword.value.trim().toLowerCase();
-  if (!query) return hosts.value;
-  return hosts.value.filter((host) => [host.name, host.host, host.username, host.group || ""].some((part) => part.toLowerCase().includes(query)));
+  const source = hostView.value === "favorites" ? favoriteHosts.value : hostView.value === "recent" ? recentHosts.value : hosts.value;
+  if (!query) return source;
+  return source.filter((host) => [host.name, host.host, host.username, host.group || "", jumpHostName(host)].some((part) => part.toLowerCase().includes(query)));
 });
 const hostSections = computed(() => {
   const query = keyword.value.trim();
@@ -862,19 +1069,16 @@ const hostSections = computed(() => {
     ? [{ key: "search", label: "搜索结果", hosts: filteredHosts.value }]
     : [];
 
+  if (hostView.value === "favorites") return favoriteHosts.value.length
+    ? [{ key: "favorites", label: "收藏主机", hosts: favoriteHosts.value }]
+    : [];
+  if (hostView.value === "recent") return recentHosts.value.length
+    ? [{ key: "recent", label: "最近使用", hosts: recentHosts.value }]
+    : [];
+
   const sections: Array<{ key: string; label: string; hosts: SshHost[] }> = [];
-  const favorites = hosts.value.filter((host) => host.favorite);
-  if (favorites.length) sections.push({ key: "favorites", label: "收藏", hosts: favorites });
-
-  const recent = hosts.value
-    .filter((host) => host.lastUsedAt)
-    .slice()
-    .sort((left, right) => Date.parse(right.lastUsedAt || "") - Date.parse(left.lastUsedAt || ""))
-    .slice(0, 5);
-  if (recent.length) sections.push({ key: "recent", label: "最近使用", hosts: recent });
-
   const groups = new Map<string, SshHost[]>();
-  for (const host of hosts.value) {
+  for (const host of filteredHosts.value) {
     const group = host.group?.trim() || "未分组";
     const items = groups.get(group) || [];
     items.push(host);
@@ -884,6 +1088,49 @@ const hostSections = computed(() => {
     .sort(([left], [right]) => left === "未分组" ? 1 : right === "未分组" ? -1 : left.localeCompare(right, "zh-CN"))
     .forEach(([label, items]) => sections.push({ key: `group:${label}`, label, hosts: items }));
   return sections;
+});
+const quickLauncherItems = computed<QuickLauncherItem[]>(() => {
+  const query = quickLauncherQuery.value.trim().toLowerCase();
+  const items: QuickLauncherItem[] = [];
+  for (const tab of tabs.value) {
+    items.push({
+      key: `session:${tab.id}`,
+      kind: "session",
+      kindLabel: "会话",
+      label: tabTitle(tab),
+      detail: `${tab.host.username}@${tab.host.host}:${tab.host.port} · ${tab.message}`,
+      keywords: `${tabTitle(tab)} ${tab.host.name} ${tab.host.username} ${tab.host.host} ${tab.message}`.toLowerCase(),
+      targetId: tab.id,
+    });
+  }
+  const orderedHosts = query
+    ? hosts.value
+    : [...recentHosts.value, ...favoriteHosts.value, ...hosts.value].filter((host, index, all) => all.findIndex((candidate) => candidate.id === host.id) === index);
+  for (const host of orderedHosts) {
+    items.push({
+      key: `host:${host.id}`,
+      kind: "host",
+      kindLabel: "主机",
+      label: host.name,
+      detail: `${host.username}@${host.host}:${host.port}${host.group ? ` · ${host.group}` : ""}`,
+      keywords: `${host.name} ${host.username} ${host.host} ${host.group || ""}`.toLowerCase(),
+      targetId: host.id,
+    });
+  }
+  const actions: QuickLauncherItem[] = [
+    { key: "action:add-host", kind: "action", kindLabel: "操作", label: "添加 SSH 主机", detail: "创建并保存一个新连接", keywords: "添加 新建 主机 add host", action: "add-host" },
+    { key: "action:port-forwards", kind: "action", kindLabel: "操作", label: "端口转发", detail: "查看和管理本地 SSH 转发", keywords: "端口 转发 tunnel forward", action: "port-forwards" },
+    { key: "action:terminal-settings", kind: "action", kindLabel: "操作", label: "终端设置", detail: "字体、缓存、录制和剪贴板", keywords: "终端 设置 字体 settings", action: "terminal-settings" },
+    { key: "action:export", kind: "action", kindLabel: "操作", label: "导出配置", detail: "下载主机、片段和终端设置", keywords: "导出 配置 export", action: "export" },
+    { key: "action:import", kind: "action", kindLabel: "操作", label: "导入配置", detail: "从 JSON 文件恢复配置", keywords: "导入 配置 import", action: "import" },
+  ];
+  if (activeTab.value) actions.splice(3, 0, { key: "action:snippets", kind: "action", kindLabel: "操作", label: "命令片段", detail: "管理本地与共享片段", keywords: "命令 片段 snippet", action: "snippets" });
+  items.push(...actions);
+  const priority = { session: 0, action: 1, host: 2 } as const;
+  return items
+    .filter((item) => !query || `${item.label} ${item.detail} ${item.keywords}`.toLowerCase().includes(query))
+    .sort((left, right) => priority[left.kind] - priority[right.kind])
+    .slice(0, 12);
 });
 const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeTabId.value));
 const terminalSplitOptions = computed(() => [
@@ -932,6 +1179,17 @@ watch(showSnippets, (visible) => {
   if (visible) void loadSharedSnippetLibrary(true);
 });
 
+watch(showQuickLauncher, (visible) => {
+  if (!visible) return;
+  quickLauncherQuery.value = "";
+  quickLauncherIndex.value = 0;
+  void nextTick(() => quickLauncherInput.value?.focus());
+});
+
+watch(quickLauncherItems, () => {
+  quickLauncherIndex.value = Math.min(quickLauncherIndex.value, Math.max(0, quickLauncherItems.value.length - 1));
+});
+
 onMounted(() => {
   const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
   if (viewport) {
@@ -948,6 +1206,7 @@ onMounted(() => {
   void loadHosts();
   void refreshClipboardPermission();
   window.addEventListener("keydown", handleGlobalShortcut, true);
+  window.addEventListener("pointerdown", closeTabContextMenu);
 });
 onBeforeUnmount(() => {
   if (searchInputTimer) window.clearTimeout(searchInputTimer);
@@ -959,6 +1218,7 @@ onBeforeUnmount(() => {
   document.body.classList.remove("ssh-page-lock");
   disposeClipboardPermission();
   window.removeEventListener("keydown", handleGlobalShortcut, true);
+  window.removeEventListener("pointerdown", closeTabContextMenu);
   tabs.value.forEach(disposeTab);
 });
 
@@ -1124,7 +1384,7 @@ function openCredentials(host: SshHost) {
 }
 
 function resumeMobileSession(tab: TerminalTab) {
-  activeTabId.value = tab.id;
+  activateTab(tab.id);
   activePane.value = "terminal";
   void nextTick(() => {
     tab.terminalView?.fit();
@@ -1199,6 +1459,9 @@ async function openTerminal(
   const tab: TerminalTab = {
     id,
     host,
+    customTitle: "",
+    pinned: false,
+    unreadOutput: false,
     status: "connecting",
     message: "正在打开连接…",
     socket,
@@ -1580,6 +1843,7 @@ function applyTerminalOutput(tab: TerminalTab, bytes: Uint8Array) {
     return;
   }
   tab.terminal.write(bytes);
+  if (activePane.value !== "terminal" || !terminalSplit.isPaneVisible(tab.id)) tab.unreadOutput = true;
   const recordingLimit = terminalSettings.recordingMaxMiB * 1024 * 1024;
   if (!tab.recording || tab.recordingSizeBytes >= recordingLimit) return;
   if (tab.recordingSizeBytes + bytes.byteLength <= recordingLimit) {
@@ -1702,6 +1966,8 @@ function updateTab(tab: TerminalTab, status: ConnectionStatus, statusMessage: st
 
 function activateTab(id: string) {
   activeTabId.value = id;
+  const selectedTab = tabs.value.find((item) => item.id === id);
+  if (selectedTab) selectedTab.unreadOutput = false;
   if (activePane.value === "sftp" && !openedSftpTabIds.value.includes(id)) openedSftpTabIds.value.push(id);
   nextTick(() => {
     const tab = tabs.value.find((item) => item.id === id);
@@ -1710,6 +1976,99 @@ function activateTab(id: string) {
       if (tab && showSearch.value && searchQuery.value) searchTerminal(true, true);
     }
   });
+}
+
+function tabTitle(tab: TerminalTab) {
+  return tab.customTitle.trim() || tab.host.name;
+}
+
+function openTabContextMenu(event: MouseEvent, tabId: string) {
+  activateTab(tabId);
+  tabContextMenu.tabId = tabId;
+  tabContextMenu.x = Math.max(8, Math.min(event.clientX, window.innerWidth - 210));
+  tabContextMenu.y = Math.max(8, Math.min(event.clientY, window.innerHeight - 292));
+  tabContextMenu.show = true;
+}
+
+function openTabMenuFromElement(event: MouseEvent, tabId: string) {
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  activateTab(tabId);
+  tabContextMenu.tabId = tabId;
+  tabContextMenu.x = Math.max(8, Math.min(bounds.right - 202, window.innerWidth - 210));
+  tabContextMenu.y = Math.max(8, Math.min(bounds.bottom + 5, window.innerHeight - 292));
+  tabContextMenu.show = true;
+}
+
+function closeTabContextMenu() {
+  tabContextMenu.show = false;
+}
+
+function openRenameTab(tab: TerminalTab) {
+  closeTabContextMenu();
+  renamingTabId.value = tab.id;
+  renameTabDraft.value = tabTitle(tab);
+  showRenameTab.value = true;
+}
+
+function saveRenamedTab() {
+  const tab = tabs.value.find((item) => item.id === renamingTabId.value);
+  const title = renameTabDraft.value.trim();
+  if (!tab || !title) {
+    message.warning("请输入标签名称");
+    return;
+  }
+  tab.customTitle = title === tab.host.name ? "" : title;
+  showRenameTab.value = false;
+}
+
+function toggleTabPinned(tab: TerminalTab) {
+  closeTabContextMenu();
+  const index = tabs.value.findIndex((item) => item.id === tab.id);
+  if (index < 0) return;
+  const [target] = tabs.value.splice(index, 1);
+  target.pinned = !target.pinned;
+  if (target.pinned) {
+    const insertAt = tabs.value.findIndex((item) => !item.pinned);
+    tabs.value.splice(insertAt < 0 ? tabs.value.length : insertAt, 0, target);
+  } else {
+    const pinnedCount = tabs.value.filter((item) => item.pinned).length;
+    tabs.value.splice(pinnedCount, 0, target);
+  }
+}
+
+function duplicateTab(tab: TerminalTab) {
+  closeTabContextMenu();
+  const credential = tab.pendingCredential
+    ? { ...tab.pendingCredential }
+    : { method: "stored", password: "", privateKey: "", passphrase: "" };
+  void openTerminal(tab.host, credential, tab.rememberCredential, tab.persistCredential);
+}
+
+function closeContextTab() {
+  const tabId = tabContextMenu.tabId;
+  closeTabContextMenu();
+  closeTab(tabId);
+}
+
+function closeOtherTabs(tabId: string) {
+  closeTabContextMenu();
+  tabs.value
+    .filter((tab) => tab.id !== tabId && !tab.pinned)
+    .map((tab) => tab.id)
+    .forEach(closeTab);
+  activateTab(tabId);
+}
+
+function closeTabsToRight(tabId: string) {
+  closeTabContextMenu();
+  const index = tabs.value.findIndex((tab) => tab.id === tabId);
+  if (index < 0) return;
+  tabs.value
+    .slice(index + 1)
+    .filter((tab) => !tab.pinned)
+    .map((tab) => tab.id)
+    .forEach(closeTab);
+  activateTab(tabId);
 }
 
 function handleTerminalSplitAction(key: string | number) {
@@ -1759,6 +2118,10 @@ function handleTabDrop(event: DragEvent, targetId: string) {
   let targetIndex = tabs.value.findIndex((tab) => tab.id === targetId);
   if (insertAfter) targetIndex += 1;
   tabs.value.splice(Math.max(0, targetIndex), 0, sourceTab);
+  tabs.value = [
+    ...tabs.value.filter((tab) => tab.pinned),
+    ...tabs.value.filter((tab) => !tab.pinned),
+  ];
   finishTabDrag();
 }
 
@@ -1791,6 +2154,7 @@ function finishTabDrag() {
 
 function showTerminalPane() {
   activePane.value = "terminal";
+  if (activeTab.value) activeTab.value.unreadOutput = false;
   nextTick(() => {
     const tab = activeTab.value;
     tab?.terminalView?.fit();
@@ -1911,7 +2275,12 @@ function searchCountText(tab: TerminalTab) {
 }
 
 function handleGlobalShortcut(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && activeTab.value && activePane.value === "terminal") {
+  if (event.key === "Escape" && tabContextMenu.show) {
+    closeTabContextMenu();
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    openQuickLauncher();
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && activeTab.value && activePane.value === "terminal") {
     event.preventDefault();
     toggleSearch();
   }
@@ -2020,6 +2389,7 @@ function openTerminalSettings() {
 
 function resetTerminalAppearanceDraft() {
   Object.assign(terminalSettingsDraft, {
+    themeId: defaultTerminalPreferences.themeId,
     fontFamily: defaultTerminalPreferences.fontFamily,
     fontSize: defaultTerminalPreferences.fontSize,
     lineHeight: defaultTerminalPreferences.lineHeight,
@@ -2028,24 +2398,14 @@ function resetTerminalAppearanceDraft() {
 }
 
 function saveTerminalSettings() {
-  terminalSettings.scrollbackLines = clampNumber(terminalSettingsDraft.scrollbackLines, 1000, 500000, 50000);
-  terminalSettings.recordingMaxMiB = clampNumber(terminalSettingsDraft.recordingMaxMiB, 1, 500, 50);
-  terminalSettings.fontFamily = terminalSettingsDraft.fontFamily.trim().slice(0, 300) || DEFAULT_TERMINAL_FONT_FAMILY;
-  terminalSettings.fontSize = clampNumber(terminalSettingsDraft.fontSize, 10, 28, 13);
-  terminalSettings.lineHeight = clampDecimal(terminalSettingsDraft.lineHeight, 1, 2, 1);
-  terminalSettings.letterSpacing = clampDecimal(terminalSettingsDraft.letterSpacing, 0, 4, 0);
-  terminalSettings.showLineNumbers = terminalSettingsDraft.showLineNumbers === true;
-  terminalSettings.showLineTimestamps = terminalSettingsDraft.showLineTimestamps === true;
-  terminalSettings.showCommandComposer = terminalSettingsDraft.showCommandComposer !== false;
-  terminalSettings.copyOnSelect = terminalSettingsDraft.copyOnSelect === true;
-  terminalSettings.pasteOnRightClick = terminalSettingsDraft.pasteOnRightClick === true;
+  Object.assign(terminalSettings, saveTerminalPreferences(normalizeTerminalPreferences(terminalSettingsDraft)));
   Object.assign(terminalSettingsDraft, terminalSettings);
-  Object.assign(terminalSettings, saveTerminalPreferences(terminalSettings));
   tabs.value.forEach((tab) => tab.terminalView?.setAppearance({
     fontFamily: terminalSettings.fontFamily,
     fontSize: terminalSettings.fontSize,
     lineHeight: terminalSettings.lineHeight,
     letterSpacing: terminalSettings.letterSpacing,
+    theme: terminalThemePalette(terminalSettings.themeId),
   }));
   showTerminalSettings.value = false;
   message.success("终端显示设置已应用；回滚行数将在新终端中生效");
@@ -2259,17 +2619,7 @@ async function importConfiguration(event: Event) {
         .map((item) => ({ ...item, action: item.action === "insert" ? "insert" : "run" }));
     }
     if (data.terminalSettings) {
-      terminalSettings.scrollbackLines = clampNumber(data.terminalSettings.scrollbackLines, 1000, 500000, terminalSettings.scrollbackLines);
-      terminalSettings.recordingMaxMiB = clampNumber(data.terminalSettings.recordingMaxMiB, 1, 500, terminalSettings.recordingMaxMiB);
-      terminalSettings.fontSize = clampNumber(data.terminalSettings.fontSize, 10, 28, terminalSettings.fontSize);
-      terminalSettings.lineHeight = clampDecimal(data.terminalSettings.lineHeight, 1, 2, terminalSettings.lineHeight);
-      terminalSettings.letterSpacing = clampDecimal(data.terminalSettings.letterSpacing, 0, 4, terminalSettings.letterSpacing);
-      if (typeof data.terminalSettings.showLineNumbers === "boolean") terminalSettings.showLineNumbers = data.terminalSettings.showLineNumbers;
-      if (typeof data.terminalSettings.showLineTimestamps === "boolean") terminalSettings.showLineTimestamps = data.terminalSettings.showLineTimestamps;
-      if (typeof data.terminalSettings.showCommandComposer === "boolean") terminalSettings.showCommandComposer = data.terminalSettings.showCommandComposer;
-      if (typeof data.terminalSettings.copyOnSelect === "boolean") terminalSettings.copyOnSelect = data.terminalSettings.copyOnSelect;
-      if (typeof data.terminalSettings.pasteOnRightClick === "boolean") terminalSettings.pasteOnRightClick = data.terminalSettings.pasteOnRightClick;
-      Object.assign(terminalSettings, normalizeTerminalPreferences(terminalSettings));
+      Object.assign(terminalSettings, normalizeTerminalPreferences({ ...terminalSettings, ...data.terminalSettings }));
       saveTerminalPreferences(terminalSettings);
     }
     persistSnippets();
@@ -2372,6 +2722,12 @@ function disposeTab(tab: TerminalTab) {
 .ssh-home { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: #79a8a5; color: #101418; font-weight: 900; text-decoration: none; }
 .ssh-host-scroll { min-height: 0; flex: 1 1 0; }
 .ssh-host-list { min-height: 100%; padding-right: 9px; display: flex; flex-direction: column; gap: 12px; }
+.ssh-host-view-switch { padding: 3px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; border: 1px solid #34414a; border-radius: 8px; background: #11171b; }
+.ssh-host-view-switch button { min-width: 0; min-height: 30px; padding: 0 7px; display: flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 5px; background: transparent; color: #8796a0; font-size: 12px; cursor: pointer; }
+.ssh-host-view-switch button:hover { color: #dce6eb; background: #202b32; }
+.ssh-host-view-switch button.active { background: #30434b; color: #effafa; box-shadow: inset 0 0 0 1px #58736f; }
+.ssh-host-view-switch small { min-width: 18px; color: #74848e; font-size: 10px; font-variant-numeric: tabular-nums; }
+.ssh-host-view-switch button.active small { color: #a9ceca; }
 .ssh-host-section { display: grid; gap: 5px; }
 .ssh-host-section-title { width: 100%; min-height: 24px; padding: 0 5px; display: flex; align-items: center; justify-content: space-between; border: 0; border-radius: 5px; background: transparent; color: #a7b5be; font-size: 11px; font-weight: 800; letter-spacing: .04em; cursor: pointer; }
 .ssh-host-section-title:hover { background: #202930; color: #d4dee4; }
@@ -2422,21 +2778,42 @@ function disposeTab(tab: TerminalTab) {
 .ssh-mobile-more { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
 .ssh-tab.active { border-bottom-color: #9bc7c4; background: #2a3a44; color: #f4f9fb; }
+.ssh-tab.pinned { min-width: 112px; background: #19242a; }
 .ssh-tab.split-pane-bound { border-bottom-color: var(--terminal-pane-color); }
 .ssh-tab.dragging { opacity: .45; }
-.ssh-tab span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ssh-tab-close { margin-left: auto; flex: 0 0 auto; }
+.ssh-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ssh-tab-pin { flex: 0 0 auto; color: #d4a84c; font-size: 7px; }
+.ssh-tab-unread { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #63c9d5; box-shadow: 0 0 0 3px rgba(99, 201, 213, .13); }
+.ssh-tab:not(.active).unread .ssh-tab-unread { animation: ssh-unread-pulse 1.8s ease-in-out infinite; }
+.ssh-tab-close { margin-left: auto; flex: 0 0 auto; opacity: .55; transition: opacity .14s ease; }
+.ssh-tab:hover .ssh-tab-close, .ssh-tab.active .ssh-tab-close { opacity: 1; }
+@keyframes ssh-unread-pulse { 50% { box-shadow: 0 0 0 5px rgba(99, 201, 213, 0); } }
+@media (prefers-reduced-motion: reduce) { .ssh-tab:not(.active).unread .ssh-tab-unread { animation: none; } }
 .ssh-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #87909a; }
 .ssh-status-dot.connecting, .ssh-status-dot.authenticating { background: #e4b860; }
 .ssh-status-dot.connected { background: #66bd83; }
 .ssh-status-dot.error { background: #e06c75; }
+.ssh-tab-context-menu { position: fixed; z-index: 3500; width: 202px; padding: 6px; border: 1px solid #41525d; border-radius: 9px; background: #1d272d; color: #dde7ec; box-shadow: 0 14px 38px rgba(0, 0, 0, .42); }
+.ssh-tab-context-heading { min-width: 0; padding: 7px 9px 9px; display: flex; align-items: center; gap: 8px; color: #f1f6f8; }
+.ssh-tab-context-heading strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.ssh-tab-context-menu button { width: 100%; min-height: 32px; padding: 0 9px; display: flex; align-items: center; justify-content: space-between; border: 0; border-radius: 6px; background: transparent; color: #d5e0e5; font: inherit; text-align: left; cursor: pointer; }
+.ssh-tab-context-menu button:hover { background: #33454f; color: #fff; }
+.ssh-tab-context-menu button:disabled { color: #677680; cursor: default; }
+.ssh-tab-context-menu button:disabled:hover { background: transparent; }
+.ssh-tab-context-menu kbd { color: #80919b; font: 10px/1 "SFMono-Regular", Consolas, monospace; }
+.ssh-tab-context-divider { height: 1px; margin: 5px 7px; background: #35444d; }
+.ssh-rename-tab-dialog { max-width: 440px; }
+.ssh-dialog-hint { margin: -5px 0 0; color: #74838d; font-size: 12px; }
 .ssh-pane-switch { align-self: center; margin: 0 4px; padding: 2px; display: flex; border: 1px solid #2b3740; border-radius: 6px; background: #101418; }
 .ssh-pane-switch button { padding: 3px 9px; border: 0; border-radius: 4px; background: transparent; color: #7f8d99; font-size: 12px; cursor: pointer; }
 .ssh-pane-switch button.active { background: #2b3a42; color: #dce4e9; }
 .ssh-search-bar { top: 47px; }
 .ssh-config-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -7px; }
+.ssh-config-actions > :deep(.n-button), .ssh-config-actions > :deep(.n-dropdown) { flex: 1 1 0; }
 .ssh-config-actions :deep(.n-button) { color: #d5dfe5; background: #26323a; border-color: #41515d; }
 .ssh-config-actions :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
+.ssh-config-actions :deep(kbd) { margin-left: 5px; color: #91aaa9; font: 10px/1 "SFMono-Regular", Consolas, monospace; }
+.ssh-config-actions :deep(.n-button:hover kbd) { color: #26363d; }
 .ssh-config-actions input { display: none; }
 .ssh-mobile-sessions { display: none; }
 .ssh-renderer, .ssh-status-text { align-self: center; padding: 2px 6px; border: 1px solid #3c4851; border-radius: 4px; color: #8c9aa4; font: 10px/1.4 monospace; white-space: nowrap; }
@@ -2541,6 +2918,19 @@ function disposeTab(tab: TerminalTab) {
 .ssh-fingerprint dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
 :global(.ssh-dialog) { --ssh-dialog-width: min(560px, calc(100vw - 32px)); }
 :global(.ssh-terminal-settings-dialog) { --ssh-dialog-width: min(860px, calc(100vw - 32px)); }
+:global(.ssh-quick-launcher-dialog) { --ssh-dialog-width: min(650px, calc(100vw - 32px)); }
+.ssh-quick-launcher-list { max-height: min(480px, 58vh); margin-top: 12px; display: grid; gap: 4px; overflow-y: auto; scrollbar-width: thin; }
+.ssh-quick-launcher-list > button { width: 100%; min-width: 0; padding: 10px; display: grid; grid-template-columns: 42px minmax(0, 1fr) 24px; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #27353e; text-align: left; cursor: pointer; }
+.ssh-quick-launcher-list > button:hover, .ssh-quick-launcher-list > button.active { border-color: #b7d0ce; background: #e7f1f0; }
+.ssh-quick-launcher-kind { padding: 3px 5px; border-radius: 5px; background: #e8edef; color: #667681; font-size: 10px; font-weight: 800; text-align: center; }
+.ssh-quick-launcher-list > button.active .ssh-quick-launcher-kind { background: #5d8582; color: #f5ffff; }
+.ssh-quick-launcher-copy { min-width: 0; display: grid; gap: 3px; }
+.ssh-quick-launcher-copy strong, .ssh-quick-launcher-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ssh-quick-launcher-copy strong { color: #24323a; font-size: 13px; }
+.ssh-quick-launcher-copy small { color: #74828b; font-size: 11px; }
+.ssh-quick-launcher-enter { color: #84949d; font: 15px/1 monospace; text-align: center; }
+.ssh-quick-launcher-empty { padding: 32px 12px; color: #7e8b94; text-align: center; }
+.ssh-quick-launcher-hint { display: flex; justify-content: flex-end; gap: 18px; color: #7c8992; font-size: 11px; }
 @media (max-width: 760px) {
   .ssh-app {
     position: fixed;
@@ -2598,8 +2988,13 @@ function disposeTab(tab: TerminalTab) {
   .ssh-mobile-session { flex: 0 0 auto; display: flex; align-items: stretch; overflow: hidden; border: 1px solid #42535e; border-radius: 7px; background: #27343c; }
   .ssh-mobile-session > button { min-height: 34px; padding: 0 9px; display: flex; align-items: center; gap: 7px; border: 0; background: transparent; color: #e0e8ed; }
   .ssh-mobile-session > button:first-child { max-width: 150px; }
-  .ssh-mobile-session > button:first-child span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ssh-mobile-session > button:last-child { padding: 0 10px; border-left: 1px solid #42535e; color: #aebbc4; font-size: 18px; }
+  .ssh-mobile-session .ssh-tab-title { max-width: 105px; }
+  .ssh-mobile-session .ssh-tab-unread { width: 6px; height: 6px; }
+  .ssh-mobile-session-more, .ssh-mobile-session-close { padding: 0 9px !important; border-left: 1px solid #42535e !important; color: #aebbc4 !important; font-size: 18px; }
+  .ssh-mobile-session-more { font-weight: 800; letter-spacing: 1px; }
+  .ssh-host-view-switch button { min-height: 38px; }
+  .ssh-quick-launcher-list { max-height: calc(100dvh - 190px); }
+  .ssh-quick-launcher-list > button { min-height: 52px; }
   .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport), .ssh-terminal :deep(.xterm-screen) { touch-action: none; }
   .ssh-terminal-split.is-split .ssh-terminal-pane { position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
   .ssh-terminal-split.is-split .ssh-terminal-pane:not(.focused) { visibility: hidden; pointer-events: none; }

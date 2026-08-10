@@ -45,10 +45,12 @@ class SftpService
     nlohmann::json ForwardState() const;
 
   private:
+    struct ConnectionPool;
     struct Forward;
     struct DownloadWorker;
     struct UploadWorker;
     ConfigStore& config_store_;
+    std::unique_ptr<ConnectionPool> connection_pool_;
     mutable std::mutex forwards_mutex_;
     std::unordered_map<std::string, std::shared_ptr<Forward>> forwards_;
     mutable std::mutex downloads_mutex_;

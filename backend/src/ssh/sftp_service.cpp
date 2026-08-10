@@ -20,6 +20,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #ifdef _WIN32
@@ -613,7 +614,108 @@ void RelayForward(ConfigStore& store, const std::string& host_id, const std::str
 }
 } // namespace
 
-SftpService::SftpService(ConfigStore& config_store) : config_store_(config_store)
+struct SftpService::ConnectionPool
+{
+    struct Entry
+    {
+        std::mutex mutex;
+        std::unique_ptr<Connection> connection;
+        std::string configuration_revision;
+        std::chrono::steady_clock::time_point last_used{};
+    };
+
+    explicit ConnectionPool(ConfigStore& store) : store_(store)
+    {
+    }
+
+    template <typename Operation>
+    auto Use(const std::string& host_id, bool retry_reused_connection, Operation&& operation)
+        -> std::invoke_result_t<Operation, Connection&>
+    {
+        using Result = std::invoke_result_t<Operation, Connection&>;
+        auto entry = EntryFor(host_id);
+        std::unique_lock entry_lock(entry->mutex);
+        const auto revision = ConfigurationRevision(host_id);
+        const auto now = std::chrono::steady_clock::now();
+        if (entry->connection &&
+            (entry->configuration_revision != revision || now - entry->last_used >= kIdleTimeout))
+        {
+            entry->connection.reset();
+            entry->configuration_revision.clear();
+        }
+
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const auto reused = static_cast<bool>(entry->connection);
+            if (!entry->connection)
+            {
+                entry->connection = std::make_unique<Connection>(OpenConnection(store_, host_id));
+                entry->configuration_revision = revision;
+                const auto opened_message = "SFTP pooled connection opened: host=" + host_id;
+                logI(opened_message.c_str());
+            }
+            try
+            {
+                if constexpr (std::is_void_v<Result>)
+                {
+                    std::invoke(std::forward<Operation>(operation), *entry->connection);
+                    entry->last_used = std::chrono::steady_clock::now();
+                    return;
+                }
+                else
+                {
+                    auto result = std::invoke(std::forward<Operation>(operation), *entry->connection);
+                    entry->last_used = std::chrono::steady_clock::now();
+                    return result;
+                }
+            }
+            catch (...)
+            {
+                entry->connection.reset();
+                entry->configuration_revision.clear();
+                entry->last_used = std::chrono::steady_clock::now();
+                if (!(retry_reused_connection && reused && attempt == 0)) throw;
+                const auto retry_message = "SFTP pooled connection expired, reconnecting: host=" + host_id;
+                logI(retry_message.c_str());
+            }
+        }
+        throw std::runtime_error("SFTP 连接重试失败。");
+    }
+
+  private:
+    static constexpr auto kIdleTimeout = std::chrono::minutes(3);
+
+    std::shared_ptr<Entry> EntryFor(const std::string& host_id)
+    {
+        std::lock_guard lock(entries_mutex_);
+        auto& entry = entries_[host_id];
+        if (!entry) entry = std::make_shared<Entry>();
+        return entry;
+    }
+
+    std::string ConfigurationRevision(const std::string& host_id)
+    {
+        const auto host = FindHost(store_, host_id);
+        auto serialized = host.dump();
+        if (const auto credential = store_.LoadSshCredential(host_id)) serialized += credential->dump();
+        const auto jump_host_id = host.value("jumpHostId", "");
+        if (!jump_host_id.empty())
+        {
+            serialized += FindHost(store_, jump_host_id).dump();
+            if (const auto credential = store_.LoadSshCredential(jump_host_id)) serialized += credential->dump();
+        }
+        std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+        SHA256(reinterpret_cast<const unsigned char*>(serialized.data()), serialized.size(), digest.data());
+        return {reinterpret_cast<const char*>(digest.data()), digest.size()};
+    }
+
+    ConfigStore& store_;
+    std::mutex entries_mutex_;
+    std::unordered_map<std::string, std::shared_ptr<Entry>> entries_;
+};
+
+SftpService::SftpService(ConfigStore& config_store)
+    : config_store_(config_store), connection_pool_(std::make_unique<ConnectionPool>(config_store))
 {
 }
 
@@ -653,74 +755,78 @@ SftpService::~SftpService()
 
 nlohmann::json SftpService::List(const std::string& host_id, const std::string& path) const
 {
-    auto connection = OpenConnection(config_store_, host_id);
     const auto normalized = NormalizePath(path);
-    SftpHandlePtr directory(libssh2_sftp_opendir(connection.sftp.get(), normalized.c_str()));
-    if (!directory) throw SftpError(connection.sftp.get(), "远程目录打开失败");
-    auto items = nlohmann::json::array();
-    std::array<char, 4096> name{};
-    std::array<char, 4096> long_entry{};
-    LIBSSH2_SFTP_ATTRIBUTES attributes{};
-    while (true)
-    {
-        const auto length = libssh2_sftp_readdir_ex(directory.get(), name.data(), name.size(),
-                                                    long_entry.data(), long_entry.size(), &attributes);
-        if (length == 0) break;
-        if (length < 0) throw SftpError(connection.sftp.get(), "远程目录读取失败");
-        const auto filename = std::string(name.data(), static_cast<std::size_t>(length));
-        if (filename == "." || filename == "..") continue;
-        const auto permissions = (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) != 0 ? attributes.permissions : 0;
-        const auto type = LIBSSH2_SFTP_S_ISDIR(permissions) ? "directory" :
-                          LIBSSH2_SFTP_S_ISLNK(permissions) ? "symlink" : "file";
-        items.push_back({
-            {"name", filename},
-            {"path", normalized == "/" ? "/" + filename : normalized + "/" + filename},
-            {"type", type},
-            {"size", (attributes.flags & LIBSSH2_SFTP_ATTR_SIZE) != 0 ? attributes.filesize : 0},
-            {"modifiedAt", (attributes.flags & LIBSSH2_SFTP_ATTR_ACMODTIME) != 0 ? attributes.mtime : 0},
+    return connection_pool_->Use(host_id, true, [&](Connection& connection) {
+        SftpHandlePtr directory(libssh2_sftp_opendir(connection.sftp.get(), normalized.c_str()));
+        if (!directory) throw SftpError(connection.sftp.get(), "远程目录打开失败");
+        auto items = nlohmann::json::array();
+        std::array<char, 4096> name{};
+        std::array<char, 4096> long_entry{};
+        LIBSSH2_SFTP_ATTRIBUTES attributes{};
+        while (true)
+        {
+            const auto length = libssh2_sftp_readdir_ex(directory.get(), name.data(), name.size(),
+                                                        long_entry.data(), long_entry.size(), &attributes);
+            if (length == 0) break;
+            if (length < 0) throw SftpError(connection.sftp.get(), "远程目录读取失败");
+            const auto filename = std::string(name.data(), static_cast<std::size_t>(length));
+            if (filename == "." || filename == "..") continue;
+            const auto permissions = (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) != 0 ? attributes.permissions : 0;
+            const auto type = LIBSSH2_SFTP_S_ISDIR(permissions) ? "directory" :
+                              LIBSSH2_SFTP_S_ISLNK(permissions) ? "symlink" : "file";
+            items.push_back({
+                {"name", filename},
+                {"path", normalized == "/" ? "/" + filename : normalized + "/" + filename},
+                {"type", type},
+                {"size", (attributes.flags & LIBSSH2_SFTP_ATTR_SIZE) != 0 ? attributes.filesize : 0},
+                {"modifiedAt", (attributes.flags & LIBSSH2_SFTP_ATTR_ACMODTIME) != 0 ? attributes.mtime : 0},
+            });
+        }
+        std::sort(items.begin(), items.end(), [](const auto& left, const auto& right) {
+            const auto left_directory = left.value("type", "") == "directory";
+            const auto right_directory = right.value("type", "") == "directory";
+            return left_directory != right_directory ? left_directory : left.value("name", "") < right.value("name", "");
         });
-    }
-    std::sort(items.begin(), items.end(), [](const auto& left, const auto& right) {
-        const auto left_directory = left.value("type", "") == "directory";
-        const auto right_directory = right.value("type", "") == "directory";
-        return left_directory != right_directory ? left_directory : left.value("name", "") < right.value("name", "");
+        const auto parent = normalized == "/" ? "/" : std::filesystem::path(normalized).parent_path().generic_string();
+        return nlohmann::json{{"path", normalized}, {"parentPath", parent.empty() ? "/" : parent}, {"items", items}};
     });
-    const auto parent = normalized == "/" ? "/" : std::filesystem::path(normalized).parent_path().generic_string();
-    return {{"path", normalized}, {"parentPath", parent.empty() ? "/" : parent}, {"items", items}};
 }
 
 void SftpService::CreateDirectory(const std::string& host_id, const std::string& path) const
 {
-    auto connection = OpenConnection(config_store_, host_id);
     const auto normalized = NormalizePath(path);
-    if (libssh2_sftp_mkdir(connection.sftp.get(), normalized.c_str(), 0755) != 0)
-        throw SftpError(connection.sftp.get(), "远程目录创建失败");
+    connection_pool_->Use(host_id, false, [&](Connection& connection) {
+        if (libssh2_sftp_mkdir(connection.sftp.get(), normalized.c_str(), 0755) != 0)
+            throw SftpError(connection.sftp.get(), "远程目录创建失败");
+    });
 }
 
 void SftpService::Remove(const std::string& host_id, const std::string& path, bool directory) const
 {
-    auto connection = OpenConnection(config_store_, host_id);
     const auto normalized = NormalizePath(path);
     if (normalized == "/") throw std::runtime_error("不能删除远程根目录。");
-    const auto result = directory ? libssh2_sftp_rmdir(connection.sftp.get(), normalized.c_str())
-                                  : libssh2_sftp_unlink(connection.sftp.get(), normalized.c_str());
-    if (result != 0) throw SftpError(connection.sftp.get(), "远程项目删除失败");
+    connection_pool_->Use(host_id, false, [&](Connection& connection) {
+        const auto result = directory ? libssh2_sftp_rmdir(connection.sftp.get(), normalized.c_str())
+                                      : libssh2_sftp_unlink(connection.sftp.get(), normalized.c_str());
+        if (result != 0) throw SftpError(connection.sftp.get(), "远程项目删除失败");
+    });
 }
 
 void SftpService::Rename(const std::string& host_id, const std::string& from, const std::string& to) const
 {
-    auto connection = OpenConnection(config_store_, host_id);
     const auto source = NormalizePath(from);
     const auto destination = NormalizePath(to);
     if (source == "/" || destination == "/") throw std::runtime_error("不能重命名远程根目录。");
-    auto result = libssh2_sftp_rename_ex(connection.sftp.get(), source.c_str(), source.size(), destination.c_str(),
-                                         destination.size(), LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC);
-    if (result != 0)
-    {
-        result = libssh2_sftp_rename_ex(connection.sftp.get(), source.c_str(), source.size(), destination.c_str(),
-                                        destination.size(), LIBSSH2_SFTP_RENAME_OVERWRITE);
-    }
-    if (result != 0) throw SftpError(connection.sftp.get(), "远程项目重命名失败");
+    connection_pool_->Use(host_id, false, [&](Connection& connection) {
+        auto result = libssh2_sftp_rename_ex(connection.sftp.get(), source.c_str(), source.size(), destination.c_str(),
+                                             destination.size(), LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC);
+        if (result != 0)
+        {
+            result = libssh2_sftp_rename_ex(connection.sftp.get(), source.c_str(), source.size(), destination.c_str(),
+                                            destination.size(), LIBSSH2_SFTP_RENAME_OVERWRITE);
+        }
+        if (result != 0) throw SftpError(connection.sftp.get(), "远程项目重命名失败");
+    });
 }
 
 void SftpService::StartUploadChunk(const std::string& upload_id,

@@ -1,4 +1,4 @@
-import type { Terminal } from "@xterm/xterm";
+import type { ITheme, Terminal } from "@xterm/xterm";
 
 export type TerminalRenderer = "webgl" | "canvas";
 
@@ -34,7 +34,7 @@ export interface WebTerminalHandle {
   ): boolean;
   jumpToSearchIndex(index: number): boolean;
   clearSearch(): void;
-  setAppearance(options: { fontFamily?: string; fontSize?: number; lineHeight?: number; letterSpacing?: number }): void;
+  setAppearance(options: { fontFamily?: string; fontSize?: number; lineHeight?: number; letterSpacing?: number; theme?: ITheme }): void;
   getTerminal(): Terminal | undefined;
   getElement(): HTMLElement | undefined;
 }

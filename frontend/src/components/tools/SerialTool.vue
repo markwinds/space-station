@@ -205,6 +205,7 @@
               :font-size="terminalSettings.fontSize"
               :line-height="terminalSettings.lineHeight"
               :letter-spacing="terminalSettings.letterSpacing"
+              :theme="currentTerminalTheme"
               :show-line-numbers="terminalSettings.showLineNumbers"
               :show-line-timestamps="terminalSettings.showLineTimestamps"
               :visible="terminalSplit.isPaneVisible(view.id)"
@@ -341,6 +342,9 @@
               <h3>显示</h3>
               <n-button size="tiny" secondary @click="resetTerminalAppearanceDraft">恢复默认显示</n-button>
             </div>
+            <n-form-item label="配色主题">
+              <terminal-theme-picker v-model="terminalSettingsDraft.themeId" />
+            </n-form-item>
             <n-form-item label="终端字体">
               <n-input
                 v-model:value="terminalSettingsDraft.fontFamily"
@@ -408,8 +412,9 @@ import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
 import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
+import TerminalThemePicker from "../terminal/TerminalThemePicker.vue";
 import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
-import { defaultTerminalPreferences, loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, type TerminalPreferences } from "../terminal/terminalPreferences";
+import { defaultTerminalPreferences, loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, terminalThemePalette, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
@@ -533,6 +538,7 @@ const sidebarCollapsed = ref(localStorage.getItem("space-station:serial-sidebar-
 const terminalSettings = reactive<TerminalPreferences>(loadTerminalPreferences());
 const terminalSettingsDraft = reactive<TerminalPreferences>({ ...terminalSettings });
 const showTerminalSettings = ref(false);
+const currentTerminalTheme = computed(() => terminalThemePalette(showTerminalSettings.value ? terminalSettingsDraft.themeId : terminalSettings.themeId));
 const showSearch = ref(false);
 const searchQuery = ref("");
 const searchCaseSensitive = ref(false);
@@ -1473,6 +1479,7 @@ function openTerminalSettings() {
 
 function resetTerminalAppearanceDraft() {
   Object.assign(terminalSettingsDraft, {
+    themeId: defaultTerminalPreferences.themeId,
     fontFamily: defaultTerminalPreferences.fontFamily,
     fontSize: defaultTerminalPreferences.fontSize,
     lineHeight: defaultTerminalPreferences.lineHeight,
@@ -1482,7 +1489,10 @@ function resetTerminalAppearanceDraft() {
 
 function saveTerminalSettings() {
   Object.assign(terminalSettings, saveTerminalPreferences(normalizeTerminalPreferences(terminalSettingsDraft)));
-  views.forEach((view) => view.terminalView?.setAppearance(terminalSettings));
+  views.forEach((view) => view.terminalView?.setAppearance({
+    ...terminalSettings,
+    theme: terminalThemePalette(terminalSettings.themeId),
+  }));
   showTerminalSettings.value = false;
   message.success("终端设置已同步应用到 SSH 与串口；回滚行数对新终端生效");
 }
