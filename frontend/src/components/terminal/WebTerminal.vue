@@ -44,6 +44,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type IDisposable, type IMarker, type ITheme } from "@xterm/xterm";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { translateText } from "@/i18n";
 import { writeClipboard } from "@/utils/clipboard";
 import type {
   TerminalRenderer,
@@ -348,11 +349,11 @@ function scheduleGutterUpdate() {
 }
 
 function write(data: string | Uint8Array, callback?: () => void) {
-  terminal?.write(data, callback);
+  terminal?.write(typeof data === "string" ? translateText(data) : data, callback);
 }
 
 function writeln(data: string) {
-  terminal?.writeln(data);
+  terminal?.writeln(translateText(data));
 }
 
 function focus() {

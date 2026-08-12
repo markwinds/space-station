@@ -1842,7 +1842,7 @@ onBeforeUnmount(() => {
 .serial-terminal-section { position: absolute; inset: 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .serial-terminal-section.is-pane-hidden { visibility: hidden; pointer-events: none; }
 .serial-terminal-section.is-pane-drop-target { z-index: 3; outline: 2px solid #9bc7c4; outline-offset: -3px; }
-.serial-terminal-section.is-pane-drop-target::after { position: absolute; z-index: 5; inset: 8px; display: grid; place-items: center; border: 1px dashed #9bc7c4; border-radius: 8px; background: rgba(33, 67, 73, .6); color: #e0f4f2; font-size: 13px; font-weight: 700; content: "拖放到此分屏"; pointer-events: none; }
+.serial-terminal-section.is-pane-drop-target::after { position: absolute; z-index: 5; inset: 8px; display: grid; place-items: center; border: 1px dashed #9bc7c4; border-radius: 8px; background: rgba(33, 67, 73, .6); color: #e0f4f2; font-size: 13px; font-weight: 700; content: var(--i18n-drop-to-pane, "拖放到此分屏"); pointer-events: none; }
 .serial-terminal-split.is-split .serial-terminal-section.split-pane-bound { outline: 1px solid var(--terminal-pane-color); outline-offset: -1px; }
 .serial-terminal-split.is-split .serial-terminal-section.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
 .serial-terminal-divider { position: absolute; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }

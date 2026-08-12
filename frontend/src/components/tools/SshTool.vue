@@ -50,7 +50,6 @@
               <span class="ssh-status-dot" :class="tab.status" />
               <span class="ssh-tab-title">{{ tabTitle(tab) }}</span>
               <span v-if="tab.pinned" class="ssh-tab-pin" aria-label="已固定">●</span>
-              <span v-if="tab.unreadOutput" class="ssh-tab-unread" aria-label="有新输出" />
             </button>
             <button class="ssh-mobile-session-more" type="button" aria-label="会话菜单" @click="openTabMenuFromElement($event, tab.id)">⋯</button>
             <button class="ssh-mobile-session-close" type="button" aria-label="关闭会话" @click="closeTab(tab.id)">×</button>
@@ -135,7 +134,6 @@
               active: tab.id === activeTabId,
               dragging: draggedTabId === tab.id,
               pinned: tab.pinned,
-              unread: tab.unreadOutput,
               'split-pane-bound': terminalSplit.isSplit.value && terminalSplit.isPaneVisible(tab.id),
             }"
             :style="terminalSplit.tabStyle(tab.id)"
@@ -152,7 +150,6 @@
             <span class="ssh-status-dot" :class="tab.status" />
             <span v-if="tab.pinned" class="ssh-tab-pin" aria-label="已固定">●</span>
             <span class="ssh-tab-title">{{ tabTitle(tab) }}</span>
-            <span v-if="tab.unreadOutput" class="ssh-tab-unread" aria-label="有新输出" />
             <n-icon class="ssh-tab-close" size="14" @click.stop="closeTab(tab.id)"><CloseOutline /></n-icon>
           </button>
         </div>
@@ -785,7 +782,6 @@ interface TerminalTab {
   host: SshHost;
   customTitle: string;
   pinned: boolean;
-  unreadOutput: boolean;
   status: ConnectionStatus;
   message: string;
   socket: WebSocket;
@@ -1461,7 +1457,6 @@ async function openTerminal(
     host,
     customTitle: "",
     pinned: false,
-    unreadOutput: false,
     status: "connecting",
     message: "正在打开连接…",
     socket,
@@ -1843,7 +1838,6 @@ function applyTerminalOutput(tab: TerminalTab, bytes: Uint8Array) {
     return;
   }
   tab.terminal.write(bytes);
-  if (activePane.value !== "terminal" || !terminalSplit.isPaneVisible(tab.id)) tab.unreadOutput = true;
   const recordingLimit = terminalSettings.recordingMaxMiB * 1024 * 1024;
   if (!tab.recording || tab.recordingSizeBytes >= recordingLimit) return;
   if (tab.recordingSizeBytes + bytes.byteLength <= recordingLimit) {
@@ -1966,8 +1960,6 @@ function updateTab(tab: TerminalTab, status: ConnectionStatus, statusMessage: st
 
 function activateTab(id: string) {
   activeTabId.value = id;
-  const selectedTab = tabs.value.find((item) => item.id === id);
-  if (selectedTab) selectedTab.unreadOutput = false;
   if (activePane.value === "sftp" && !openedSftpTabIds.value.includes(id)) openedSftpTabIds.value.push(id);
   nextTick(() => {
     const tab = tabs.value.find((item) => item.id === id);
@@ -2154,7 +2146,6 @@ function finishTabDrag() {
 
 function showTerminalPane() {
   activePane.value = "terminal";
-  if (activeTab.value) activeTab.value.unreadOutput = false;
   nextTick(() => {
     const tab = activeTab.value;
     tab?.terminalView?.fit();
@@ -2783,12 +2774,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-tab.dragging { opacity: .45; }
 .ssh-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ssh-tab-pin { flex: 0 0 auto; color: #d4a84c; font-size: 7px; }
-.ssh-tab-unread { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #63c9d5; box-shadow: 0 0 0 3px rgba(99, 201, 213, .13); }
-.ssh-tab:not(.active).unread .ssh-tab-unread { animation: ssh-unread-pulse 1.8s ease-in-out infinite; }
 .ssh-tab-close { margin-left: auto; flex: 0 0 auto; opacity: .55; transition: opacity .14s ease; }
 .ssh-tab:hover .ssh-tab-close, .ssh-tab.active .ssh-tab-close { opacity: 1; }
-@keyframes ssh-unread-pulse { 50% { box-shadow: 0 0 0 5px rgba(99, 201, 213, 0); } }
-@media (prefers-reduced-motion: reduce) { .ssh-tab:not(.active).unread .ssh-tab-unread { animation: none; } }
 .ssh-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #87909a; }
 .ssh-status-dot.connecting, .ssh-status-dot.authenticating { background: #e4b860; }
 .ssh-status-dot.connected { background: #66bd83; }
@@ -2827,7 +2814,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-terminal-pane { position: absolute; inset: 0; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; overflow: hidden; }
 .ssh-terminal-pane.is-pane-hidden { visibility: hidden; pointer-events: none; }
 .ssh-terminal-pane.is-pane-drop-target { z-index: 3; outline: 2px solid #9bc7c4; outline-offset: -3px; }
-.ssh-terminal-pane.is-pane-drop-target::after { position: absolute; z-index: 5; inset: 8px; display: grid; place-items: center; border: 1px dashed #9bc7c4; border-radius: 8px; background: rgba(33, 67, 73, .6); color: #e0f4f2; font-size: 13px; font-weight: 700; content: "拖放到此分屏"; pointer-events: none; }
+.ssh-terminal-pane.is-pane-drop-target::after { position: absolute; z-index: 5; inset: 8px; display: grid; place-items: center; border: 1px dashed #9bc7c4; border-radius: 8px; background: rgba(33, 67, 73, .6); color: #e0f4f2; font-size: 13px; font-weight: 700; content: var(--i18n-drop-to-pane, "拖放到此分屏"); pointer-events: none; }
 .ssh-terminal-split.is-split .ssh-terminal-pane.split-pane-bound { outline: 1px solid var(--terminal-pane-color); outline-offset: -1px; }
 .ssh-terminal-split.is-split .ssh-terminal-pane.focused { z-index: 2; outline-width: 2px; outline-offset: -2px; }
 .ssh-terminal-divider { position: absolute; z-index: 4; min-width: 0; min-height: 0; background: #26343d; touch-action: none; }
@@ -2989,7 +2976,6 @@ function disposeTab(tab: TerminalTab) {
   .ssh-mobile-session > button { min-height: 34px; padding: 0 9px; display: flex; align-items: center; gap: 7px; border: 0; background: transparent; color: #e0e8ed; }
   .ssh-mobile-session > button:first-child { max-width: 150px; }
   .ssh-mobile-session .ssh-tab-title { max-width: 105px; }
-  .ssh-mobile-session .ssh-tab-unread { width: 6px; height: 6px; }
   .ssh-mobile-session-more, .ssh-mobile-session-close { padding: 0 9px !important; border-left: 1px solid #42535e !important; color: #aebbc4 !important; font-size: 18px; }
   .ssh-mobile-session-more { font-weight: 800; letter-spacing: 1px; }
   .ssh-host-view-switch button { min-height: 38px; }

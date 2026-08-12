@@ -1,7 +1,7 @@
 {
   "name": "Space Station",
   "short_name": "Space Station",
-  "description": "轻量工具舱，支持离线访问常用工具。",
+  "description": "轻量工具舱 / Lightweight utility bay with offline access.",
   "start_url": "/web/",
   "scope": "/web/",
   "display": "standalone",

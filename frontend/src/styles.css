@@ -109,7 +109,9 @@ input {
   color: #1f3442;
   font-size: 14px;
   font-weight: 700;
+  font-family: inherit;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .topbar-action-icon {

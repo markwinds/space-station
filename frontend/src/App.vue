@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider>
+  <n-config-provider :locale="naiveLocale" :date-locale="naiveDateLocale">
     <n-message-provider>
       <div class="app-shell">
         <header v-if="isHome" class="app-topbar">
@@ -11,6 +11,12 @@
             </div>
           </router-link>
           <nav class="topbar-actions" aria-label="全局操作">
+            <button class="topbar-action locale-action" type="button" aria-label="切换语言" title="切换语言" @click="toggleAppLocale">
+              <n-icon class="topbar-action-icon" size="18" aria-hidden="true">
+                <LanguageOutline />
+              </n-icon>
+              <span class="topbar-action-label">{{ appLocale === "zh-CN" ? "EN" : "中文" }}</span>
+            </button>
             <router-link class="topbar-action" to="/settings/runtime" aria-label="运行配置" title="运行配置">
               <n-icon class="topbar-action-icon" size="18" aria-hidden="true">
                 <SettingsOutline />
@@ -35,11 +41,12 @@
 </template>
 
 <script setup lang="ts">
-import { SettingsOutline } from "@vicons/ionicons5";
+import { LanguageOutline, SettingsOutline } from "@vicons/ionicons5";
 import { NConfigProvider, NIcon, NMessageProvider } from "naive-ui";
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { RouterLink, RouterView } from "vue-router";
+import { appLocale, naiveDateLocale, naiveLocale, toggleAppLocale } from "@/i18n";
 
 const route = useRoute();
 const isHome = computed(() => route.name === "home");
