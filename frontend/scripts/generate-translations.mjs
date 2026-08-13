@@ -149,6 +149,9 @@ const overrides = {
   "终端插件": "Terminal Plugins",
   "运行配置": "Runtime Settings",
   "捕获页面并裁剪、打码和添加常用标注": "Capture pages, then crop, redact, and annotate them",
+  "经典": "Classic",
+  "简洁耐看的经典终端配色": "A clean, timeless terminal color scheme",
+  "请先再打开一个终端标签，再使用分屏": "Open another terminal tab to use split view",
 };
 for (const [source, translation] of Object.entries(overrides)) translations.set(source, translation);
 

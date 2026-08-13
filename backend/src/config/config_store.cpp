@@ -957,8 +957,10 @@ void ConfigStore::SaveSshHosts(const nlohmann::json& json)
             const auto name = item.value("name", "");
             const auto host = item.value("host", "");
             const auto username = item.value("username", "");
-            const auto port = std::clamp(item.value("port", 22), 1, 65535);
-            if (id.empty() || name.empty() || host.empty() || username.empty() || !ids.insert(id).second)
+            const auto protocol = item.value("protocol", "ssh") == "telnet" ? "telnet" : "ssh";
+            const auto port = std::clamp(item.value("port", protocol == std::string("telnet") ? 23 : 22), 1, 65535);
+            if (id.empty() || name.empty() || host.empty() ||
+                (protocol == std::string("ssh") && username.empty()) || !ids.insert(id).second)
             {
                 continue;
             }
@@ -968,6 +970,7 @@ void ConfigStore::SaveSshHosts(const nlohmann::json& json)
                 {"host", host},
                 {"port", port},
                 {"username", username},
+                {"protocol", protocol},
                 {"group", item.value("group", "")},
                 {"hostKeySha256", item.value("hostKeySha256", "")},
                 {"useAgent", item.value("useAgent", false)},
@@ -982,6 +985,8 @@ void ConfigStore::SaveSshHosts(const nlohmann::json& json)
         const auto id = host.value("id", "");
         const auto jump_host_id = host.value("jumpHostId", "");
         if (jump_host_id.empty()) continue;
+        if (host.value("protocol", "ssh") != "ssh")
+            throw std::runtime_error("Telnet 主机不能使用 SSH 跳板机。");
         if (jump_host_id == id) throw std::runtime_error("SSH 主机不能将自己设置为跳板机。");
         if (!ids.contains(jump_host_id)) throw std::runtime_error("SSH 主机引用的跳板机不存在。");
         const auto jump_host = std::find_if(hosts.begin(), hosts.end(), [&](const auto& candidate) {
@@ -989,6 +994,8 @@ void ConfigStore::SaveSshHosts(const nlohmann::json& json)
         });
         if (jump_host != hosts.end() && !jump_host->value("jumpHostId", "").empty())
             throw std::runtime_error("当前只支持单层跳板，跳板机自身不能再配置跳板机。");
+        if (jump_host != hosts.end() && jump_host->value("protocol", "ssh") != "ssh")
+            throw std::runtime_error("跳板机必须使用 SSH 协议。");
     }
     SaveBusinessJsonUnlocked("sshHosts", hosts);
     auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());

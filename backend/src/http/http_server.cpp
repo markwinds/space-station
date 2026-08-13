@@ -415,6 +415,10 @@ void HttpServer::RegisterRoutes()
     ssh_websocket_controller_ =
         std::make_shared<ssh::SshWebSocketController>(config_store_, terminal_plugin_service_);
     drogon::app().registerController(ssh_websocket_controller_);
+    telnet_websocket_controller_ = std::make_shared<telnet::TelnetWebSocketController>(config_store_);
+    drogon::app().registerController(telnet_websocket_controller_);
+    network_scan_websocket_controller_ = std::make_shared<network::NetworkScanWebSocketController>();
+    drogon::app().registerController(network_scan_websocket_controller_);
     drogon::app().registerHandler(
         "/api/tools/ssh/session/terminate",
         [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {

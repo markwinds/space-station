@@ -3,10 +3,12 @@
 #include "authenticator/authenticator_service.hpp"
 #include "config/config_store.hpp"
 #include "files/file_manager_service.hpp"
+#include "network/network_scan_websocket.hpp"
 #include "plugins/terminal_plugin_service.hpp"
 #include "serial/serial_service.hpp"
 #include "serial/browser_serial_share_service.hpp"
 #include "ssh/sftp_service.hpp"
+#include "telnet/telnet_websocket.hpp"
 #include "transfer/transfer_manager.hpp"
 
 #include <memory>
@@ -61,6 +63,8 @@ class HttpServer
     std::shared_ptr<serial::SerialWebSocketController> serial_websocket_controller_;
     std::shared_ptr<serial::BrowserSerialShareWebSocketController> browser_serial_share_websocket_controller_;
     std::shared_ptr<ssh::SshWebSocketController> ssh_websocket_controller_;
+    std::shared_ptr<telnet::TelnetWebSocketController> telnet_websocket_controller_;
+    std::shared_ptr<network::NetworkScanWebSocketController> network_scan_websocket_controller_;
     std::thread server_thread_;
     std::atomic<bool> started_{false};
 };

@@ -68,6 +68,7 @@ add_executable(space-station
         src/files/file_manager_service.cpp
         src/http/http_server.cpp
         src/logging/logger.cpp
+        src/network/network_scan_websocket.cpp
         src/plugins/terminal_plugin_service.cpp
         src/serial/serial_service.cpp
         src/serial/serial_websocket.cpp
@@ -77,6 +78,8 @@ add_executable(space-station
         src/ssh/network_utils.cpp
         src/ssh/sftp_service.cpp
         src/ssh/ssh_websocket.cpp
+        src/telnet/telnet_session.cpp
+        src/telnet/telnet_websocket.cpp
         src/transfer/transfer_manager.cpp
         "${SPACESTATION_EMBED_CPP}")
 
@@ -96,6 +99,10 @@ target_link_libraries(space-station
         libssh2::libssh2
         qjs
         space-transfer-core)
+
+if(WIN32)
+    target_link_libraries(space-station PRIVATE iphlpapi ws2_32)
+endif()
 
 function(strip_release_executable target)
     add_custom_command(

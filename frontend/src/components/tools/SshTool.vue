@@ -4,14 +4,16 @@
       <div class="ssh-brand-row">
         <router-link class="ssh-home" to="/" aria-label="返回首页">SS</router-link>
         <div>
-          <strong>SSH 终端</strong>
+          <strong>远程终端</strong>
           <small>{{ hosts.length }} 台主机</small>
         </div>
         <n-button type="primary" size="small" aria-label="添加主机" @click="openHostEditor()">
           <template #icon><n-icon><AddOutline /></n-icon></template>
           添加
         </n-button>
-        <n-button class="ssh-sidebar-collapse" quaternary circle size="small" aria-label="收起主机侧栏" title="收起主机侧栏" @click="collapseSidebar">«</n-button>
+        <n-button class="ssh-sidebar-collapse" quaternary circle size="small" aria-label="收起主机侧栏" title="收起主机侧栏" @click="collapseSidebar">
+          <template #icon><n-icon><ChevronBackOutline /></n-icon></template>
+        </n-button>
       </div>
 
       <n-input v-model:value="keyword" clearable size="small" placeholder="搜索名称、地址或分组" />
@@ -32,7 +34,6 @@
       </div>
 
       <div class="ssh-config-actions">
-        <n-button secondary size="small" @click="openQuickLauncher">快速入口 <kbd>⌘K</kbd></n-button>
         <n-dropdown trigger="click" :options="configurationActionOptions" @select="handleConfigurationAction">
           <n-button secondary size="small">管理</n-button>
         </n-dropdown>
@@ -87,9 +88,9 @@
                 <button class="ssh-host-main" type="button" @click="openCredentials(host)">
                   <span class="ssh-host-icon">{{ host.name.slice(0, 1).toUpperCase() }}</span>
                   <span class="ssh-host-copy">
-                    <strong>{{ host.name }}</strong>
+                    <strong>{{ host.name }} <span class="ssh-protocol-badge">{{ hostProtocolLabel(host) }}</span></strong>
                     <small>
-                      {{ host.username }}@{{ host.host }}:{{ host.port }}
+                      <template v-if="host.username">{{ host.username }}@</template>{{ host.host }}:{{ host.port }}
                       <template v-if="jumpHostName(host)"> · 经 {{ jumpHostName(host) }}</template>
                     </small>
                   </span>
@@ -154,38 +155,50 @@
           </button>
         </div>
         <div v-if="activeTab" class="ssh-tab-actions">
-          <div class="ssh-pane-switch">
-            <button type="button" :class="{ active: activePane === 'terminal' }" @click="showTerminalPane">终端</button>
-            <button type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
-          </div>
-          <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
-            <n-button class="ssh-desktop-action" secondary size="tiny" title="在当前窗格继续分屏；点击标签替换活动窗格，或拖动标签到指定分屏" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
-              {{ terminalSplit.splitLabel.value }}
-            </n-button>
-          </n-dropdown>
-          <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" class="ssh-desktop-action" secondary size="tiny" @click="reconnectTab(activeTab)">重连</n-button>
-          <terminal-action-bar
-            v-if="activePane === 'terminal'"
-            class="ssh-desktop-action"
-            :recording="activeTab.recording"
-            @search="openSearch"
-            @snippets="openSnippets"
-            @recording="toggleRecording(activeTab)"
-          />
-          <terminal-plugin-entry
-            v-if="activePane === 'terminal'"
-            transport="ssh"
-            :target="activeTab.host.id"
-          />
           <span class="ssh-status-text" :class="activeTab.status">{{ activeTab.message }}</span>
-          <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
-            <n-button class="ssh-mobile-more" secondary size="tiny">更多</n-button>
-          </n-dropdown>
           <terminal-renderer-badge
             v-if="activePane === 'terminal'"
             class="ssh-desktop-action ssh-renderer-status"
             :renderer="activeTab.renderer"
           />
+          <n-tooltip :disabled="terminalSplit.canSplit.value || terminalSplit.isSplit.value" trigger="hover" placement="bottom">
+            <template #trigger>
+              <span class="ssh-split-trigger">
+                <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
+                  <n-button class="ssh-desktop-action ssh-icon-action" secondary circle size="tiny" :title="terminalSplit.canSplit.value || terminalSplit.isSplit.value ? `${terminalSplit.splitLabel.value}；点击打开分屏菜单` : undefined" :aria-label="terminalSplit.splitLabel.value" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
+                    <template #icon><n-icon><GridOutline /></n-icon></template>
+                  </n-button>
+                </n-dropdown>
+              </span>
+            </template>
+            请先再打开一个终端标签，再使用分屏
+          </n-tooltip>
+          <n-button v-if="activeTab.status === 'closed' || activeTab.status === 'error'" class="ssh-desktop-action" secondary size="tiny" title="重新连接当前会话" @click="reconnectTab(activeTab)">
+            <template #icon><n-icon><RefreshOutline /></n-icon></template>
+            重连
+          </n-button>
+          <terminal-action-bar
+            v-if="activePane === 'terminal'"
+            class="ssh-desktop-action"
+            :recording="activeTab.recording"
+            settings
+            @search="toggleSearch"
+            @snippets="openSnippets"
+            @recording="toggleRecording(activeTab)"
+            @settings="openTerminalSettings"
+          />
+          <terminal-plugin-entry
+            v-if="activePane === 'terminal' && !isTelnet(activeTab.host)"
+            transport="ssh"
+            :target="activeTab.host.id"
+          />
+          <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
+            <n-button class="ssh-mobile-more" secondary size="tiny">更多</n-button>
+          </n-dropdown>
+          <div class="ssh-pane-switch">
+            <button type="button" :class="{ active: activePane === 'terminal' }" @click="showTerminalPane">终端</button>
+            <button v-if="!isTelnet(activeTab.host)" type="button" :class="{ active: activePane === 'sftp' }" @click="showSftpPane">文件</button>
+          </div>
         </div>
       </div>
 
@@ -210,11 +223,11 @@
       <section v-if="tabs.length === 0" class="ssh-welcome">
         <div class="ssh-welcome-mark">›_</div>
         <template v-if="hosts.length === 0">
-          <h1>添加第一台 SSH 主机</h1>
-          <p>保存主机地址和用户名后，即可打开远程终端。</p>
+          <h1>添加第一台远程主机</h1>
+          <p>SSH 适合安全远程管理；Telnet 仅用于可信网络中的旧设备。</p>
           <n-button class="ssh-welcome-action" type="primary" size="large" @click="openHostEditor()">
             <template #icon><n-icon><AddOutline /></n-icon></template>
-            添加 SSH 主机
+            添加远程主机
           </n-button>
         </template>
         <template v-else>
@@ -287,6 +300,7 @@
             <template #composer><div class="ssh-command-editor">
               <n-input
                 v-model:value="tab.commandDraft"
+                size="small"
                 type="textarea"
                 :autosize="{ minRows: 1, maxRows: 4 }"
                 placeholder="输入要发送的命令，Ctrl/⌘ + Enter 发送"
@@ -299,9 +313,9 @@
                 :disabled="tab.commandHistory.length === 0"
                 @select="selectCommandHistory(tab, $event)"
               >
-                <n-button class="ssh-history-button" secondary :disabled="tab.commandHistory.length === 0">历史</n-button>
+                <n-button class="ssh-history-button" secondary size="small" :disabled="tab.commandHistory.length === 0">历史</n-button>
               </n-dropdown>
-              <n-button type="primary" :disabled="!tab.commandDraft.trim()" @click="sendCommand(tab)">发送</n-button>
+              <n-button type="primary" size="small" :disabled="!tab.commandDraft.trim()" @click="sendCommand(tab)">发送</n-button>
             </div></template>
           </terminal-command-panel>
         </div>
@@ -360,53 +374,16 @@
     </n-modal>
 
     <n-modal
-      v-model:show="showQuickLauncher"
-      preset="card"
-      title="快速入口"
-      class="ssh-dialog ssh-quick-launcher-dialog"
-      :style="dialogStyle"
-    >
-      <n-input
-        ref="quickLauncherInput"
-        v-model:value="quickLauncherQuery"
-        clearable
-        size="large"
-        placeholder="搜索主机、会话或操作"
-        @keydown="handleQuickLauncherKeydown"
-      />
-      <div class="ssh-quick-launcher-list" role="listbox" aria-label="快速入口结果">
-        <button
-          v-for="(item, index) in quickLauncherItems"
-          :key="item.key"
-          type="button"
-          role="option"
-          :aria-selected="index === quickLauncherIndex"
-          :class="{ active: index === quickLauncherIndex }"
-          @mouseenter="quickLauncherIndex = index"
-          @click="runQuickLauncherItem(item)"
-        >
-          <span class="ssh-quick-launcher-kind">{{ item.kindLabel }}</span>
-          <span class="ssh-quick-launcher-copy">
-            <strong>{{ item.label }}</strong>
-            <small>{{ item.detail }}</small>
-          </span>
-          <span class="ssh-quick-launcher-enter">↵</span>
-        </button>
-        <div v-if="quickLauncherItems.length === 0" class="ssh-quick-launcher-empty">没有匹配结果</div>
-      </div>
-      <template #footer>
-        <div class="ssh-quick-launcher-hint"><span>↑↓ 选择</span><span>Enter 打开</span><span>Esc 关闭</span></div>
-      </template>
-    </n-modal>
-
-    <n-modal
       v-model:show="showHostEditor"
       preset="card"
-      :title="editingId ? '编辑 SSH 主机' : '添加 SSH 主机'"
+      :title="editingId ? '编辑远程主机' : '添加远程主机'"
       class="ssh-dialog"
       :style="dialogStyle"
     >
       <n-form label-placement="top">
+        <n-form-item label="连接协议">
+          <n-select v-model:value="hostDraft.protocol" :options="hostProtocolOptions" @update:value="handleHostProtocolChange" />
+        </n-form-item>
         <div class="ssh-form-grid">
           <n-form-item label="名称"><n-input v-model:value="hostDraft.name" placeholder="生产服务器" /></n-form-item>
           <n-form-item label="分组"><n-input v-model:value="hostDraft.group" placeholder="可选" /></n-form-item>
@@ -414,13 +391,16 @@
         <n-form-item label="主机"><n-input v-model:value="hostDraft.host" placeholder="example.com 或 IP" /></n-form-item>
         <div class="ssh-form-grid ssh-form-grid--connection">
           <n-form-item label="端口"><n-input-number v-model:value="hostDraft.port" :min="1" :max="65535" /></n-form-item>
-          <n-form-item label="用户名"><n-input v-model:value="hostDraft.username" placeholder="root" /></n-form-item>
+          <n-form-item :label="isTelnet(hostDraft) ? '用户名（可选）' : '用户名'"><n-input v-model:value="hostDraft.username" :placeholder="isTelnet(hostDraft) ? '用于自动响应登录提示' : 'root'" /></n-form-item>
         </div>
-        <n-checkbox v-model:checked="hostDraft.useAgent">默认使用服务端 SSH Agent 认证</n-checkbox>
-        <n-form-item label="跳板机（可选）">
+        <n-alert v-if="isTelnet(hostDraft)" type="warning" :show-icon="true">
+          Telnet 不加密用户名、密码和终端内容。仅建议在可信内网或受保护的专用网络中使用。
+        </n-alert>
+        <n-checkbox v-if="!isTelnet(hostDraft)" v-model:checked="hostDraft.useAgent">默认使用服务端 SSH Agent 认证</n-checkbox>
+        <n-form-item v-if="!isTelnet(hostDraft)" label="跳板机（可选）">
           <n-select v-model:value="hostDraft.jumpHostId" clearable :options="jumpHostOptions" placeholder="直接连接" />
         </n-form-item>
-        <n-form-item v-if="hostDraft.hostKeySha256" label="已信任主机指纹">
+        <n-form-item v-if="!isTelnet(hostDraft) && hostDraft.hostKeySha256" label="已信任主机指纹">
           <n-input :value="hostDraft.hostKeySha256" readonly />
           <n-button class="ssh-reset-key" size="small" @click="hostDraft.hostKeySha256 = ''">重置信任</n-button>
         </n-form-item>
@@ -439,9 +419,15 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showCredentials" preset="card" title="连接认证" class="ssh-dialog" :style="dialogStyle">
-      <p class="ssh-connect-target">{{ selectedHost?.username }}@{{ selectedHost?.host }}:{{ selectedHost?.port }}</p>
-      <n-tabs v-model:value="credentialDraft.method" type="segment">
+    <n-modal v-model:show="showCredentials" preset="card" :title="selectedHost && isTelnet(selectedHost) ? 'Telnet 登录' : 'SSH 连接认证'" class="ssh-dialog" :style="dialogStyle">
+      <p class="ssh-connect-target"><template v-if="selectedHost?.username">{{ selectedHost.username }}@</template>{{ selectedHost?.host }}:{{ selectedHost?.port }}</p>
+      <n-alert v-if="selectedHost && isTelnet(selectedHost)" type="warning" :show-icon="true">
+        Telnet 会以明文传输登录信息和终端内容。密码可留空直接连接。
+      </n-alert>
+      <n-form-item v-if="selectedHost && isTelnet(selectedHost)" label="密码（可选）">
+        <n-input v-model:value="credentialDraft.password" type="password" show-password-on="click" @keyup.enter="connect" />
+      </n-form-item>
+      <n-tabs v-else v-model:value="credentialDraft.method" type="segment">
         <n-tab-pane name="password" tab="密码">
           <n-form-item label="密码">
             <n-input v-model:value="credentialDraft.password" type="password" show-password-on="click" @keyup.enter="connect" />
@@ -505,7 +491,7 @@
             </div>
           </div>
           <div class="ssh-snippet-list">
-            <p v-if="snippets.length" class="ssh-snippet-order-hint">SSH 与串口共用此本地列表；拖动左侧手柄调整顺序。</p>
+            <p v-if="snippets.length" class="ssh-snippet-order-hint">远程终端与串口共用此本地列表；拖动左侧手柄调整顺序。</p>
             <div
               v-for="snippet in snippets"
               :key="snippet.id"
@@ -600,19 +586,19 @@
         <div class="ssh-terminal-settings-layout">
           <section class="ssh-terminal-settings-card">
             <div class="ssh-terminal-settings-heading">
-              <h3>显示</h3>
+              <h3>显示 <terminal-setting-help text="字体和间距会立即应用到已打开终端。" /></h3>
               <n-button size="tiny" secondary @click="resetTerminalAppearanceDraft">恢复默认显示</n-button>
             </div>
             <n-form-item label="配色主题">
               <terminal-theme-picker v-model="terminalSettingsDraft.themeId" />
             </n-form-item>
-            <n-form-item label="终端字体">
+            <n-form-item>
+              <template #label>终端字体 <terminal-setting-help text="按顺序尝试本机已安装字体；也可以直接输入自定义 CSS 字体栈。" /></template>
               <n-input
                 v-model:value="terminalSettingsDraft.fontFamily"
                 placeholder='例如："DejaVu Sans Mono", monospace'
                 clearable
               />
-              <template #feedback>按顺序尝试本机已安装字体；也可以直接输入自定义 CSS 字体栈。</template>
             </n-form-item>
             <div class="ssh-terminal-settings-grid ssh-terminal-settings-grid--three">
               <n-form-item label="字体大小">
@@ -625,28 +611,26 @@
                 <n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" />
               </n-form-item>
             </div>
-            <n-form-item label="行信息侧栏">
+            <n-form-item>
+              <template #label>行信息侧栏 <terminal-setting-help text="时间取浏览器收到并解析该行时的本地时间；启用前的历史行不补记时间。" /></template>
               <div class="ssh-settings-switches ssh-settings-switches--inline">
                 <n-checkbox v-model:checked="terminalSettingsDraft.showLineNumbers">显示行号</n-checkbox>
                 <n-checkbox v-model:checked="terminalSettingsDraft.showLineTimestamps">显示时间</n-checkbox>
               </div>
-              <template #feedback>时间取浏览器收到并解析该行时的本地时间；启用前的历史行不补记时间。</template>
             </n-form-item>
-            <p class="ssh-field-hint">字体和间距会立即应用到已打开终端。</p>
           </section>
 
           <section class="ssh-terminal-settings-card">
-            <h3>缓存与录制</h3>
+            <h3>缓存与录制 <terminal-setting-help text="回滚设置对新打开或重新连接的终端生效；录制达到上限后停止追加并提示。" /></h3>
             <div class="ssh-terminal-settings-grid">
-              <n-form-item label="回滚缓冲区（输出行）">
+              <n-form-item>
+                <template #label>回滚缓冲区（输出行） <terminal-setting-help text="按 120 列折算；窄屏自动增加内部屏幕行容量。" /></template>
                 <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
-                <template #feedback>按 120 列折算；窄屏自动增加内部屏幕行容量。</template>
               </n-form-item>
               <n-form-item label="单次录制上限（MiB）">
                 <n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" />
               </n-form-item>
             </div>
-            <p class="ssh-field-hint">回滚设置对新打开或重新连接的终端生效；录制达到上限后停止追加并提示。</p>
           </section>
 
           <section class="ssh-terminal-settings-card ssh-terminal-settings-card--wide">
@@ -654,13 +638,15 @@
             <div class="ssh-terminal-settings-options">
               <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示命令编辑和发送框</n-checkbox>
               <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
-              <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+              <span class="ssh-setting-with-help">
+                <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+                <terminal-setting-help text="无读取权限时保留浏览器原生右键菜单；不会额外发送回车，但多行内容仍可能被远程 Shell 执行。" />
+              </span>
             </div>
             <div class="ssh-clipboard-permission">
               <span>剪贴板读取权限：{{ clipboardPermissionLabel }}</span>
               <n-button size="small" secondary :loading="clipboardPermissionState === 'checking'" @click="requestClipboardAccess">检测/授权</n-button>
             </div>
-            <p class="ssh-field-hint">无读取权限时保留浏览器原生右键菜单；不会额外发送回车，但多行内容仍可能被远程 Shell 执行。</p>
           </section>
         </div>
       </n-form>
@@ -676,7 +662,7 @@
 
 <script setup lang="ts">
 import type { Terminal } from "@xterm/xterm";
-import { AddOutline, ChevronDownOutline, CloseOutline, CreateOutline, MenuOutline, Star, StarOutline } from "@vicons/ionicons5";
+import { AddOutline, ChevronBackOutline, ChevronDownOutline, CloseOutline, CreateOutline, GridOutline, MenuOutline, RefreshOutline, Star, StarOutline } from "@vicons/ionicons5";
 import {
   NAlert,
   NButton,
@@ -693,12 +679,13 @@ import {
   NSelect,
   NTabPane,
   NTabs,
+  NTooltip,
   NUpload,
   useMessage,
-  type InputInst,
   type UploadFileInfo,
 } from "naive-ui";
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { writeClipboard } from "@/utils/clipboard";
 import {
   persistCommandSnippets,
@@ -728,6 +715,7 @@ import TerminalSpecialKeyBar from "../terminal/TerminalSpecialKeyBar.vue";
 import TerminalThemePicker from "../terminal/TerminalThemePicker.vue";
 import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
+import TerminalSettingHelp from "../terminal/TerminalSettingHelp.vue";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
@@ -750,16 +738,6 @@ import type {
 
 type ConnectionStatus = "connecting" | "reconnecting" | "authenticating" | "connected" | "closed" | "error";
 type HostView = "all" | "favorites" | "recent";
-type QuickLauncherItem = {
-  key: string;
-  kind: "session" | "host" | "action";
-  kindLabel: string;
-  label: string;
-  detail: string;
-  keywords: string;
-  targetId?: string;
-  action?: "add-host" | "port-forwards" | "terminal-settings" | "snippets" | "export" | "import";
-};
 type TerminalModifier = "ctrl" | "alt";
 type TerminalSpecialKey =
   | "escape"
@@ -853,6 +831,7 @@ const {
   disposeClipboardPermission,
 } = useTerminalClipboardPermission();
 const hosts = ref<SshHost[]>([]);
+const route = useRoute();
 const tabs = ref<TerminalTab[]>([]);
 const activeTabId = ref("");
 const terminalSplit = useTerminalSplit(activeTabId, () => tabs.value.map((tab) => tab.id), "space-station:ssh-terminal-split");
@@ -866,7 +845,7 @@ const renamingTabId = ref("");
 const renameTabDraft = ref("");
 const activePane = ref<"terminal" | "sftp">("terminal");
 const openedSftpTabIds = ref<string[]>([]);
-const openedSftpTabs = computed(() => tabs.value.filter((tab) => openedSftpTabIds.value.includes(tab.id)));
+const openedSftpTabs = computed(() => tabs.value.filter((tab) => !isTelnet(tab.host) && openedSftpTabIds.value.includes(tab.id)));
 const contextTab = computed(() => tabs.value.find((tab) => tab.id === tabContextMenu.tabId));
 const canCloseOtherTabs = computed(() => tabs.value.some((tab) => tab.id !== contextTab.value?.id && !tab.pinned));
 const canCloseTabsToRight = computed(() => {
@@ -887,7 +866,7 @@ const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; 
   name: "",
   command: "",
   pinned: true,
-  action: "insert",
+  action: "run",
 });
 const editingSnippetId = ref("");
 const {
@@ -914,10 +893,6 @@ const hostView = ref<HostView>((() => {
   const stored = localStorage.getItem("space-station:ssh-host-view");
   return stored === "favorites" || stored === "recent" ? stored : "all";
 })());
-const showQuickLauncher = ref(false);
-const quickLauncherQuery = ref("");
-const quickLauncherIndex = ref(0);
-const quickLauncherInput = ref<InputInst | null>(null);
 const showPortForwards = ref(false);
 const portForwards = ref<SshPortForward[]>([]);
 const forwardDraft = reactive({ hostId: "", localPort: 8080, remoteHost: "127.0.0.1", remotePort: 80 });
@@ -991,50 +966,11 @@ function setHostView(value: HostView) {
   localStorage.setItem("space-station:ssh-host-view", value);
 }
 
-function openQuickLauncher() {
-  showQuickLauncher.value = true;
-}
-
 function handleConfigurationAction(key: string | number) {
   if (key === "port-forwards") void openPortForwards();
   else if (key === "terminal-settings") openTerminalSettings();
   else if (key === "export") exportConfiguration();
   else if (key === "import") configurationInput.value?.click();
-}
-
-function handleQuickLauncherKeydown(event: KeyboardEvent) {
-  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-    event.preventDefault();
-    if (!quickLauncherItems.value.length) return;
-    const direction = event.key === "ArrowDown" ? 1 : -1;
-    quickLauncherIndex.value = (quickLauncherIndex.value + direction + quickLauncherItems.value.length) % quickLauncherItems.value.length;
-  } else if (event.key === "Enter") {
-    event.preventDefault();
-    const item = quickLauncherItems.value[quickLauncherIndex.value];
-    if (item) runQuickLauncherItem(item);
-  } else if (event.key === "Escape") {
-    event.preventDefault();
-    showQuickLauncher.value = false;
-  }
-}
-
-function runQuickLauncherItem(item: QuickLauncherItem) {
-  showQuickLauncher.value = false;
-  if (item.kind === "session" && item.targetId) {
-    activateTab(item.targetId);
-    return;
-  }
-  if (item.kind === "host" && item.targetId) {
-    const host = hosts.value.find((candidate) => candidate.id === item.targetId);
-    if (host) openCredentials(host);
-    return;
-  }
-  if (item.action === "add-host") openHostEditor();
-  else if (item.action === "port-forwards") void openPortForwards();
-  else if (item.action === "terminal-settings") openTerminalSettings();
-  else if (item.action === "snippets") openSnippets();
-  else if (item.action === "export") exportConfiguration();
-  else if (item.action === "import") configurationInput.value?.click();
 }
 
 const favoriteHosts = computed(() => hosts.value.filter((host) => host.favorite));
@@ -1085,49 +1021,6 @@ const hostSections = computed(() => {
     .forEach(([label, items]) => sections.push({ key: `group:${label}`, label, hosts: items }));
   return sections;
 });
-const quickLauncherItems = computed<QuickLauncherItem[]>(() => {
-  const query = quickLauncherQuery.value.trim().toLowerCase();
-  const items: QuickLauncherItem[] = [];
-  for (const tab of tabs.value) {
-    items.push({
-      key: `session:${tab.id}`,
-      kind: "session",
-      kindLabel: "会话",
-      label: tabTitle(tab),
-      detail: `${tab.host.username}@${tab.host.host}:${tab.host.port} · ${tab.message}`,
-      keywords: `${tabTitle(tab)} ${tab.host.name} ${tab.host.username} ${tab.host.host} ${tab.message}`.toLowerCase(),
-      targetId: tab.id,
-    });
-  }
-  const orderedHosts = query
-    ? hosts.value
-    : [...recentHosts.value, ...favoriteHosts.value, ...hosts.value].filter((host, index, all) => all.findIndex((candidate) => candidate.id === host.id) === index);
-  for (const host of orderedHosts) {
-    items.push({
-      key: `host:${host.id}`,
-      kind: "host",
-      kindLabel: "主机",
-      label: host.name,
-      detail: `${host.username}@${host.host}:${host.port}${host.group ? ` · ${host.group}` : ""}`,
-      keywords: `${host.name} ${host.username} ${host.host} ${host.group || ""}`.toLowerCase(),
-      targetId: host.id,
-    });
-  }
-  const actions: QuickLauncherItem[] = [
-    { key: "action:add-host", kind: "action", kindLabel: "操作", label: "添加 SSH 主机", detail: "创建并保存一个新连接", keywords: "添加 新建 主机 add host", action: "add-host" },
-    { key: "action:port-forwards", kind: "action", kindLabel: "操作", label: "端口转发", detail: "查看和管理本地 SSH 转发", keywords: "端口 转发 tunnel forward", action: "port-forwards" },
-    { key: "action:terminal-settings", kind: "action", kindLabel: "操作", label: "终端设置", detail: "字体、缓存、录制和剪贴板", keywords: "终端 设置 字体 settings", action: "terminal-settings" },
-    { key: "action:export", kind: "action", kindLabel: "操作", label: "导出配置", detail: "下载主机、片段和终端设置", keywords: "导出 配置 export", action: "export" },
-    { key: "action:import", kind: "action", kindLabel: "操作", label: "导入配置", detail: "从 JSON 文件恢复配置", keywords: "导入 配置 import", action: "import" },
-  ];
-  if (activeTab.value) actions.splice(3, 0, { key: "action:snippets", kind: "action", kindLabel: "操作", label: "命令片段", detail: "管理本地与共享片段", keywords: "命令 片段 snippet", action: "snippets" });
-  items.push(...actions);
-  const priority = { session: 0, action: 1, host: 2 } as const;
-  return items
-    .filter((item) => !query || `${item.label} ${item.detail} ${item.keywords}`.toLowerCase().includes(query))
-    .sort((left, right) => priority[left.kind] - priority[right.kind])
-    .slice(0, 12);
-});
 const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeTabId.value));
 const terminalSplitOptions = computed(() => [
   { label: "当前窗格左右分屏", key: "columns", disabled: !terminalSplit.canSplit.value },
@@ -1141,9 +1034,13 @@ const terminalSplitOptions = computed(() => [
     : []),
 ]);
 const jumpHostOptions = computed(() => hosts.value
-  .filter((host) => host.id !== editingId.value && !host.jumpHostId)
+  .filter((host) => !isTelnet(host) && host.id !== editingId.value && !host.jumpHostId)
   .map((host) => ({ label: `${host.name} (${host.username}@${host.host})`, value: host.id })));
-const hostOptions = computed(() => hosts.value.map((host) => ({ label: host.name, value: host.id })));
+const hostOptions = computed(() => hosts.value.filter((host) => !isTelnet(host)).map((host) => ({ label: host.name, value: host.id })));
+const hostProtocolOptions = [
+  { label: "SSH（加密，推荐）", value: "ssh" },
+  { label: "Telnet（明文，仅可信网络）", value: "telnet" },
+];
 const pinnedSnippets = computed(() => snippets.value.filter((snippet) => snippet.pinned !== false));
 const mobileActionOptions = computed(() => {
   const tab = activeTab.value;
@@ -1175,17 +1072,6 @@ watch(showSnippets, (visible) => {
   if (visible) void loadSharedSnippetLibrary(true);
 });
 
-watch(showQuickLauncher, (visible) => {
-  if (!visible) return;
-  quickLauncherQuery.value = "";
-  quickLauncherIndex.value = 0;
-  void nextTick(() => quickLauncherInput.value?.focus());
-});
-
-watch(quickLauncherItems, () => {
-  quickLauncherIndex.value = Math.min(quickLauncherIndex.value, Math.max(0, quickLauncherItems.value.length - 1));
-});
-
 onMounted(() => {
   const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
   if (viewport) {
@@ -1199,7 +1085,7 @@ onMounted(() => {
   }
   document.documentElement.classList.add("ssh-page-lock");
   document.body.classList.add("ssh-page-lock");
-  void loadHosts();
+  void loadHosts().then(() => openHostFromRoute());
   void refreshClipboardPermission();
   window.addEventListener("keydown", handleGlobalShortcut, true);
   window.addEventListener("pointerdown", closeTabContextMenu);
@@ -1219,7 +1105,44 @@ onBeforeUnmount(() => {
 });
 
 function emptyHost(): SshHost {
-  return { id: "", name: "", host: "", port: 22, username: "root", group: "", hostKeySha256: "", useAgent: false, jumpHostId: "", favorite: false, lastUsedAt: "" };
+  return { id: "", protocol: "ssh", name: "", host: "", port: 22, username: "root", group: "", hostKeySha256: "", useAgent: false, jumpHostId: "", favorite: false, lastUsedAt: "" };
+}
+
+function isTelnet(host: Pick<SshHost, "protocol">) {
+  return host.protocol === "telnet";
+}
+
+function hostProtocolLabel(host: Pick<SshHost, "protocol">) {
+  return isTelnet(host) ? "TELNET" : "SSH";
+}
+
+function handleHostProtocolChange(protocol: string) {
+  if (protocol === "telnet") {
+    if (hostDraft.port === 22) hostDraft.port = 23;
+    if (hostDraft.username === "root") hostDraft.username = "";
+    hostDraft.useAgent = false;
+    hostDraft.jumpHostId = "";
+    hostDraft.hostKeySha256 = "";
+  } else {
+    if (hostDraft.port === 23) hostDraft.port = 22;
+    if (!hostDraft.username) hostDraft.username = "root";
+  }
+}
+
+function openHostFromRoute() {
+  const host = typeof route.query.host === "string" ? route.query.host.trim() : "";
+  if (!host) return;
+  const protocol = route.query.protocol === "telnet" ? "telnet" : "ssh";
+  const existing = hosts.value.find((item) => item.host === host && (item.protocol || "ssh") === protocol);
+  if (existing) {
+    openCredentials(existing);
+    return;
+  }
+  openHostEditor();
+  hostDraft.host = host;
+  hostDraft.name = host;
+  hostDraft.protocol = protocol;
+  handleHostProtocolChange(protocol);
 }
 
 function loadCollapsedHostSections() {
@@ -1267,7 +1190,7 @@ async function toggleHostFavorite(host: SshHost) {
 function markHostUsed(host: SshHost) {
   host.lastUsedAt = new Date().toISOString();
   void enqueueHostSave().catch((error) => {
-    console.warn("SSH recent host save failed", error);
+    console.warn("Recent remote host save failed", error);
   });
 }
 
@@ -1278,9 +1201,9 @@ function jumpHostName(host: SshHost) {
 
 async function loadHosts() {
   try {
-    hosts.value = (await fetchSshHosts()).hosts;
+    hosts.value = (await fetchSshHosts()).hosts.map((host) => ({ ...host, protocol: host.protocol || "ssh" }));
   } catch (error) {
-    message.error(error instanceof Error ? error.message : "SSH 主机加载失败");
+    message.error(error instanceof Error ? error.message : "远程主机加载失败");
   } finally {
     loading.value = false;
   }
@@ -1288,27 +1211,29 @@ async function loadHosts() {
 
 function openHostEditor(host?: SshHost) {
   editingId.value = host?.id ?? "";
-  Object.assign(hostDraft, host ? { ...host } : emptyHost());
+  Object.assign(hostDraft, host ? { ...host, protocol: host.protocol || "ssh" } : emptyHost());
   showHostEditor.value = true;
 }
 
 async function saveHost() {
-  if (!hostDraft.name.trim() || !hostDraft.host.trim() || !hostDraft.username.trim()) {
-    message.warning("名称、主机和用户名不能为空");
+  if (!hostDraft.name.trim() || !hostDraft.host.trim() || (!isTelnet(hostDraft) && !hostDraft.username.trim())) {
+    message.warning(isTelnet(hostDraft) ? "名称和主机不能为空" : "名称、主机和用户名不能为空");
     return;
   }
   saving.value = true;
   try {
     const value: SshHost = {
       ...hostDraft,
+      protocol: isTelnet(hostDraft) ? "telnet" : "ssh",
       id: editingId.value || createId(),
       name: hostDraft.name.trim(),
       host: hostDraft.host.trim(),
       username: hostDraft.username.trim(),
       group: hostDraft.group.trim(),
-      port: Math.max(1, Math.min(65535, Number(hostDraft.port) || 22)),
-      useAgent: Boolean(hostDraft.useAgent),
-      jumpHostId: hostDraft.jumpHostId || "",
+      port: Math.max(1, Math.min(65535, Number(hostDraft.port) || (isTelnet(hostDraft) ? 23 : 22))),
+      useAgent: isTelnet(hostDraft) ? false : Boolean(hostDraft.useAgent),
+      jumpHostId: isTelnet(hostDraft) ? "" : hostDraft.jumpHostId || "",
+      hostKeySha256: isTelnet(hostDraft) ? "" : hostDraft.hostKeySha256,
     };
     const next = editingId.value ? hosts.value.map((host) => (host.id === editingId.value ? value : host)) : [...hosts.value, value];
     if (value.jumpHostId === value.id) {
@@ -1324,14 +1249,14 @@ async function saveHost() {
     hosts.value = next;
     showHostEditor.value = false;
   } catch (error) {
-    message.error(error instanceof Error ? error.message : "SSH 主机保存失败");
+    message.error(error instanceof Error ? error.message : "远程主机保存失败");
   } finally {
     saving.value = false;
   }
 }
 
 async function deleteHost() {
-  if (!window.confirm(`确定删除 SSH 主机“${hostDraft.name}”吗？保存的凭据也会一并删除。`)) return;
+  if (!window.confirm(`确定删除远程主机“${hostDraft.name}”吗？保存的凭据也会一并删除。`)) return;
   const next = hosts.value.filter((host) => host.id !== editingId.value);
   await enqueueHostSave(next);
   hosts.value = next;
@@ -1354,7 +1279,7 @@ async function forgetCredential() {
 
 function openCredentials(host: SshHost) {
   markHostUsed(host);
-  if (host.useAgent) {
+  if (!isTelnet(host) && host.useAgent) {
     openTerminal(host, { method: "agent", password: "", privateKey: "", passphrase: "" }, false, false);
     return;
   }
@@ -1392,7 +1317,7 @@ function handleMobileAction(key: string) {
   const tab = activeTab.value;
   if (!tab) return;
   if (key === "reconnect") reconnectTab(tab);
-  else if (key === "search") openSearch();
+  else if (key === "search") toggleSearch();
   else if (key === "snippets") openSnippets();
   else if (key === "recording") toggleRecording(tab);
 }
@@ -1429,18 +1354,20 @@ async function loadPrivateKey(options: { file: UploadFileInfo }) {
 async function connect() {
   const host = selectedHost.value;
   const credential = credentialDraft.method === "privateKey" ? credentialDraft.privateKey : credentialDraft.password;
-  if (!host || (credentialDraft.method !== "agent" && !credential)) {
+  if (!host || (!isTelnet(host) && credentialDraft.method !== "agent" && !credential)) {
     message.warning("请输入认证凭据");
     return;
   }
+  if (isTelnet(host)) credentialDraft.method = "password";
+  const canRememberCredential = credentialDraft.method !== "agent" && Boolean(credential);
   showCredentials.value = false;
   openTerminal(host, {
     method: credentialDraft.method,
     password: credentialDraft.password,
     privateKey: credentialDraft.privateKey,
     passphrase: credentialDraft.passphrase,
-  }, credentialDraft.method === "agent" ? false : credentialDraft.remember || credentialDraft.persist,
-  credentialDraft.method === "agent" ? false : credentialDraft.persist);
+  }, canRememberCredential && (credentialDraft.remember || credentialDraft.persist),
+  canRememberCredential && credentialDraft.persist);
   Object.assign(credentialDraft, { password: "", privateKey: "", passphrase: "" });
 }
 
@@ -1451,7 +1378,7 @@ async function openTerminal(
   persistCredential: boolean,
 ) {
   const id = createId();
-  const socket = createTerminalSocket();
+  const socket = createTerminalSocket(host);
   const tab: TerminalTab = {
     id,
     host,
@@ -1499,9 +1426,10 @@ async function openTerminal(
   await nextTick();
 }
 
-function createTerminalSocket() {
+function createTerminalSocket(host: SshHost) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${window.location.host}/api/tools/ssh/terminal`);
+  const endpoint = isTelnet(host) ? "/api/tools/telnet/terminal" : "/api/tools/ssh/terminal";
+  const socket = new WebSocket(`${protocol}//${window.location.host}${endpoint}`);
   socket.binaryType = "arraybuffer";
   return socket;
 }
@@ -1525,13 +1453,13 @@ function bindTerminalSocket(tab: TerminalTab, socket: WebSocket) {
   };
   socket.onerror = (event) => {
     if (tab.socket !== socket) return;
-    console.warn("SSH WebSocket error", { tabId: tab.id, connectionId: tab.connectionId, event });
+    console.warn("Remote terminal WebSocket error", { tabId: tab.id, connectionId: tab.connectionId, event });
     if (!tab.socketReady) updateTab(tab, "connecting", "WebSocket 通道建立失败，正在重试…");
   };
   socket.onclose = (event) => {
     if (tab.socket !== socket) return;
     stopSocketHeartbeat(tab);
-    console.warn("SSH WebSocket closed", {
+    console.warn("Remote terminal WebSocket closed", {
       tabId: tab.id,
       connectionId: tab.connectionId,
       code: event.code,
@@ -1745,7 +1673,7 @@ function handleSocketMessage(tab: TerminalTab, event: MessageEvent) {
   try {
     payload = JSON.parse(String(event.data)) as Record<string, unknown>;
   } catch {
-    console.warn("Invalid SSH WebSocket JSON message", { tabId: tab.id, data: event.data });
+    console.warn("Invalid remote terminal WebSocket JSON message", { tabId: tab.id, data: event.data });
     return;
   }
   const sequence = Number(payload.seq ?? 0);
@@ -1853,7 +1781,7 @@ function applyTerminalOutput(tab: TerminalTab, bytes: Uint8Array) {
 }
 
 function isTransientSshError(content: string) {
-  return /无法连接 SSH 主机|DNS 解析超时|TCP 连接超时|SSH 握手(?:失败|超时)|socket|Unable to exchange encryption keys|Failure establishing SSH session/i.test(content);
+  return /无法连接 (?:SSH|Telnet) 主机|Telnet 连接超时|DNS 解析超时|TCP 连接超时|SSH 握手(?:失败|超时)|socket|Unable to exchange encryption keys|Failure establishing SSH session/i.test(content);
 }
 
 const resumeRetryDelays = [500, 1_000, 2_000, 4_000, 8_000];
@@ -1870,7 +1798,7 @@ function scheduleResumeReconnect(tab: TerminalTab) {
   tab.reconnectTimer = window.setTimeout(() => {
     tab.reconnectTimer = undefined;
     if (!tabs.value.some((item) => item.id === tab.id) || !tab.resumeToken) return;
-    const socket = createTerminalSocket();
+    const socket = createTerminalSocket(tab.host);
     tab.intentionalClose = false;
     tab.socket = socket;
     bindTerminalSocket(tab, socket);
@@ -1899,7 +1827,7 @@ function scheduleAutomaticReconnect(tab: TerminalTab) {
   updateTab(tab, "connecting", "正在建立连接…");
   window.setTimeout(() => {
     if (!tabs.value.some((item) => item.id === tab.id) || tab.socket !== previousSocket) return;
-    const socket = createTerminalSocket();
+    const socket = createTerminalSocket(tab.host);
     tab.intentionalClose = false;
     tab.socket = socket;
     bindTerminalSocket(tab, socket);
@@ -1959,6 +1887,8 @@ function updateTab(tab: TerminalTab, status: ConnectionStatus, statusMessage: st
 }
 
 function activateTab(id: string) {
+  const selected = tabs.value.find((item) => item.id === id);
+  if (selected && isTelnet(selected.host)) activePane.value = "terminal";
   activeTabId.value = id;
   if (activePane.value === "sftp" && !openedSftpTabIds.value.includes(id)) openedSftpTabIds.value.push(id);
   nextTick(() => {
@@ -2156,7 +2086,7 @@ function showTerminalPane() {
 
 function showSftpPane() {
   const tab = activeTab.value;
-  if (!tab) return;
+  if (!tab || isTelnet(tab.host)) return;
   if (!openedSftpTabIds.value.includes(tab.id)) openedSftpTabIds.value.push(tab.id);
   activePane.value = "sftp";
 }
@@ -2180,8 +2110,10 @@ function reconnectTab(tab: TerminalTab) {
   updateTab(tab, tab.resumeToken ? "reconnecting" : "connecting", tab.resumeToken ? "正在恢复原 SSH 会话…" : "正在重新连接…");
   tab.terminal?.writeln(tab.resumeToken
     ? "\r\n\x1b[36m正在恢复原 SSH 会话…\x1b[0m"
-    : "\r\n\x1b[36m正在重新连接，文件传输状态将继续保留…\x1b[0m");
-  const socket = createTerminalSocket();
+    : isTelnet(tab.host)
+      ? "\r\n\x1b[36m正在重新连接 Telnet…\x1b[0m"
+      : "\r\n\x1b[36m正在重新连接，文件传输状态将继续保留…\x1b[0m");
+  const socket = createTerminalSocket(tab.host);
   tab.intentionalClose = false;
   tab.socket = socket;
   bindTerminalSocket(tab, socket);
@@ -2268,9 +2200,6 @@ function searchCountText(tab: TerminalTab) {
 function handleGlobalShortcut(event: KeyboardEvent) {
   if (event.key === "Escape" && tabContextMenu.show) {
     closeTabContextMenu();
-  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-    event.preventDefault();
-    openQuickLauncher();
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && activeTab.value && activePane.value === "terminal") {
     event.preventDefault();
     toggleSearch();
@@ -2504,7 +2433,7 @@ function editSnippet(snippet: CommandSnippet) {
 
 function cancelSnippetEdit() {
   editingSnippetId.value = "";
-  Object.assign(snippetDraft, { name: "", command: "", pinned: true, action: "insert" });
+  Object.assign(snippetDraft, { name: "", command: "", pinned: true, action: "run" });
 }
 
 function deleteSnippet(id: string) {
@@ -2551,7 +2480,7 @@ function sendCommand(tab: TerminalTab) {
   const command = tab.commandDraft.trimEnd();
   if (!command) return;
   if (tab.socket.readyState !== WebSocket.OPEN || tab.status !== "connected") {
-    message.warning("SSH 尚未连接");
+    message.warning("远程终端尚未连接");
     return;
   }
   sendTerminalCommand(tab, command);
@@ -2734,6 +2663,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-host-copy { min-width: 0; }
 .ssh-host-copy strong, .ssh-host-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ssh-host-copy small { margin-top: 3px; color: #83919c; font-size: 11px; }
+.ssh-protocol-badge { margin-left: 5px; padding: 1px 5px; border: 1px solid #526873; border-radius: 999px; color: #9fc4c2; font-size: 8px; font-weight: 800; letter-spacing: .04em; vertical-align: 1px; }
 .ssh-edit-button { color: #c8d4dc; background: #2b3740; }
 .ssh-edit-button:hover { color: #101418; background: #9bc7c4; }
 .ssh-favorite-button { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 999px; background: transparent; color: #697984; cursor: pointer; }
@@ -2744,6 +2674,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-tabs { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid #27313a; background: #151a1f; overflow: hidden; }
 .ssh-tabs :deep(.n-button--secondary) { color: #e4edf2; background: #34434e; border-color: #536570; }
 .ssh-tabs :deep(.n-button--secondary:hover) { color: #101418; background: #9bc7c4; }
+.ssh-tabs :deep(.ssh-icon-action) { width: 30px; min-width: 30px; height: 30px; padding: 0; }
 .ssh-tab-list { min-width: 0; display: flex; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
 .ssh-tab-list::-webkit-scrollbar, .ssh-tab-actions::-webkit-scrollbar { display: none; }
 .ssh-tab-actions { max-width: 70vw; padding: 0 4px; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; background: #151a1f; box-shadow: -8px 0 12px #101418aa; }
@@ -2794,6 +2725,7 @@ function disposeTab(tab: TerminalTab) {
 .ssh-pane-switch { align-self: center; margin: 0 4px; padding: 2px; display: flex; border: 1px solid #2b3740; border-radius: 6px; background: #101418; }
 .ssh-pane-switch button { padding: 3px 9px; border: 0; border-radius: 4px; background: transparent; color: #7f8d99; font-size: 12px; cursor: pointer; }
 .ssh-pane-switch button.active { background: #2b3a42; color: #dce4e9; }
+.ssh-split-trigger { display: inline-flex; }
 .ssh-search-bar { top: 47px; }
 .ssh-config-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -7px; }
 .ssh-config-actions > :deep(.n-button), .ssh-config-actions > :deep(.n-dropdown) { flex: 1 1 0; }
@@ -2899,25 +2831,13 @@ function disposeTab(tab: TerminalTab) {
 .ssh-terminal-settings-grid--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .ssh-terminal-settings-grid :deep(.n-input-number) { width: 100%; }
 .ssh-terminal-settings-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 18px; }
+.ssh-setting-with-help { display: inline-flex; align-items: center; gap: 4px; }
 .ssh-clipboard-permission { padding-top: 2px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #687783; font-size: 12px; }
 .ssh-fingerprint { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 10px; margin: 18px 0 0; }
 .ssh-fingerprint dt { color: #637382; }
 .ssh-fingerprint dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
 :global(.ssh-dialog) { --ssh-dialog-width: min(560px, calc(100vw - 32px)); }
 :global(.ssh-terminal-settings-dialog) { --ssh-dialog-width: min(860px, calc(100vw - 32px)); }
-:global(.ssh-quick-launcher-dialog) { --ssh-dialog-width: min(650px, calc(100vw - 32px)); }
-.ssh-quick-launcher-list { max-height: min(480px, 58vh); margin-top: 12px; display: grid; gap: 4px; overflow-y: auto; scrollbar-width: thin; }
-.ssh-quick-launcher-list > button { width: 100%; min-width: 0; padding: 10px; display: grid; grid-template-columns: 42px minmax(0, 1fr) 24px; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #27353e; text-align: left; cursor: pointer; }
-.ssh-quick-launcher-list > button:hover, .ssh-quick-launcher-list > button.active { border-color: #b7d0ce; background: #e7f1f0; }
-.ssh-quick-launcher-kind { padding: 3px 5px; border-radius: 5px; background: #e8edef; color: #667681; font-size: 10px; font-weight: 800; text-align: center; }
-.ssh-quick-launcher-list > button.active .ssh-quick-launcher-kind { background: #5d8582; color: #f5ffff; }
-.ssh-quick-launcher-copy { min-width: 0; display: grid; gap: 3px; }
-.ssh-quick-launcher-copy strong, .ssh-quick-launcher-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ssh-quick-launcher-copy strong { color: #24323a; font-size: 13px; }
-.ssh-quick-launcher-copy small { color: #74828b; font-size: 11px; }
-.ssh-quick-launcher-enter { color: #84949d; font: 15px/1 monospace; text-align: center; }
-.ssh-quick-launcher-empty { padding: 32px 12px; color: #7e8b94; text-align: center; }
-.ssh-quick-launcher-hint { display: flex; justify-content: flex-end; gap: 18px; color: #7c8992; font-size: 11px; }
 @media (max-width: 760px) {
   .ssh-app {
     position: fixed;
@@ -2979,8 +2899,6 @@ function disposeTab(tab: TerminalTab) {
   .ssh-mobile-session-more, .ssh-mobile-session-close { padding: 0 9px !important; border-left: 1px solid #42535e !important; color: #aebbc4 !important; font-size: 18px; }
   .ssh-mobile-session-more { font-weight: 800; letter-spacing: 1px; }
   .ssh-host-view-switch button { min-height: 38px; }
-  .ssh-quick-launcher-list { max-height: calc(100dvh - 190px); }
-  .ssh-quick-launcher-list > button { min-height: 52px; }
   .ssh-terminal :deep(.xterm), .ssh-terminal :deep(.xterm-viewport), .ssh-terminal :deep(.xterm-screen) { touch-action: none; }
   .ssh-terminal-split.is-split .ssh-terminal-pane { position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; }
   .ssh-terminal-split.is-split .ssh-terminal-pane:not(.focused) { visibility: hidden; pointer-events: none; }

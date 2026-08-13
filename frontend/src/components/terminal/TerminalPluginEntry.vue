@@ -2,7 +2,8 @@
   <n-popover trigger="click" placement="bottom-end" :show-arrow="false" @update:show="handleShow">
     <template #trigger>
       <n-button secondary size="tiny" :loading="loading" aria-label="查看当前终端插件">
-        插件 {{ plugins.length }}
+        <template #icon><n-icon><ExtensionPuzzleOutline /></n-icon></template>
+        插件 <span class="terminal-plugin-count">{{ plugins.length }}</span>
       </n-button>
     </template>
     <section class="terminal-plugin-popover">
@@ -32,7 +33,8 @@
 </template>
 
 <script setup lang="ts">
-import { NButton, NPopover } from "naive-ui";
+import { ExtensionPuzzleOutline } from "@vicons/ionicons5";
+import { NButton, NIcon, NPopover } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { fetchEffectiveTerminalPlugins, type TerminalPluginStatus } from "@/api";
 
@@ -80,6 +82,7 @@ watch(() => [props.transport, props.target], () => void refresh(), { immediate: 
 
 <style scoped>
 .terminal-plugin-popover { width: min(320px, calc(100vw - 40px)); display: grid; gap: 10px; }
+.terminal-plugin-count { min-width: 16px; height: 16px; padding: 0 4px; display: inline-grid; place-items: center; border-radius: 999px; background: rgba(255, 255, 255, .12); font-size: 10px; line-height: 1; }
 .terminal-plugin-popover header { min-width: 0; display: grid; gap: 2px; }
 .terminal-plugin-popover header > strong { color: #1d303e; font-size: 14px; }
 .terminal-plugin-popover header small { overflow: hidden; color: #778792; font: 11px/1.4 monospace; text-overflow: ellipsis; white-space: nowrap; }

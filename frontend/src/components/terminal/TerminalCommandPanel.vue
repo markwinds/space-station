@@ -5,21 +5,24 @@
         class="terminal-command-toggle"
         :class="{ active: showComposer }"
         secondary
-        size="tiny"
+        size="small"
         :aria-pressed="showComposer"
         @click="$emit('toggleComposer')"
       >
-        <span class="terminal-command-toggle__mark">&gt;_</span>
+        <n-icon><CodeSlashOutline /></n-icon>
         {{ label }}
       </n-button>
       <n-button
         class="terminal-command-toggle"
         :class="{ active: showQuick }"
         secondary
-        size="tiny"
+        size="small"
         :aria-pressed="showQuick"
         @click="$emit('toggleQuick')"
-      >⚡ 片段</n-button>
+      >
+        <template #icon><n-icon><FlashOutline /></n-icon></template>
+        片段
+      </n-button>
       <div v-if="showQuick" ref="quickSnippetList" class="terminal-quick-snippets" @wheel="scrollQuickSnippets">
         <n-button
           v-for="snippet in snippets"
@@ -27,7 +30,7 @@
           class="terminal-snippet-chip"
           :class="{ 'terminal-snippet-chip--run': snippet.action !== 'insert' }"
           secondary
-          size="tiny"
+          size="small"
           :title="snippet.action === 'insert' ? `插入：${snippet.command}` : `立即执行：${snippet.command}`"
           @mousedown.prevent
           @click="$emit('useSnippet', snippet)"
@@ -42,7 +45,8 @@
 </template>
 
 <script setup lang="ts">
-import { NButton } from "naive-ui";
+import { CodeSlashOutline, FlashOutline } from "@vicons/ionicons5";
+import { NButton, NIcon } from "naive-ui";
 import { ref } from "vue";
 
 export interface TerminalCommandSnippet {
@@ -86,10 +90,10 @@ function scrollQuickSnippets(event: WheelEvent) {
 
 <style scoped>
 .terminal-command-panel { display: grid; border-top: 1px solid #34414b; background: #171e23; }
-.terminal-command-toolbar { min-width: 0; padding: 7px 9px; display: flex; align-items: center; gap: 7px; }
+.terminal-command-toolbar { min-width: 0; min-height: 46px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; }
 .terminal-command-toolbar :deep(.n-button) { color: #dce6eb; border-color: #50616c; background: #2c3941; }
+.terminal-command-toolbar :deep(.n-button) { min-height: 32px; }
 .terminal-command-toolbar :deep(.terminal-command-toggle.active) { border-color: #74aaa6; background: #31504f; color: #efffff; }
-.terminal-command-toggle__mark { font-family: "SFMono-Regular", Consolas, monospace; font-weight: 800; }
 .terminal-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
 .terminal-quick-snippets::-webkit-scrollbar { display: none; }
 .terminal-quick-snippets > span { align-self: center; color: #83939e; font-size: 12px; }
@@ -97,6 +101,9 @@ function scrollQuickSnippets(event: WheelEvent) {
 .terminal-quick-snippets :deep(.terminal-snippet-chip .n-button__content) { min-width: 0; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-quick-snippets :deep(.terminal-snippet-chip--run) { border-color: #6c6045; color: #ecd08e; }
 .terminal-command-composer { padding: 0 9px 9px; }
+.terminal-command-composer :deep(.n-input),
+.terminal-command-composer :deep(.n-button),
+.terminal-command-composer :deep(.n-base-selection) { min-height: 32px; }
 @media (max-width: 760px) {
   .terminal-command-toolbar { padding: 6px; flex-wrap: wrap; gap: 5px; }
   .terminal-command-toolbar :deep(.n-button) { min-height: 32px; }

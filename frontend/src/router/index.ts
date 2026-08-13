@@ -11,6 +11,7 @@ import { recordRecentTool } from "@/toolPreferences";
 const TimeManagerTool = defineAsyncComponent(() => import("@/components/tools/TimeManagerTool.vue"));
 const HabitTool = defineAsyncComponent(() => import("@/components/tools/HabitTool.vue"));
 const TransferTool = defineAsyncComponent(() => import("@/components/tools/TransferTool.vue"));
+const NetworkScanTool = defineAsyncComponent(() => import("@/components/tools/NetworkScanTool.vue"));
 const SshTool = defineAsyncComponent(() => import("@/components/tools/SshTool.vue"));
 const SerialTool = defineAsyncComponent(() => import("@/components/tools/SerialTool.vue"));
 const AuthenticatorTool = defineAsyncComponent(() => import("@/components/tools/AuthenticatorTool.vue"));
@@ -115,6 +116,15 @@ const router = createRouter({
       props: {
         tool: findTool("transfer"),
         component: TransferTool,
+      },
+    },
+    {
+      path: "/tools/network-scan",
+      name: "network-scan",
+      component: ToolView,
+      props: {
+        tool: findTool("networkScan"),
+        component: NetworkScanTool,
       },
     },
     {

@@ -12,9 +12,10 @@ import {
   ExtensionPuzzleOutline,
   CameraOutline,
   FolderOpenOutline,
+  ScanOutline,
 } from "@vicons/ionicons5";
 
-export type ToolId = "jsonFormatter" | "textCompare" | "screenshot" | "fileManager" | "certificate" | "authenticator" | "timeManager" | "habits" | "transfer" | "ssh" | "serial" | "terminalPlugins" | "runtime";
+export type ToolId = "jsonFormatter" | "textCompare" | "screenshot" | "fileManager" | "certificate" | "authenticator" | "timeManager" | "habits" | "transfer" | "networkScan" | "ssh" | "serial" | "terminalPlugins" | "runtime";
 
 export interface ToolDefinition {
   id: ToolId;
@@ -100,9 +101,17 @@ export const tools: ToolDefinition[] = [
     path: "/tools/transfer",
   },
   {
+    id: "networkScan",
+    title: "网络扫描",
+    description: "发现网段内可达主机、延时和常用服务",
+    category: "Network",
+    icon: ScanOutline,
+    path: "/tools/network-scan",
+  },
+  {
     id: "ssh",
-    title: "SSH 终端",
-    description: "管理主机并打开远程终端",
+    title: "远程终端",
+    description: "管理 SSH 与 Telnet 主机并打开远程终端",
     category: "Remote",
     icon: TerminalOutline,
     path: "/tools/ssh",

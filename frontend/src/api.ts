@@ -261,6 +261,7 @@ export interface HabitState {
 
 export interface SshHost {
   id: string;
+  protocol?: "ssh" | "telnet";
   name: string;
   host: string;
   port: number;

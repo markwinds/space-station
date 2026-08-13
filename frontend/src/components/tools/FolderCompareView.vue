@@ -27,6 +27,7 @@
     <section class="folder-filter-bar">
       <n-input v-model:value="keyword" class="folder-keyword" clearable size="small" placeholder="筛选相对路径" />
       <n-select v-model:value="statusFilter" class="folder-status-filter" size="small" :options="statusFilterOptions" />
+      <n-button size="small" secondary :disabled="!leftFiles.size && !rightFiles.size" @click="swapSides">交换</n-button>
       <n-button size="small" secondary :disabled="!leftFiles.size && !rightFiles.size" @click="buildComparison">重新比较</n-button>
       <div class="folder-summary">
         <span class="summary-different">不同 {{ summary.different }}</span>
@@ -286,6 +287,16 @@ function selectDirectory(event: Event, side: CompareSide) {
   Object.assign(root, { name: rootName || "已选文件夹", files: target.size, bytes });
   if (side === "left") leftFiles.value = target;
   else rightFiles.value = target;
+  buildComparison();
+}
+
+function swapSides() {
+  const previousLeftFiles = leftFiles.value;
+  const previousLeftRoot = { ...leftRoot };
+  leftFiles.value = rightFiles.value;
+  rightFiles.value = previousLeftFiles;
+  Object.assign(leftRoot, rightRoot);
+  Object.assign(rightRoot, previousLeftRoot);
   buildComparison();
 }
 

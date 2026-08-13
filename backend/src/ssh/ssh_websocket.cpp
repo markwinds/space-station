@@ -221,7 +221,7 @@ void SshWebSocketController::HandleConnect(const drogon::WebSocketConnectionPtr&
     nlohmann::json selected;
     for (const auto& host : config_store_.LoadSshHosts())
     {
-        if (host.is_object() && host.value("id", "") == host_id)
+        if (host.is_object() && host.value("id", "") == host_id && host.value("protocol", "ssh") == "ssh")
         {
             selected = host;
             break;

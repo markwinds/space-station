@@ -50,8 +50,8 @@ export interface TerminalThemeDefinition {
 export const TERMINAL_THEMES: TerminalThemeDefinition[] = [
   {
     id: "classic",
-    label: "经典原始",
-    description: "主题功能加入前的原始配色，当前默认",
+    label: "经典",
+    description: "简洁耐看的经典终端配色",
     palette: {
       background: "#101418", foreground: "#d8dee9", cursor: "#8fbcbb", cursorAccent: "#000000",
       selectionBackground: "#d96820", selectionForeground: "#ffffff",

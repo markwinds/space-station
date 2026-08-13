@@ -4,7 +4,9 @@
       <div class="serial-brand">
         <router-link to="/" aria-label="返回首页">SS</router-link>
         <div><strong>串口终端</strong><small>本机 / 共享 / 服务器</small></div>
-        <n-button class="serial-sidebar-collapse" quaternary circle size="small" aria-label="收起串口侧栏" title="收起串口侧栏" @click="collapseSidebar">«</n-button>
+        <n-button class="serial-sidebar-collapse" quaternary circle size="small" aria-label="收起串口侧栏" title="收起串口侧栏" @click="collapseSidebar">
+          <template #icon><n-icon><ChevronBackOutline /></n-icon></template>
+        </n-button>
       </div>
 
       <div class="serial-source-switch">
@@ -19,7 +21,9 @@
       <template v-if="source === 'browser'">
         <div class="serial-field-heading">
           <span>已授权设备</span>
-          <n-button size="tiny" secondary :disabled="!browserSupported" @click="refreshBrowserPorts">刷新</n-button>
+          <n-button class="serial-refresh-button" size="tiny" secondary circle :disabled="!browserSupported" aria-label="刷新已授权设备" title="刷新已授权设备" @click="refreshBrowserPorts">
+            <template #icon><n-icon><RefreshOutline /></n-icon></template>
+          </n-button>
         </div>
         <n-select v-model:value="browserPortId" :options="browserPortOptions" placeholder="先选择一个串口" />
         <n-button type="primary" secondary :disabled="!browserSupported" @click="requestBrowserPort">选择浏览器串口</n-button>
@@ -37,7 +41,9 @@
       <template v-else-if="source === 'shared'">
         <div class="serial-field-heading">
           <span>在线浏览器共享</span>
-          <n-button size="tiny" secondary :loading="loadingSharedPorts" @click="refreshSharedPorts">刷新</n-button>
+          <n-button class="serial-refresh-button" size="tiny" secondary circle :loading="loadingSharedPorts" aria-label="刷新在线浏览器共享" title="刷新在线浏览器共享" @click="refreshSharedPorts">
+            <template #icon><n-icon><RefreshOutline /></n-icon></template>
+          </n-button>
         </div>
         <n-select v-model:value="sharedPortId" filterable :options="sharedPortOptions" placeholder="选择其他客户端共享的串口" />
         <p class="serial-shared-refresh-state">
@@ -48,7 +54,9 @@
       <template v-else>
         <div class="serial-field-heading">
           <span>后端主机设备</span>
-          <n-button size="tiny" secondary :loading="loadingServerPorts" @click="refreshServerPorts">刷新</n-button>
+          <n-button class="serial-refresh-button" size="tiny" secondary circle :loading="loadingServerPorts" aria-label="刷新后端主机设备" title="刷新后端主机设备" @click="refreshServerPorts">
+            <template #icon><n-icon><RefreshOutline /></n-icon></template>
+          </n-button>
         </div>
         <n-select v-model:value="serverPortId" filterable :options="serverPortOptions" placeholder="选择服务器串口" />
         <p class="serial-hint">设备位于运行 Space Station 后端的主机，不一定是当前浏览器所在设备。</p>
@@ -118,16 +126,26 @@
           </button>
         </div>
         <div v-if="activeSession" class="serial-tab-actions">
-          <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
-            <n-button class="serial-desktop-actions" secondary size="tiny" title="在当前窗格继续分屏；点击标签替换活动窗格，或拖动标签到指定分屏" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
-              {{ terminalSplit.splitLabel.value }}
-            </n-button>
-          </n-dropdown>
+          <span class="serial-location">{{ locationText(activeSession.location) }}</span>
+          <span class="serial-status-label" :class="activeSession.status">{{ statusText(activeSession) }}</span>
+          <terminal-renderer-badge v-if="activeView" class="serial-renderer" :renderer="activeView.renderer" />
+          <n-tooltip :disabled="terminalSplit.canSplit.value || terminalSplit.isSplit.value" trigger="hover" placement="bottom">
+            <template #trigger>
+              <span class="serial-split-trigger">
+                <n-dropdown trigger="click" :options="terminalSplitOptions" @select="handleTerminalSplitAction">
+                  <n-button class="serial-desktop-actions serial-icon-action" secondary circle size="tiny" :title="terminalSplit.canSplit.value || terminalSplit.isSplit.value ? `${terminalSplit.splitLabel.value}；点击打开分屏菜单` : undefined" :aria-label="terminalSplit.splitLabel.value" :disabled="!terminalSplit.canSplit.value && !terminalSplit.isSplit.value">
+                    <template #icon><n-icon><GridOutline /></n-icon></template>
+                  </n-button>
+                </n-dropdown>
+              </span>
+            </template>
+            请先再打开一个终端标签，再使用分屏
+          </n-tooltip>
           <terminal-action-bar
             class="serial-desktop-actions"
             :recording="Boolean(activeView?.recording)"
             settings
-            @search="openSearch"
+            @search="toggleSearch"
             @snippets="showSnippets = true"
             @recording="activeView && toggleRecording(activeView)"
             @settings="openTerminalSettings"
@@ -137,10 +155,10 @@
             :target="activePluginContext.target"
             :unavailable-hint="activePluginContext.hint"
           />
-          <n-button v-if="activeSession.status === 'error' || activeSession.status === 'closed'" size="tiny" secondary @click="reconnectActive">重连</n-button>
-          <span class="serial-location">{{ locationText(activeSession.location) }}</span>
-          <span class="serial-status-label" :class="activeSession.status">{{ statusText(activeSession) }}</span>
-          <terminal-renderer-badge v-if="activeView" class="serial-renderer" :renderer="activeView.renderer" />
+          <n-button v-if="activeSession.status === 'error' || activeSession.status === 'closed'" size="tiny" secondary title="重新连接当前串口" @click="reconnectActive">
+            <template #icon><n-icon><RefreshOutline /></n-icon></template>
+            重连
+          </n-button>
           <n-dropdown v-if="mobileActionOptions.length" trigger="click" :options="mobileActionOptions" @select="handleMobileAction">
             <n-button class="serial-mobile-more" secondary size="tiny">更多</n-button>
           </n-dropdown>
@@ -230,12 +248,13 @@
               <n-input
                 v-model:value="view.command"
                 class="serial-command"
+                size="small"
                 :placeholder="view.sendMode === 'hex' ? '例如：48 65 6C 6C 6F' : '输入要发送的内容'"
                 @keyup.ctrl.enter="sendFromComposer(view)"
                 @keyup.meta.enter="sendFromComposer(view)"
               />
               <n-select v-if="view.sendMode === 'text'" v-model:value="view.lineEnding" class="serial-line-ending" :options="lineEndingOptions" size="small" />
-              <n-button type="primary" :disabled="!canWrite(view)" @click="sendFromComposer(view)">发送</n-button>
+              <n-button type="primary" size="small" :disabled="!canWrite(view)" @click="sendFromComposer(view)">发送</n-button>
               </div></template>
             </terminal-command-panel>
         </section>
@@ -339,19 +358,19 @@
         <div class="serial-terminal-settings-layout">
           <section class="serial-terminal-settings-card">
             <div class="serial-terminal-settings-heading">
-              <h3>显示</h3>
+              <h3>显示 <terminal-setting-help text="字体和间距会立即应用到已打开终端。" /></h3>
               <n-button size="tiny" secondary @click="resetTerminalAppearanceDraft">恢复默认显示</n-button>
             </div>
             <n-form-item label="配色主题">
               <terminal-theme-picker v-model="terminalSettingsDraft.themeId" />
             </n-form-item>
-            <n-form-item label="终端字体">
+            <n-form-item>
+              <template #label>终端字体 <terminal-setting-help text="按顺序尝试本机已安装字体；也可以直接输入自定义 CSS 字体栈。" /></template>
               <n-input
                 v-model:value="terminalSettingsDraft.fontFamily"
                 placeholder='例如："DejaVu Sans Mono", monospace'
                 clearable
               />
-              <template #feedback>按顺序尝试本机已安装字体；也可以直接输入自定义 CSS 字体栈。</template>
             </n-form-item>
             <div class="serial-terminal-settings-grid serial-terminal-settings-grid--three">
               <n-form-item label="字体大小"><n-input-number v-model:value="terminalSettingsDraft.fontSize" :min="10" :max="28" /></n-form-item>
@@ -360,25 +379,24 @@
                 <n-input-number v-model:value="terminalSettingsDraft.letterSpacing" :min="0" :max="4" :step="0.5" />
               </n-form-item>
             </div>
-            <n-form-item label="行信息侧栏">
+            <n-form-item>
+              <template #label>行信息侧栏 <terminal-setting-help text="时间取浏览器收到并解析该行时的本地时间；启用前的历史行不补记时间。" /></template>
               <div class="serial-setting-switches serial-setting-switches--inline">
                 <n-checkbox v-model:checked="terminalSettingsDraft.showLineNumbers">显示行号</n-checkbox>
                 <n-checkbox v-model:checked="terminalSettingsDraft.showLineTimestamps">显示时间</n-checkbox>
               </div>
-              <template #feedback>时间取浏览器收到并解析该行时的本地时间；启用前的历史行不补记时间。</template>
             </n-form-item>
           </section>
 
           <section class="serial-terminal-settings-card">
-            <h3>缓存与录制</h3>
+            <h3>缓存与录制 <terminal-setting-help text="回滚设置对新打开或重新连接的终端生效；录制达到上限后停止追加并提示。" /></h3>
             <div class="serial-terminal-settings-grid">
-              <n-form-item label="回滚缓冲区（输出行）">
+              <n-form-item>
+                <template #label>回滚缓冲区（输出行） <terminal-setting-help text="按 120 列折算；窄屏自动增加内部屏幕行容量。" /></template>
                 <n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" :min="1000" :max="500000" :step="10000" />
-                <template #feedback>按 120 列折算；窄屏自动增加内部屏幕行容量。</template>
               </n-form-item>
               <n-form-item label="单次录制上限（MiB）"><n-input-number v-model:value="terminalSettingsDraft.recordingMaxMiB" :min="1" :max="500" :step="10" /></n-form-item>
             </div>
-            <p class="serial-settings-hint">回滚设置对新打开或重新连接的终端生效；录制达到上限后停止追加并提示。</p>
           </section>
 
           <section class="serial-terminal-settings-card serial-terminal-settings-card--wide">
@@ -386,13 +404,15 @@
             <div class="serial-terminal-settings-options">
               <n-checkbox v-model:checked="terminalSettingsDraft.showCommandComposer">显示底部命令编辑和发送框</n-checkbox>
               <n-checkbox v-model:checked="terminalSettingsDraft.copyOnSelect">选中终端文本后自动复制</n-checkbox>
-              <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+              <span class="serial-setting-with-help">
+                <n-checkbox v-model:checked="terminalSettingsDraft.pasteOnRightClick">在终端内右键时自动粘贴</n-checkbox>
+                <terminal-setting-help text="无读取权限时直接显示浏览器原生右键菜单。" />
+              </span>
             </div>
             <div class="serial-clipboard-permission">
               <span>剪贴板读取权限：{{ clipboardPermissionLabel }}</span>
               <n-button size="small" secondary :loading="clipboardPermissionState === 'checking'" @click="requestClipboardAccess">检测/授权</n-button>
             </div>
-            <p class="serial-settings-hint">无读取权限时直接显示浏览器原生右键菜单。</p>
           </section>
         </div>
       </n-form>
@@ -402,8 +422,8 @@
 </template>
 
 <script setup lang="ts">
-import { MenuOutline } from "@vicons/ionicons5";
-import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NIcon, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NTabPane, NTabs, useMessage } from "naive-ui";
+import { ChevronBackOutline, GridOutline, MenuOutline, RefreshOutline } from "@vicons/ionicons5";
+import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NIcon, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NTabPane, NTabs, NTooltip, useMessage } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { fetchBackendSerialPorts, fetchBrowserSerialShares, type BackendSerialPort, type BrowserSerialShare, type SharedCommandSnippet } from "@/api";
 import WebTerminal from "../terminal/WebTerminal.vue";
@@ -413,6 +433,7 @@ import TerminalCommandPanel from "../terminal/TerminalCommandPanel.vue";
 import TerminalRendererBadge from "../terminal/TerminalRendererBadge.vue";
 import TerminalPluginEntry from "../terminal/TerminalPluginEntry.vue";
 import TerminalThemePicker from "../terminal/TerminalThemePicker.vue";
+import TerminalSettingHelp from "../terminal/TerminalSettingHelp.vue";
 import type { TerminalRenderer, WebTerminalHandle, WebTerminalReadyEvent, WebTerminalSearchResult } from "../terminal/WebTerminal.types";
 import { defaultTerminalPreferences, loadTerminalPreferences, normalizeTerminalPreferences, saveTerminalPreferences, terminalThemePalette, type TerminalPreferences } from "../terminal/terminalPreferences";
 import { attachTerminalClipboard } from "../terminal/terminalClipboard";
@@ -447,6 +468,73 @@ interface BrowserPortItem {
   port: SerialPort;
 }
 
+interface ByteRing {
+  readonly byteLength: number;
+  append(input: Uint8Array): number;
+  take(maximumBytes: number): Uint8Array;
+  snapshot(): Uint8Array;
+}
+
+class BoundedByteRing implements ByteRing {
+  private readonly storage: Uint8Array;
+  private start = 0;
+  private length = 0;
+
+  constructor(capacity: number) {
+    this.storage = new Uint8Array(capacity);
+  }
+
+  get byteLength() { return this.length; }
+
+  append(input: Uint8Array) {
+    if (!input.byteLength) return 0;
+    const capacity = this.storage.byteLength;
+    if (input.byteLength >= capacity) {
+      const dropped = this.length + input.byteLength - capacity;
+      this.storage.set(input.subarray(input.byteLength - capacity));
+      this.start = 0;
+      this.length = capacity;
+      return dropped;
+    }
+
+    const overflow = Math.max(0, this.length + input.byteLength - capacity);
+    if (overflow) {
+      this.start = (this.start + overflow) % capacity;
+      this.length -= overflow;
+    }
+    const end = (this.start + this.length) % capacity;
+    const firstLength = Math.min(input.byteLength, capacity - end);
+    this.storage.set(input.subarray(0, firstLength), end);
+    if (firstLength < input.byteLength) this.storage.set(input.subarray(firstLength), 0);
+    this.length += input.byteLength;
+    return overflow;
+  }
+
+  take(maximumBytes: number) {
+    const count = Math.min(this.length, Math.max(0, maximumBytes));
+    const output = new Uint8Array(count);
+    const firstLength = Math.min(count, this.storage.byteLength - this.start);
+    output.set(this.storage.subarray(this.start, this.start + firstLength));
+    if (firstLength < count) output.set(this.storage.subarray(0, count - firstLength), firstLength);
+    this.start = (this.start + count) % this.storage.byteLength;
+    this.length -= count;
+    return output;
+  }
+
+  snapshot() {
+    const output = this.take(this.length);
+    this.append(output);
+    return output;
+  }
+}
+
+interface SerialRenderQueue {
+  buffer: ByteRing;
+  frame: number;
+  writing: boolean;
+  droppedBytes: number;
+}
+
 interface SerialSession {
   key: string;
   location: Location;
@@ -457,8 +545,8 @@ interface SerialSession {
   error: string;
   closing: boolean;
   reconnecting: boolean;
-  chunks: Uint8Array[];
-  bufferedBytes: number;
+  history: ByteRing;
+  renderQueue: SerialRenderQueue;
   socket?: WebSocket;
   socketOpened: boolean;
   keepaliveTimer?: number;
@@ -473,6 +561,7 @@ interface SerialSession {
   pluginTarget?: string;
   bridgeConnected: boolean;
   sharing: boolean;
+  relayBackpressured: boolean;
   readOnlyHintShown: boolean;
   browserPort?: SerialPort;
   reader?: ReadableStreamDefaultReader<Uint8Array>;
@@ -553,7 +642,7 @@ const snippetDraft = reactive<{ name: string; command: string; pinned: boolean; 
   name: "",
   command: "",
   pinned: true,
-  action: "insert",
+  action: "run",
 });
 const editingSnippetId = ref("");
 const {
@@ -650,6 +739,11 @@ const flowOptions = [{ label: "无", value: "none" }, { label: "硬件 RTS/CTS",
 const sendModeOptions = [{ label: "文本", value: "text" }, { label: "HEX", value: "hex" }];
 const lineEndingOptions = [{ label: "不追加", value: "none" }, { label: "LF", value: "lf" }, { label: "CRLF", value: "crlf" }];
 const browserSerialBufferSize = 8 * 1024 * 1024;
+const serialHistoryBytes = 512 * 1024;
+const serialRenderQueueBytes = 2 * 1024 * 1024;
+const serialRenderBatchBytes = 64 * 1024;
+const serialRelayMaximumBufferedBytes = 4 * 1024 * 1024;
+const maximumConsecutiveSerialReadErrors = 12;
 const recoverableSerialReadErrors = new Set([
   "BufferOverrunError",
   "BreakError",
@@ -812,13 +906,19 @@ async function openSelectedPort() {
     error: "",
     closing: false,
     reconnecting: false,
-    chunks: [],
-    bufferedBytes: 0,
+    history: markRaw(new BoundedByteRing(serialHistoryBytes)),
+    renderQueue: markRaw({
+      buffer: new BoundedByteRing(serialRenderQueueBytes),
+      frame: 0,
+      writing: false,
+      droppedBytes: 0,
+    }),
     socketOpened: false,
     viewers: 0,
     writeEnabled: sharedItem?.writeEnabled ?? true,
     bridgeConnected: false,
     sharing: false,
+    relayBackpressured: false,
     readOnlyHintShown: false,
     shareId: source.value === "browser" ? crypto.randomUUID() : sharedItem?.id,
     pluginTarget: browserItem?.pluginTarget ?? sharedItem?.pluginTarget,
@@ -851,6 +951,7 @@ async function openBrowserSession(session: SerialSession) {
   if (session.shareId) openBrowserPluginBridge(session);
   const readTask = (async () => {
     let recoverableErrorCount = 0;
+    let consecutiveErrorCount = 0;
     while (!session.closing && session.browserPort?.readable) {
       const reader = session.browserPort.readable.getReader();
       session.reader = markRaw(reader);
@@ -859,8 +960,18 @@ async function openBrowserSession(session: SerialSession) {
           const { value, done } = await reader.read();
           if (done) break;
           if (value?.byteLength) {
+            consecutiveErrorCount = 0;
             receiveData(session, value);
-            if (session.relaySocket?.readyState === WebSocket.OPEN) session.relaySocket.send(value);
+            const relaySocket = session.relaySocket;
+            if (relaySocket?.readyState === WebSocket.OPEN) {
+              if (relaySocket.bufferedAmount <= serialRelayMaximumBufferedBytes) {
+                relaySocket.send(value);
+                session.relayBackpressured = false;
+              } else if (!session.relayBackpressured) {
+                session.relayBackpressured = true;
+                broadcastNotice(session, "\r\n\x1b[33m[共享通道发送积压，已暂停转发；本地串口显示不受影响]\x1b[0m\r\n");
+              }
+            }
           }
         }
       } catch (error) {
@@ -868,10 +979,16 @@ async function openBrowserSession(session: SerialSession) {
         const errorName = serialReadErrorName(error);
         if (!recoverableSerialReadErrors.has(errorName)) throw error;
         recoverableErrorCount += 1;
+        consecutiveErrorCount += 1;
         const detail = errorName === "BufferOverrunError"
           ? "接收缓冲区发生溢出，本次可能丢失了部分数据"
           : `串口发生可恢复读取错误：${errorMessage(error)}`;
         broadcastNotice(session, `\r\n\x1b[33m[${detail}；正在继续读取（第 ${recoverableErrorCount} 次）]\x1b[0m\r\n`);
+        if (consecutiveErrorCount >= maximumConsecutiveSerialReadErrors) {
+          throw new Error(`串口连续读取失败 ${consecutiveErrorCount} 次，已停止读取以避免页面失去响应。`);
+        }
+        const retryDelay = Math.min(2000, 50 * (2 ** Math.min(consecutiveErrorCount - 1, 6)));
+        await new Promise<void>((resolve) => window.setTimeout(resolve, retryDelay));
       } finally {
         reader.releaseLock();
         if (session.reader === reader) session.reader = undefined;
@@ -1092,16 +1209,57 @@ function failSession(session: SerialSession, reason: string) {
 
 function receiveData(session: SerialSession, input: Uint8Array) {
   const data = input.slice();
-  session.chunks.push(data);
-  session.bufferedBytes += data.byteLength;
-  while (session.bufferedBytes > 512 * 1024 && session.chunks.length > 1) {
-    const removed = session.chunks.shift();
-    session.bufferedBytes -= removed?.byteLength ?? 0;
-  }
+  session.history.append(data);
   views.filter((view) => view.sessionKey === session.key).forEach((view) => {
-    view.terminalView?.write(data);
     appendRecording(view, data);
   });
+  enqueueTerminalData(session, data);
+}
+
+function enqueueTerminalData(session: SerialSession, data: Uint8Array) {
+  if (!views.some((view) => view.sessionKey === session.key && view.terminalView)) return;
+  const queue = session.renderQueue;
+  queue.droppedBytes += queue.buffer.append(data);
+  scheduleTerminalFlush(session);
+}
+
+function scheduleTerminalFlush(session: SerialSession) {
+  const queue = session.renderQueue;
+  if (queue.frame || queue.writing || !queue.buffer.byteLength) return;
+  queue.frame = window.requestAnimationFrame(() => {
+    queue.frame = 0;
+    flushTerminalData(session);
+  });
+}
+
+function flushTerminalData(session: SerialSession) {
+  const queue = session.renderQueue;
+  if (queue.writing || !queue.buffer.byteLength) return;
+  const terminals = views
+    .filter((view) => view.sessionKey === session.key)
+    .map((view) => view.terminalView)
+    .filter((terminal): terminal is WebTerminalHandle => Boolean(terminal));
+  if (!terminals.length) return;
+
+  let batch = queue.buffer.take(serialRenderBatchBytes);
+  if (queue.droppedBytes) {
+    const notice = new TextEncoder().encode(`\x1b[0m\r\n\x1b[33m[终端输出过快，已跳过 ${queue.droppedBytes} 字节以保持页面响应]\x1b[0m\r\n`);
+    const combined = new Uint8Array(notice.byteLength + batch.byteLength);
+    combined.set(notice);
+    combined.set(batch, notice.byteLength);
+    batch = combined;
+    queue.droppedBytes = 0;
+  }
+
+  queue.writing = true;
+  let pending = terminals.length;
+  const completed = () => {
+    pending -= 1;
+    if (pending > 0) return;
+    queue.writing = false;
+    scheduleTerminalFlush(session);
+  };
+  terminals.forEach((terminal) => terminal.write(batch, completed));
 }
 
 function broadcastNotice(session: SerialSession, text: string) {
@@ -1176,7 +1334,9 @@ function handleTerminalReady(view: SerialView, event: WebTerminalReadyEvent) {
       message.error(`${describeTerminalClipboardError(error)}；下次右键将显示原生菜单`);
     },
   });
-  session.chunks.forEach((chunk) => event.terminal.write(chunk));
+  const history = session.history.snapshot();
+  if (history.byteLength) event.terminal.write(history);
+  scheduleTerminalFlush(session);
 }
 
 function handleTerminalData(view: SerialView, data: string) {
@@ -1351,7 +1511,7 @@ function handleMobileAction(key: string) {
   const view = activeView.value;
   if (!view) return;
   if (key === "reconnect") void reconnectActive();
-  else if (key === "search") openSearch();
+  else if (key === "search") toggleSearch();
   else if (key === "snippets") showSnippets.value = true;
   else if (key === "recording") toggleRecording(view);
   else if (key === "settings") openTerminalSettings();
@@ -1431,6 +1591,11 @@ function closeSearch() {
   activeView.value?.terminalView?.focus();
 }
 
+function toggleSearch() {
+  if (showSearch.value) closeSearch();
+  else openSearch();
+}
+
 function searchTerminal(previous: boolean, incremental = false) {
   if (searchInputTimer) { window.clearTimeout(searchInputTimer); searchInputTimer = undefined; }
   if (!activeView.value || !searchQuery.value) return;
@@ -1469,7 +1634,7 @@ function handleGlobalShortcut(event: KeyboardEvent) {
   if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f" || !activeView.value) return;
   event.preventDefault();
   event.stopPropagation();
-  if (showSearch.value) closeSearch(); else openSearch();
+  toggleSearch();
 }
 
 function openTerminalSettings() {
@@ -1574,7 +1739,7 @@ async function deleteSnippetFromLibrary(id: string) {
 
 function resetSnippetDraft() {
   editingSnippetId.value = "";
-  Object.assign(snippetDraft, { name: "", command: "", pinned: true, action: "insert" });
+  Object.assign(snippetDraft, { name: "", command: "", pinned: true, action: "run" });
 }
 
 function saveSnippet() {
@@ -1784,6 +1949,7 @@ onBeforeUnmount(() => {
 .serial-field-heading { display: flex; align-items: center; justify-content: space-between; min-height: 24px; color: #c9d3da; font-size: 13px; font-weight: 700; }
 .serial-field-heading :deep(.n-button), .serial-tab-actions > :deep(.n-button) { color: #e1eaef; background: #2a3a44; border-color: #526671; }
 .serial-field-heading :deep(.n-button:hover), .serial-tab-actions > :deep(.n-button:hover) { color: #102027; background: #91bfbd; border-color: #91bfbd; }
+.serial-field-heading :deep(.serial-refresh-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
 .serial-hint { margin: -4px 0 0; font-size: 12px; line-height: 1.55; }
 .serial-divider { height: 1px; background: #2a3841; }
 .serial-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -1809,8 +1975,9 @@ onBeforeUnmount(() => {
 .serial-status-dot.connecting { background: #e1ad55; }
 .serial-status-dot.error { background: #e26969; }
 .serial-tab-actions { min-width: 0; flex: 0 0 auto; padding: 0 12px; display: flex; align-items: center; gap: 8px; }
+.serial-tab-actions :deep(.serial-icon-action) { width: 30px; min-width: 30px; height: 30px; padding: 0; }
+.serial-split-trigger { display: inline-flex; }
 .serial-location, .serial-status-label { padding: 3px 8px; border-radius: 999px; background: #263640; color: #b9c8d1; font-size: 11px; white-space: nowrap; }
-.serial-renderer { order: 10; }
 .serial-mobile-more { display: none; }
 .serial-status-label.open { background: rgba(39, 135, 83, .26); color: #78d7a1; }
 .serial-status-label.error { background: rgba(169, 62, 62, .28); color: #f0a0a0; }
@@ -1902,6 +2069,7 @@ onBeforeUnmount(() => {
 .serial-terminal-settings-grid--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .serial-terminal-settings-grid :deep(.n-input-number) { width: 100%; }
 .serial-terminal-settings-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 18px; }
+.serial-setting-with-help { display: inline-flex; align-items: center; gap: 4px; }
 :global(.serial-terminal-settings-dialog) { width: min(860px, calc(100vw - 32px)) !important; }
 .serial-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
