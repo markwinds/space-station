@@ -1933,6 +1933,8 @@ onBeforeUnmount(() => {
 .serial-sidebar-collapse:focus-visible { outline: 2px solid #9bc7c4; outline-offset: 1px; }
 .serial-source-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 3px; border-radius: 8px; background: #0e151a; }
 .serial-source-switch button { min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: #9caab4; cursor: pointer; }
+.serial-source-switch button:hover, .serial-source-switch button:focus { background: #202d35; color: #f4f9fb; outline: none; }
+.serial-source-switch button:focus-visible { box-shadow: inset 0 0 0 2px #9bc7c4; }
 .serial-source-switch button.active { background: #283842; color: #e9f0f4; font-weight: 700; }
 .serial-share-settings { padding: 10px; display: grid; gap: 9px; border: 1px solid #30414b; border-radius: 8px; background: #11191f; }
 .serial-share-settings :deep(.n-checkbox__label) { color: #e2ebf0 !important; font-weight: 600; }
@@ -1948,7 +1950,11 @@ onBeforeUnmount(() => {
 .serial-shared-refresh-state { color: #b4c3cc; }
 .serial-field-heading { display: flex; align-items: center; justify-content: space-between; min-height: 24px; color: #c9d3da; font-size: 13px; font-weight: 700; }
 .serial-field-heading :deep(.n-button), .serial-tab-actions > :deep(.n-button) { color: #e1eaef; background: #2a3a44; border-color: #526671; }
-.serial-field-heading :deep(.n-button:hover), .serial-tab-actions > :deep(.n-button:hover) { color: #102027; background: #91bfbd; border-color: #91bfbd; }
+.serial-field-heading :deep(.n-button:not(.n-button--disabled):hover), .serial-tab-actions > :deep(.n-button:not(.n-button--disabled):hover) { color: #102027; background: #91bfbd; border-color: #91bfbd; }
+.serial-field-heading :deep(.n-button:not(.n-button--disabled):focus), .serial-tab-actions > :deep(.n-button:not(.n-button--disabled):focus) { color: #ffffff; background: #34434e; border-color: #78909d; }
+.serial-field-heading :deep(.n-button:not(.n-button--disabled):active), .serial-tab-actions > :deep(.n-button:not(.n-button--disabled):active) { color: #102027; background: #78aaa7; border-color: #9bc7c4; }
+.serial-field-heading :deep(.n-button:focus-visible), .serial-tab-actions > :deep(.n-button:focus-visible) { box-shadow: 0 0 0 2px #151d23, 0 0 0 4px #9bc7c4; }
+.serial-field-heading :deep(.n-button.n-button--disabled), .serial-tab-actions > :deep(.n-button.n-button--disabled) { color: #8999a3; background: #202b32; border-color: #394852; opacity: 1; }
 .serial-field-heading :deep(.serial-refresh-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
 .serial-hint { margin: -4px 0 0; font-size: 12px; line-height: 1.55; }
 .serial-divider { height: 1px; background: #2a3841; }
@@ -1965,6 +1971,8 @@ onBeforeUnmount(() => {
 .serial-tabs { min-height: 48px; display: flex; align-items: stretch; border-bottom: 1px solid #2c3942; background: #151d23; }
 .serial-tab-list { min-width: 0; flex: 1; display: flex; align-items: stretch; overflow-x: auto; }
 .serial-tab { flex: 0 0 auto; min-width: 130px; max-width: 230px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #2b3841; background: #151d23; color: #9eacb6; cursor: pointer; }
+.serial-tab:hover, .serial-tab:focus { background: #202d35; color: #e5edf1; outline: none; }
+.serial-tab:focus-visible { box-shadow: inset 0 0 0 2px #9bc7c4; }
 .serial-tab.active { box-shadow: inset 0 -2px #9bc7c4; background: #2a3a44; color: #f4f9fb; }
 .serial-tab.split-pane-bound { box-shadow: inset 0 -2px var(--terminal-pane-color); }
 .serial-tab.dragging { opacity: .45; }
@@ -2023,7 +2031,12 @@ onBeforeUnmount(() => {
 .serial-terminal { min-height: 0; flex: 1; overflow: hidden; background: #101418; }
 .serial-error { padding: 8px 12px; border-top: 1px solid #653b3b; background: #3a2222; color: #f3b3b3; font-size: 13px; }
 .serial-command-toolbar { padding: 7px 12px; display: flex; align-items: center; gap: 7px; border-top: 1px solid #2c3942; background: #151d23; }
-.serial-command-toolbar :deep(.n-button) { color: #dbe5ea; }
+.serial-command-toolbar :deep(.n-button) { color: #dbe5ea; background: #2c3941; border-color: #50616c; }
+.serial-command-toolbar :deep(.n-button:not(.n-button--disabled):hover) { color: #102027; background: #9bc7c4; border-color: #9bc7c4; }
+.serial-command-toolbar :deep(.n-button:not(.n-button--disabled):focus) { color: #ffffff; background: #3a4b55; border-color: #78909d; }
+.serial-command-toolbar :deep(.n-button:not(.n-button--disabled):active) { color: #102027; background: #82b2af; border-color: #aed8d5; }
+.serial-command-toolbar :deep(.n-button:focus-visible) { box-shadow: 0 0 0 2px #151d23, 0 0 0 4px #9bc7c4; }
+.serial-command-toolbar :deep(.n-button.n-button--disabled) { color: #8999a3; background: #242f36; border-color: #3d4c55; opacity: 1; }
 .serial-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
 .serial-quick-snippets::-webkit-scrollbar { display: none; }
 .serial-quick-snippets > span { align-self: center; color: #83939e; font-size: 12px; }

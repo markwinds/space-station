@@ -132,14 +132,19 @@ defineExpose({ focus: () => input.value?.focus() });
 .terminal-search-query { min-width: 120px; flex: 1; }
 .terminal-search-position { width: 104px; flex: none; }
 .terminal-search-position :deep(input) { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.terminal-search-total { color: #9baab4; font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; }
-.terminal-search-icon-button { flex: none; color: #dce5ea; }
-.terminal-search-icon-button:hover { color: #ffffff; background: #34434e; }
+.terminal-search-total { color: #586a75; font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; }
+.terminal-search-icon-button { flex: none; color: #dce5ea !important; background: transparent !important; }
+.terminal-search-icon-button:hover,
+.terminal-search-icon-button:focus { color: #ffffff !important; background: #34434e !important; }
+.terminal-search-icon-button:active { color: #ffffff !important; background: #415662 !important; }
+.terminal-search-icon-button:focus-visible { box-shadow: inset 0 0 0 1px #a9d4d1; }
 .terminal-search-toggle { width: 30px; min-width: 30px; padding: 0; border-radius: 4px; font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .terminal-search-toggle:not(.active):focus { color: #dce5ea !important; background: transparent !important; }
 .terminal-search-toggle:not(.active):focus-visible { box-shadow: inset 0 0 0 1px #6f818d; }
-.terminal-search-toggle.active { color: #ffffff; background: #2563eb; }
+.terminal-search-toggle.active,
+.terminal-search-toggle.active:hover,
 .terminal-search-toggle.active:focus { color: #ffffff !important; background: #2563eb !important; }
+.terminal-search-toggle.active:active { background: #1d4ed8 !important; }
 .terminal-search-toggle.active::after { content: ""; position: absolute; right: 5px; bottom: 3px; left: 5px; height: 1px; background: currentColor; }
 @media (max-width: 760px) {
   .terminal-search-bar { top: 6px; right: 6px; width: calc(100% - 12px); }

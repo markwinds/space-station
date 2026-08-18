@@ -54,7 +54,7 @@ export const TERMINAL_THEMES: TerminalThemeDefinition[] = [
     description: "简洁耐看的经典终端配色",
     palette: {
       background: "#101418", foreground: "#d8dee9", cursor: "#8fbcbb", cursorAccent: "#000000",
-      selectionBackground: "#d96820", selectionForeground: "#ffffff",
+      selectionBackground: "#b34713", selectionForeground: "#ffffff",
       black: "#2e3436", red: "#cc0000", green: "#4e9a06", yellow: "#c4a000", blue: "#3465a4", magenta: "#75507b", cyan: "#06989a", white: "#d3d7cf",
       brightBlack: "#555753", brightRed: "#ef2929", brightGreen: "#8ae234", brightYellow: "#fce94f", brightBlue: "#729fcf", brightMagenta: "#ad7fa8", brightCyan: "#34e2e2", brightWhite: "#eeeeec",
     },
@@ -65,7 +65,7 @@ export const TERMINAL_THEMES: TerminalThemeDefinition[] = [
     description: "沉稳青灰，优化 ANSI 配色",
     palette: {
       background: "#101418", foreground: "#d8dee9", cursor: "#8fbcbb", cursorAccent: "#101418",
-      selectionBackground: "#d96820", selectionForeground: "#ffffff",
+      selectionBackground: "#b34713", selectionForeground: "#ffffff",
       black: "#1b2228", red: "#e06c75", green: "#7fbd8f", yellow: "#e5c07b", blue: "#75a7d8", magenta: "#c59bdc", cyan: "#76c7c0", white: "#d8dee9",
       brightBlack: "#5f6b74", brightRed: "#f08a95", brightGreen: "#9bd5a9", brightYellow: "#f2d294", brightBlue: "#96bfe6", brightMagenta: "#d8b4ea", brightCyan: "#9bddda", brightWhite: "#f4f8fa",
     },

@@ -2673,7 +2673,11 @@ function disposeTab(tab: TerminalTab) {
 .ssh-workspace { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); }
 .ssh-tabs { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid #27313a; background: #151a1f; overflow: hidden; }
 .ssh-tabs :deep(.n-button--secondary) { color: #e4edf2; background: #34434e; border-color: #536570; }
-.ssh-tabs :deep(.n-button--secondary:hover) { color: #101418; background: #9bc7c4; }
+.ssh-tabs :deep(.n-button--secondary:not(.n-button--disabled):hover) { color: #101418; background: #9bc7c4; border-color: #9bc7c4; }
+.ssh-tabs :deep(.n-button--secondary:not(.n-button--disabled):focus) { color: #ffffff; background: #3a4b55; border-color: #78909d; }
+.ssh-tabs :deep(.n-button--secondary:not(.n-button--disabled):active) { color: #102027; background: #82b2af; border-color: #aed8d5; }
+.ssh-tabs :deep(.n-button--secondary:focus-visible) { box-shadow: 0 0 0 2px #151a1f, 0 0 0 4px #9bc7c4; }
+.ssh-tabs :deep(.n-button--secondary.n-button--disabled) { color: #8999a3; background: #202b32; border-color: #394852; opacity: 1; }
 .ssh-tabs :deep(.ssh-icon-action) { width: 30px; min-width: 30px; height: 30px; padding: 0; }
 .ssh-tab-list { min-width: 0; display: flex; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
 .ssh-tab-list::-webkit-scrollbar, .ssh-tab-actions::-webkit-scrollbar { display: none; }
@@ -2699,6 +2703,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-sidebar-expand:focus-visible { outline: 2px solid #b9d9d7; outline-offset: 1px; }
 .ssh-mobile-more { display: none; }
 .ssh-tab { min-width: 130px; max-width: 220px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid #27313a; border-bottom: 2px solid transparent; background: transparent; color: #8997a2; cursor: pointer; }
+.ssh-tab:hover, .ssh-tab:focus { background: #202b32; color: #e5edf1; outline: none; }
+.ssh-tab:focus-visible { box-shadow: inset 0 0 0 2px #9bc7c4; }
 .ssh-tab.active { border-bottom-color: #9bc7c4; background: #2a3a44; color: #f4f9fb; }
 .ssh-tab.pinned { min-width: 112px; background: #19242a; }
 .ssh-tab.split-pane-bound { border-bottom-color: var(--terminal-pane-color); }
@@ -2724,15 +2730,22 @@ function disposeTab(tab: TerminalTab) {
 .ssh-dialog-hint { margin: -5px 0 0; color: #74838d; font-size: 12px; }
 .ssh-pane-switch { align-self: center; margin: 0 4px; padding: 2px; display: flex; border: 1px solid #2b3740; border-radius: 6px; background: #101418; }
 .ssh-pane-switch button { padding: 3px 9px; border: 0; border-radius: 4px; background: transparent; color: #7f8d99; font-size: 12px; cursor: pointer; }
+.ssh-pane-switch button:hover, .ssh-pane-switch button:focus { background: #202b32; color: #f4f9fb; outline: none; }
+.ssh-pane-switch button:focus-visible { box-shadow: inset 0 0 0 1px #9bc7c4; }
 .ssh-pane-switch button.active { background: #2b3a42; color: #dce4e9; }
 .ssh-split-trigger { display: inline-flex; }
 .ssh-search-bar { top: 47px; }
 .ssh-config-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -7px; }
 .ssh-config-actions > :deep(.n-button), .ssh-config-actions > :deep(.n-dropdown) { flex: 1 1 0; }
 .ssh-config-actions :deep(.n-button) { color: #d5dfe5; background: #26323a; border-color: #41515d; }
-.ssh-config-actions :deep(.n-button:hover) { color: #101418; background: #9bc7c4; }
+.ssh-config-actions :deep(.n-button:not(.n-button--disabled):hover) { color: #101418; background: #9bc7c4; border-color: #9bc7c4; }
+.ssh-config-actions :deep(.n-button:not(.n-button--disabled):focus) { color: #ffffff; background: #34434e; border-color: #78909d; }
+.ssh-config-actions :deep(.n-button:not(.n-button--disabled):active) { color: #102027; background: #82b2af; border-color: #aed8d5; }
+.ssh-config-actions :deep(.n-button:focus-visible) { box-shadow: 0 0 0 2px #171d22, 0 0 0 4px #9bc7c4; }
+.ssh-config-actions :deep(.n-button.n-button--disabled) { color: #8999a3; background: #202b32; border-color: #394852; opacity: 1; }
 .ssh-config-actions :deep(kbd) { margin-left: 5px; color: #91aaa9; font: 10px/1 "SFMono-Regular", Consolas, monospace; }
-.ssh-config-actions :deep(.n-button:hover kbd) { color: #26363d; }
+.ssh-config-actions :deep(.n-button:hover kbd), .ssh-config-actions :deep(.n-button:active kbd) { color: #26363d; }
+.ssh-config-actions :deep(.n-button:focus kbd) { color: #d9e5ea; }
 .ssh-config-actions input { display: none; }
 .ssh-mobile-sessions { display: none; }
 .ssh-renderer, .ssh-status-text { align-self: center; padding: 2px 6px; border: 1px solid #3c4851; border-radius: 4px; color: #8c9aa4; font: 10px/1.4 monospace; white-space: nowrap; }
@@ -2779,13 +2792,19 @@ function disposeTab(tab: TerminalTab) {
 .ssh-command-panel { padding: 7px 9px 9px; display: grid; gap: 7px; border-top: 1px solid #34414b; background: #171e23; }
 .ssh-command-toolbar { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .ssh-command-toolbar :deep(.n-button) { color: #dce6eb; border-color: #50616c; background: #2c3941; }
+.ssh-command-toolbar :deep(.n-button:not(.n-button--disabled):hover) { color: #102027; border-color: #9bc7c4; background: #9bc7c4; }
+.ssh-command-toolbar :deep(.n-button:not(.n-button--disabled):focus) { color: #ffffff; border-color: #78909d; background: #3a4b55; }
+.ssh-command-toolbar :deep(.n-button:not(.n-button--disabled):active) { color: #102027; border-color: #aed8d5; background: #82b2af; }
+.ssh-command-toolbar :deep(.n-button:focus-visible) { box-shadow: 0 0 0 2px #171e23, 0 0 0 4px #9bc7c4; }
+.ssh-command-toolbar :deep(.n-button.n-button--disabled) { color: #8999a3; border-color: #3d4c55; background: #242f36; opacity: 1; }
 .ssh-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
 .ssh-quick-snippets::-webkit-scrollbar { display: none; }
 .ssh-quick-snippets > span { align-self: center; color: #71808b; font-size: 12px; }
 .ssh-command-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: stretch; gap: 8px; }
 .ssh-command-editor :deep(textarea) { font-family: "SFMono-Regular", Consolas, monospace; }
 .ssh-command-editor :deep(.ssh-history-button) { min-width: 62px; color: #e1e9ed; background: #2c3941; border-color: #596b76; }
-.ssh-command-editor :deep(.ssh-history-button:hover) { color: #fff; background: #3a4b55; border-color: #78909d; }
+.ssh-command-editor :deep(.ssh-history-button:hover), .ssh-command-editor :deep(.ssh-history-button:focus) { color: #fff; background: #3a4b55; border-color: #78909d; }
+.ssh-command-editor :deep(.ssh-history-button:active) { color: #102027; background: #82b2af; border-color: #aed8d5; }
 .ssh-command-editor :deep(.ssh-history-button.n-button--disabled) { color: #84939c; background: #242f36; border-color: #3d4c55; opacity: 1; }
 .ssh-snippet-editor { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
 .ssh-snippet-editor > :nth-child(2) { grid-column: 1 / -1; }

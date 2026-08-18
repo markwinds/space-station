@@ -1,5 +1,8 @@
 <template>
-  <div class="web-terminal__root" :style="{ backgroundColor: effectiveTheme.background }">
+  <div
+    class="web-terminal__root"
+    :style="{ backgroundColor: effectiveTheme.background, '--terminal-gutter-foreground': effectiveTheme.foreground }"
+  >
     <div
       v-if="gutterVisible"
       class="web-terminal__gutter"
@@ -82,7 +85,7 @@ const props = withDefaults(defineProps<{
   background: "#101418",
   foreground: "#d8dee9",
   cursor: "#8fbcbb",
-  selectionBackground: "#d96820",
+  selectionBackground: "#b34713",
   searchHighlightLimit: 1000,
   autofocus: true,
   enableWebgl: true,
@@ -185,14 +188,37 @@ type SearchWorkerResponse =
   | { type: "location"; id: number; index: number; row: number; offset: number; length: number }
   | { type: "window"; id: number; locations: Array<[index: number, row: number, offset: number, length: number]> };
 
-const searchDecorations = {
-  matchBackground: "#756719",
-  matchBorder: "#e1ca4d",
-  matchOverviewRuler: "#c3ad37",
-  activeMatchBackground: "#d85d1c",
-  activeMatchBorder: "#ffe39a",
-  activeMatchColorOverviewRuler: "#f18a4f",
+const darkSearchDecorations = {
+  matchBackground: "#3e3507",
+  matchBorder: "#f0d86b",
+  matchOverviewRuler: "#d6bd4e",
+  activeMatchBackground: "#a84412",
+  activeMatchBorder: "#ffd3a8",
+  activeMatchColorOverviewRuler: "#dd6b2f",
 };
+const lightSearchDecorations = {
+  matchBackground: "#f6dc72",
+  matchBorder: "#8a6700",
+  matchOverviewRuler: "#a97900",
+  activeMatchBackground: "#f0a35d",
+  activeMatchBorder: "#8f3d00",
+  activeMatchColorOverviewRuler: "#b84d00",
+};
+
+function relativeLuminance(color: string | undefined) {
+  const match = color?.match(/^#([\da-f]{6})$/i);
+  if (!match) return 1;
+  const channels = match[1].match(/../g)?.map((value) => {
+    const channel = Number.parseInt(value, 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return channels ? 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2] : 1;
+}
+
+function searchDecorations() {
+  const textColor = effectiveTheme.value.selectionForeground ?? effectiveTheme.value.foreground;
+  return relativeLuminance(textColor) < 0.35 ? lightSearchDecorations : darkSearchDecorations;
+}
 
 let reportedColumns = 0;
 let reportedRows = 0;
@@ -417,6 +443,7 @@ function decorateMatch(row: number, stringOffset: number, textLength: number, ac
   const column = bufferColumnFromStringOffset(row, stringOffset);
   if (column < 0 || column >= instance.cols) return;
   const size = matchBufferSize(row, column, textLength);
+  const decorations = searchDecorations();
   let remaining = size;
   let decorationRow = row;
   let decorationColumn = column;
@@ -429,7 +456,7 @@ function decorateMatch(row: number, stringOffset: number, textLength: number, ac
       marker,
       x: decorationColumn,
       width,
-      backgroundColor: active ? searchDecorations.activeMatchBackground : searchDecorations.matchBackground,
+      backgroundColor: active ? decorations.activeMatchBackground : decorations.matchBackground,
       layer: "top",
     });
     target.push(marker);
@@ -690,7 +717,7 @@ function search(
     wholeWord,
     regex,
     incremental: optionsChanged ? false : incremental,
-    decorations: searchDecorations,
+    decorations: searchDecorations(),
   };
   let found = false;
   try {
@@ -1319,7 +1346,7 @@ defineExpose(terminalHandle);
   height: 100%;
   padding: 0 6px;
   overflow: hidden;
-  color: #6f7d87;
+  color: var(--terminal-gutter-foreground, #d8dee9);
   background: rgba(0, 0, 0, 0.12);
   border-right: 1px solid rgba(132, 151, 164, 0.18);
   font-variant-numeric: tabular-nums;
@@ -1334,7 +1361,7 @@ defineExpose(terminalHandle);
   gap: 1ch;
   overflow: hidden;
 }
-.web-terminal__gutter-row--wrapped { opacity: 0.62; }
+.web-terminal__gutter-row--wrapped { font-style: italic; }
 .web-terminal__line-number { display: inline-block; width: 6ch; text-align: right; }
 .web-terminal__line-time { display: inline-block; width: 8ch; text-align: left; }
 .web-terminal__mount { flex: 1 1 auto; width: 0; height: 100%; min-width: 0; min-height: 0; }
@@ -1375,7 +1402,10 @@ defineExpose(terminalHandle);
   font: 500 13px/1 system-ui, sans-serif;
 }
 .web-terminal__selection-toolbar button + button { border-left: 1px solid rgba(255, 255, 255, 0.12); }
-.web-terminal__selection-toolbar button:active { background: rgba(255, 255, 255, 0.12); }
+.web-terminal__selection-toolbar button:hover,
+.web-terminal__selection-toolbar button:focus { color: #ffffff; background: rgba(255, 255, 255, 0.14); outline: none; }
+.web-terminal__selection-toolbar button:focus-visible { box-shadow: inset 0 0 0 2px #9bc7c4; }
+.web-terminal__selection-toolbar button:active { color: #ffffff; background: rgba(255, 255, 255, 0.22); }
 
 @media (max-width: 760px) {
   .web-terminal__mount :deep(.xterm),

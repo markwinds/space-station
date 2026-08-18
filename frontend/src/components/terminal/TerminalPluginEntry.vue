@@ -1,7 +1,7 @@
 <template>
   <n-popover trigger="click" placement="bottom-end" :show-arrow="false" @update:show="handleShow">
     <template #trigger>
-      <n-button secondary size="tiny" :loading="loading" aria-label="查看当前终端插件">
+      <n-button class="terminal-plugin-trigger" secondary size="tiny" :loading="loading" aria-label="查看当前终端插件">
         <template #icon><n-icon><ExtensionPuzzleOutline /></n-icon></template>
         插件 <span class="terminal-plugin-count">{{ plugins.length }}</span>
       </n-button>
@@ -81,6 +81,12 @@ watch(() => [props.transport, props.target], () => void refresh(), { immediate: 
 </script>
 
 <style scoped>
+.terminal-plugin-trigger { color: #d8e1e6; background: #293842; border-color: #465965; }
+.terminal-plugin-trigger:not(.n-button--disabled):hover { color: #102027; background: #8fbfbc; border-color: #8fbfbc; }
+.terminal-plugin-trigger:not(.n-button--disabled):focus { color: #ffffff; background: #34434e; border-color: #78909d; }
+.terminal-plugin-trigger:not(.n-button--disabled):active { color: #102027; background: #78aaa7; border-color: #9bc7c4; }
+.terminal-plugin-trigger:focus-visible { box-shadow: 0 0 0 2px #151a1f, 0 0 0 4px #9bc7c4; }
+.terminal-plugin-trigger.n-button--disabled { color: #8999a3; background: #202b32; border-color: #394852; opacity: 1; }
 .terminal-plugin-popover { width: min(320px, calc(100vw - 40px)); display: grid; gap: 10px; }
 .terminal-plugin-count { min-width: 16px; height: 16px; padding: 0 4px; display: inline-grid; place-items: center; border-radius: 999px; background: rgba(255, 255, 255, .12); font-size: 10px; line-height: 1; }
 .terminal-plugin-popover header { min-width: 0; display: grid; gap: 2px; }

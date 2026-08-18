@@ -115,7 +115,8 @@ defineEmits<{
     background: #3b625f;
     color: #f3ffff;
   }
-  button:disabled { opacity: .4; }
+  button:focus-visible { outline: 2px solid #a9d4d1; outline-offset: 1px; }
+  button:disabled { border-color: #394852; background: #202b32; color: #8999a3; opacity: 1; }
   .terminal-special-keys__keyboard { min-width: 48px; color: #9fc9c6; }
 }
 </style>

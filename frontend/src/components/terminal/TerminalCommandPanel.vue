@@ -93,13 +93,21 @@ function scrollQuickSnippets(event: WheelEvent) {
 .terminal-command-toolbar { min-width: 0; min-height: 46px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; }
 .terminal-command-toolbar :deep(.n-button) { color: #dce6eb; border-color: #50616c; background: #2c3941; }
 .terminal-command-toolbar :deep(.n-button) { min-height: 32px; }
-.terminal-command-toolbar :deep(.terminal-command-toggle.active) { border-color: #74aaa6; background: #31504f; color: #efffff; }
+.terminal-command-toolbar :deep(.n-button:not(.n-button--disabled):hover) { color: #102027; border-color: #9bc7c4; background: #9bc7c4; }
+.terminal-command-toolbar :deep(.n-button:not(.n-button--disabled):focus) { color: #ffffff; border-color: #78909d; background: #3a4b55; }
+.terminal-command-toolbar :deep(.n-button:not(.n-button--disabled):active) { color: #102027; border-color: #aed8d5; background: #82b2af; }
+.terminal-command-toolbar :deep(.n-button:focus-visible) { box-shadow: 0 0 0 2px #171e23, 0 0 0 4px #9bc7c4; }
+.terminal-command-toolbar :deep(.n-button.n-button--disabled) { color: #8999a3; border-color: #3d4c55; background: #242f36; opacity: 1; }
+.terminal-command-toolbar :deep(.terminal-command-toggle.active),
+.terminal-command-toolbar :deep(.terminal-command-toggle.active:hover),
+.terminal-command-toolbar :deep(.terminal-command-toggle.active:focus) { border-color: #74aaa6; background: #31504f; color: #efffff; }
+.terminal-command-toolbar :deep(.terminal-command-toggle.active:active) { border-color: #9bc7c4; background: #3b625f; color: #ffffff; }
 .terminal-quick-snippets { min-width: 0; flex: 1; display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
 .terminal-quick-snippets::-webkit-scrollbar { display: none; }
 .terminal-quick-snippets > span { align-self: center; color: #83939e; font-size: 12px; }
 .terminal-quick-snippets :deep(.terminal-snippet-chip) { flex: 0 0 auto; max-width: 180px; }
 .terminal-quick-snippets :deep(.terminal-snippet-chip .n-button__content) { min-width: 0; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.terminal-quick-snippets :deep(.terminal-snippet-chip--run) { border-color: #6c6045; color: #ecd08e; }
+.terminal-quick-snippets :deep(.terminal-snippet-chip--run:not(:hover):not(:focus):not(:active)) { border-color: #6c6045; color: #ecd08e; }
 .terminal-command-composer { padding: 0 9px 9px; }
 .terminal-command-composer :deep(.n-input),
 .terminal-command-composer :deep(.n-button),
