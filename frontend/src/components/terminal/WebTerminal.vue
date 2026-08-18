@@ -160,7 +160,12 @@ let protectUserSelection = false;
 let userSelectionPointerActive = false;
 let userSelectionEventActive = false;
 let restoringUserSelection = false;
+let searchSelectionRestoreTimer = 0;
 let protectedSelection: { startX: number; startY: number; endX: number; endY: number } | undefined;
+
+// Leave enough time for xterm's second click to turn an empty first-click
+// selection into a word selection before restoring the active search match.
+const searchSelectionRestoreDelay = 600;
 
 type BufferType = "normal" | "alternate";
 interface LineTimestamp {
@@ -471,7 +476,15 @@ function guardAutomaticSearchRefresh(addon: SearchAddon) {
   };
 }
 
+function cancelSearchSelectionRestore() {
+  window.clearTimeout(searchSelectionRestoreTimer);
+  searchSelectionRestoreTimer = 0;
+}
+
 function beginUserSelection(instance: Terminal) {
+  // A second press must be allowed to complete xterm's double-click word
+  // selection before an empty first press can navigate back to the match.
+  cancelSearchSelectionRestore();
   protectUserSelection = true;
   userSelectionPointerActive = true;
   pendingJumpIndex = undefined;
@@ -496,21 +509,27 @@ function finishUserSelection() {
     && (protectedSelection.startX !== protectedSelection.endX || protectedSelection.startY !== protectedSelection.endY);
   if (!hasSelection && currentSearchTerm) {
     const restoreIndex = currentSearchIndex;
-    allowSearchSelection();
-    if (restoreIndex < 0 || !jumpToSearchIndex(restoreIndex)) {
-      search(
-        currentSearchTerm,
-        true,
-        false,
-        currentSearchCaseSensitive,
-        currentSearchWholeWord,
-        currentSearchRegex,
-      );
-    }
+    const restoreTerm = currentSearchTerm;
+    searchSelectionRestoreTimer = window.setTimeout(() => {
+      searchSelectionRestoreTimer = 0;
+      if (userSelectionPointerActive || currentSearchTerm !== restoreTerm || terminal?.hasSelection()) return;
+      allowSearchSelection();
+      if (restoreIndex < 0 || !jumpToSearchIndex(restoreIndex)) {
+        search(
+          restoreTerm,
+          true,
+          false,
+          currentSearchCaseSensitive,
+          currentSearchWholeWord,
+          currentSearchRegex,
+        );
+      }
+    }, searchSelectionRestoreDelay);
   }
 }
 
 function allowSearchSelection() {
+  cancelSearchSelectionRestore();
   protectUserSelection = false;
   userSelectionPointerActive = false;
   userSelectionEventActive = false;
@@ -704,6 +723,7 @@ function jumpToSearchIndex(index: number) {
 }
 
 function clearSearch() {
+  cancelSearchSelectionRestore();
   window.clearTimeout(searchCountTimer);
   searchCountRequestId += 1;
   currentSearchTerm = "";
@@ -1267,6 +1287,7 @@ onBeforeUnmount(() => {
   window.cancelAnimationFrame(appearanceFrame);
   window.cancelAnimationFrame(gutterFrame);
   window.clearTimeout(searchCountTimer);
+  cancelSearchSelectionRestore();
   window.clearTimeout(mobileCopyLabelTimer);
   searchCountRequestId += 1;
   searchWorker?.terminate();
