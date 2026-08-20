@@ -2044,6 +2044,7 @@ function handleTabDrop(event: DragEvent, targetId: string) {
     ...tabs.value.filter((tab) => tab.pinned),
     ...tabs.value.filter((tab) => !tab.pinned),
   ];
+  activateTab(sourceId);
   finishTabDrag();
 }
 
