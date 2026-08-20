@@ -263,8 +263,26 @@ async function getPshToken(challenge) {
   } catch (_) {
     throw new Error("PSH 服务返回了无效 JSON");
   }
-  const token = typeof payload.data === "string" ? payload.data.replace(/\r?\n/g, "") : "";
-  if (token.length !== 172) throw new Error("PSH 服务返回的口令格式无效");
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("PSH 服务返回的 JSON 结构无效");
+  }
+  const responseCode =
+    typeof payload.code === "string" || typeof payload.code === "number" ? String(payload.code) : "<missing>";
+  if (responseCode !== "000") {
+    const responseMessage =
+      typeof payload.msg === "string" ? payload.msg.replace(/[\r\n]+/g, " ").slice(0, 200) : "";
+    throw new Error(
+      `PSH 服务返回业务错误: code=${responseCode}${responseMessage ? ` msg=${responseMessage}` : ""}`,
+    );
+  }
+  if (typeof payload.data !== "string") {
+    throw new Error(`PSH 服务返回的口令类型无效: type=${typeof payload.data}`);
+  }
+  const token = payload.data.replace(/\s+/g, "");
+  const isBase64 = /^[A-Za-z0-9+/]+={0,2}$/.test(token);
+  if (token.length < 128 || token.length > 2048 || token.length % 4 !== 0 || !isBase64) {
+    throw new Error(`PSH 服务返回的口令格式无效: length=${token.length}`);
+  }
   tokenCache.set(challenge, token);
   while (tokenCache.size > Math.max(1, CONFIG.tokenCacheEntries)) {
     tokenCache.delete(tokenCache.keys().next().value);
