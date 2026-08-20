@@ -1948,7 +1948,7 @@ onBeforeUnmount(() => {
 .serial-field-heading :deep(.n-button:not(.n-button--disabled):focus), .serial-tab-actions > :deep(.n-button:not(.n-button--disabled):focus) { color: #ffffff; background: #34434e; border-color: #78909d; }
 .serial-field-heading :deep(.n-button:not(.n-button--disabled):active), .serial-tab-actions > :deep(.n-button:not(.n-button--disabled):active) { color: #102027; background: #78aaa7; border-color: #9bc7c4; }
 .serial-field-heading :deep(.n-button:focus-visible), .serial-tab-actions > :deep(.n-button:focus-visible) { box-shadow: 0 0 0 2px #151d23, 0 0 0 4px #9bc7c4; }
-.serial-field-heading :deep(.n-button.n-button--disabled), .serial-tab-actions > :deep(.n-button.n-button--disabled) { color: #8999a3; background: #202b32; border-color: #394852; opacity: 1; }
+.serial-field-heading :deep(.n-button.n-button--disabled), .serial-tab-actions :deep(.n-button.n-button--disabled) { color: #8999a3; background: #202b32; border-color: #394852; opacity: 1; }
 .serial-field-heading :deep(.serial-refresh-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
 .serial-hint { margin: -4px 0 0; font-size: 12px; line-height: 1.55; }
 .serial-divider { height: 1px; background: #2a3841; }
