@@ -440,6 +440,7 @@ import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 import { useTerminalSplit } from "../terminal/useTerminalSplit";
+import { terminalSplitMenuOptions } from "../terminal/terminalSplitMenu";
 import {
   persistCommandSnippets,
   useCommandSnippets,
@@ -777,17 +778,10 @@ const selectedPortAvailable = computed(() => source.value === "browser"
   : source.value === "shared" ? Boolean(sharedPortId.value) : Boolean(serverPortId.value));
 const activeView = computed(() => views.find((view) => view.id === activeViewId.value));
 const activeSession = computed(() => activeView.value ? sessions.get(activeView.value.sessionKey) : undefined);
-const terminalSplitOptions = computed(() => [
-  { label: "当前窗格左右分屏", key: "columns", disabled: !terminalSplit.canSplit.value },
-  { label: "当前窗格上下分屏", key: "rows", disabled: !terminalSplit.canSplit.value },
-  ...(terminalSplit.isSplit.value
-    ? [
-        { type: "divider" as const, key: "split-divider" },
-        { label: "关闭当前窗格", key: "close-pane" },
-        { label: "退出全部分屏", key: "close-all" },
-      ]
-    : []),
-]);
+const terminalSplitOptions = computed(() => terminalSplitMenuOptions(
+  terminalSplit.canSplit.value,
+  terminalSplit.isSplit.value,
+));
 const activePluginContext = computed(() => {
   const session = activeSession.value;
   if (!session) return { transport: undefined, target: undefined, hint: "当前没有打开终端。" };

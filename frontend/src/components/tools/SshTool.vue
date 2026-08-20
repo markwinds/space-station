@@ -720,6 +720,7 @@ import { attachTerminalClipboard } from "../terminal/terminalClipboard";
 import { describeTerminalClipboardError, useTerminalClipboardPermission } from "../terminal/useTerminalClipboardPermission";
 import { useMobileVisualViewport } from "../terminal/useMobileVisualViewport";
 import { useTerminalSplit } from "../terminal/useTerminalSplit";
+import { terminalSplitMenuOptions } from "../terminal/terminalSplitMenu";
 import {
   defaultTerminalPreferences,
   loadTerminalPreferences,
@@ -1022,17 +1023,10 @@ const hostSections = computed(() => {
   return sections;
 });
 const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeTabId.value));
-const terminalSplitOptions = computed(() => [
-  { label: "当前窗格左右分屏", key: "columns", disabled: !terminalSplit.canSplit.value },
-  { label: "当前窗格上下分屏", key: "rows", disabled: !terminalSplit.canSplit.value },
-  ...(terminalSplit.isSplit.value
-    ? [
-        { type: "divider" as const, key: "split-divider" },
-        { label: "关闭当前窗格", key: "close-pane" },
-        { label: "退出全部分屏", key: "close-all" },
-      ]
-    : []),
-]);
+const terminalSplitOptions = computed(() => terminalSplitMenuOptions(
+  terminalSplit.canSplit.value,
+  terminalSplit.isSplit.value,
+));
 const jumpHostOptions = computed(() => hosts.value
   .filter((host) => !isTelnet(host) && host.id !== editingId.value && !host.jumpHostId)
   .map((host) => ({ label: `${host.name} (${host.username}@${host.host})`, value: host.id })));
