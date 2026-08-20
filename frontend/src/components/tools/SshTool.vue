@@ -2025,19 +2025,26 @@ function handleTabListDragOver(event: DragEvent) {
 function handleTabDrop(event: DragEvent, targetId: string) {
   const sourceId = draggedTabId.value || event.dataTransfer?.getData("text/plain") || "";
   if (!sourceId || sourceId === targetId) return;
-  const sourceIndex = tabs.value.findIndex((tab) => tab.id === sourceId);
-  if (sourceIndex < 0) return;
+  const currentTabs = tabs.value;
+  const reorderedTabs = [...currentTabs];
+  const sourceIndex = reorderedTabs.findIndex((tab) => tab.id === sourceId);
+  if (sourceIndex < 0 || !reorderedTabs.some((tab) => tab.id === targetId)) return;
   const targetElement = event.currentTarget as HTMLElement;
   const targetBounds = targetElement.getBoundingClientRect();
   const insertAfter = event.clientX > targetBounds.left + targetBounds.width / 2;
-  const [sourceTab] = tabs.value.splice(sourceIndex, 1);
-  let targetIndex = tabs.value.findIndex((tab) => tab.id === targetId);
+  const [sourceTab] = reorderedTabs.splice(sourceIndex, 1);
+  let targetIndex = reorderedTabs.findIndex((tab) => tab.id === targetId);
   if (insertAfter) targetIndex += 1;
-  tabs.value.splice(Math.max(0, targetIndex), 0, sourceTab);
-  tabs.value = [
-    ...tabs.value.filter((tab) => tab.pinned),
-    ...tabs.value.filter((tab) => !tab.pinned),
+  reorderedTabs.splice(Math.max(0, targetIndex), 0, sourceTab);
+  const nextTabs = [
+    ...reorderedTabs.filter((tab) => tab.pinned),
+    ...reorderedTabs.filter((tab) => !tab.pinned),
   ];
+  if (nextTabs.every((tab, index) => tab.id === currentTabs[index]?.id)) {
+    finishTabDrag();
+    return;
+  }
+  tabs.value = nextTabs;
   activateTab(sourceId);
   finishTabDrag();
 }
