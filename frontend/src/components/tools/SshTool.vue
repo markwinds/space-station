@@ -34,6 +34,36 @@
       </div>
 
       <div class="ssh-config-actions">
+        <div class="ssh-host-sort" role="group" aria-label="主机排序方式">
+          <button
+            type="button"
+            :class="{ active: hostSort.mode === 'added' }"
+            :aria-pressed="hostSort.mode === 'added'"
+            aria-label="按添加时间排序"
+            title="按添加时间排序"
+            @click="setHostSortMode('added')"
+          >
+            <n-icon size="16"><TimeOutline /></n-icon>
+          </button>
+          <button
+            type="button"
+            class="ssh-host-sort-alpha"
+            :class="{ active: hostSort.mode === 'name' }"
+            :aria-pressed="hostSort.mode === 'name'"
+            aria-label="按名称排序"
+            title="按名称排序"
+            @click="setHostSortMode('name')"
+          >A–Z</button>
+          <button
+            type="button"
+            class="ssh-host-sort-direction"
+            :aria-label="hostSortToggleLabel"
+            :title="hostSortToggleLabel"
+            @click="toggleHostSortDirection"
+          >
+            <n-icon size="15"><component :is="hostSortDirection === 'asc' ? ArrowUpOutline : ArrowDownOutline" /></n-icon>
+          </button>
+        </div>
         <n-dropdown trigger="click" :options="configurationActionOptions" @select="handleConfigurationAction">
           <n-button secondary size="small">管理</n-button>
         </n-dropdown>
@@ -381,17 +411,18 @@
       :style="dialogStyle"
     >
       <n-form label-placement="top">
-        <n-form-item label="连接协议">
+        <p class="ssh-form-required-hint"><span>*</span> 为必填项；主机名称可留空，将自动使用主机地址。</p>
+        <n-form-item label="连接协议" required>
           <n-select v-model:value="hostDraft.protocol" :options="hostProtocolOptions" @update:value="handleHostProtocolChange" />
         </n-form-item>
         <div class="ssh-form-grid">
-          <n-form-item label="名称"><n-input v-model:value="hostDraft.name" placeholder="生产服务器" /></n-form-item>
-          <n-form-item label="分组"><n-input v-model:value="hostDraft.group" placeholder="可选" /></n-form-item>
+          <n-form-item label="主机名称（可选）"><n-input v-model:value="hostDraft.name" placeholder="留空则使用主机地址" /></n-form-item>
+          <n-form-item label="分组（可选）"><n-input v-model:value="hostDraft.group" placeholder="例如：生产环境" /></n-form-item>
         </div>
-        <n-form-item label="主机"><n-input v-model:value="hostDraft.host" placeholder="example.com 或 IP" /></n-form-item>
+        <n-form-item label="主机地址" required><n-input v-model:value="hostDraft.host" placeholder="example.com 或 IP" /></n-form-item>
         <div class="ssh-form-grid ssh-form-grid--connection">
-          <n-form-item label="端口"><n-input-number v-model:value="hostDraft.port" :min="1" :max="65535" /></n-form-item>
-          <n-form-item :label="isTelnet(hostDraft) ? '用户名（可选）' : '用户名'"><n-input v-model:value="hostDraft.username" :placeholder="isTelnet(hostDraft) ? '用于自动响应登录提示' : 'root'" /></n-form-item>
+          <n-form-item label="端口" required><n-input-number v-model:value="hostDraft.port" :min="1" :max="65535" /></n-form-item>
+          <n-form-item :label="isTelnet(hostDraft) ? '用户名（可选）' : '用户名'" :required="!isTelnet(hostDraft)"><n-input v-model:value="hostDraft.username" :placeholder="isTelnet(hostDraft) ? '用于自动响应登录提示' : 'root'" /></n-form-item>
         </div>
         <n-alert v-if="isTelnet(hostDraft)" type="warning" :show-icon="true">
           Telnet 不加密用户名、密码和终端内容。仅建议在可信内网或受保护的专用网络中使用。
@@ -567,7 +598,7 @@
       </div>
     </n-modal>
 
-    <n-modal v-model:show="showRecordingOptions" preset="card" title="开始会话录制" class="ssh-dialog" :style="dialogStyle">
+    <n-modal v-model:show="showRecordingOptions" preset="card" title="开始会话录制" class="ssh-dialog" :style="dialogStyle" @after-leave="focusRecordingTarget">
       <div class="ssh-recording-options">
         <n-checkbox v-model:checked="recordingDraft.stripAnsi">过滤 ANSI 颜色和终端控制字符（推荐）</n-checkbox>
         <n-checkbox v-model:checked="recordingDraft.timestamps">为每行添加时间戳</n-checkbox>
@@ -662,7 +693,7 @@
 
 <script setup lang="ts">
 import type { Terminal } from "@xterm/xterm";
-import { AddOutline, ChevronBackOutline, ChevronDownOutline, CloseOutline, CreateOutline, GridOutline, MenuOutline, RefreshOutline, Star, StarOutline } from "@vicons/ionicons5";
+import { AddOutline, ArrowDownOutline, ArrowUpOutline, ChevronBackOutline, ChevronDownOutline, CloseOutline, CreateOutline, GridOutline, MenuOutline, RefreshOutline, Star, StarOutline, TimeOutline } from "@vicons/ionicons5";
 import {
   NAlert,
   NButton,
@@ -739,6 +770,13 @@ import type {
 
 type ConnectionStatus = "connecting" | "reconnecting" | "authenticating" | "connected" | "closed" | "error";
 type HostView = "all" | "favorites" | "recent";
+type HostSortMode = "added" | "name";
+type HostSortDirection = "asc" | "desc";
+interface HostSortConfiguration {
+  mode: HostSortMode;
+  addedDirection: HostSortDirection;
+  nameDirection: HostSortDirection;
+}
 type TerminalModifier = "ctrl" | "alt";
 type TerminalSpecialKey =
   | "escape"
@@ -894,6 +932,12 @@ const hostView = ref<HostView>((() => {
   const stored = localStorage.getItem("space-station:ssh-host-view");
   return stored === "favorites" || stored === "recent" ? stored : "all";
 })());
+const hostSort = reactive<HostSortConfiguration>(loadHostSortConfiguration());
+const hostSortDirection = computed(() => hostSort.mode === "name" ? hostSort.nameDirection : hostSort.addedDirection);
+const hostSortToggleLabel = computed(() => {
+  if (hostSort.mode === "name") return hostSort.nameDirection === "asc" ? "切换为名称倒序（Z 到 A）" : "切换为名称正序（A 到 Z）";
+  return hostSort.addedDirection === "asc" ? "切换为添加时间倒序（最新优先）" : "切换为添加时间正序（最早优先）";
+});
 const showPortForwards = ref(false);
 const portForwards = ref<SshPortForward[]>([]);
 const forwardDraft = reactive({ hostId: "", localPort: 8080, remoteHost: "127.0.0.1", remotePort: 80 });
@@ -967,6 +1011,37 @@ function setHostView(value: HostView) {
   localStorage.setItem("space-station:ssh-host-view", value);
 }
 
+function loadHostSortConfiguration(): HostSortConfiguration {
+  const stored = localStorage.getItem("space-station:ssh-host-sort");
+  if (stored === "name") return { mode: "name", addedDirection: "desc", nameDirection: "asc" };
+  if (stored === "added" || !stored) return { mode: "added", addedDirection: "desc", nameDirection: "asc" };
+  try {
+    const value = JSON.parse(stored) as Partial<HostSortConfiguration>;
+    return {
+      mode: value.mode === "name" ? "name" : "added",
+      addedDirection: value.addedDirection === "asc" ? "asc" : "desc",
+      nameDirection: value.nameDirection === "desc" ? "desc" : "asc",
+    };
+  } catch {
+    return { mode: "added", addedDirection: "desc", nameDirection: "asc" };
+  }
+}
+
+function persistHostSortConfiguration() {
+  localStorage.setItem("space-station:ssh-host-sort", JSON.stringify(hostSort));
+}
+
+function setHostSortMode(mode: HostSortMode) {
+  hostSort.mode = mode;
+  persistHostSortConfiguration();
+}
+
+function toggleHostSortDirection() {
+  if (hostSort.mode === "name") hostSort.nameDirection = hostSort.nameDirection === "asc" ? "desc" : "asc";
+  else hostSort.addedDirection = hostSort.addedDirection === "asc" ? "desc" : "asc";
+  persistHostSortConfiguration();
+}
+
 function handleConfigurationAction(key: string | number) {
   if (key === "port-forwards") void openPortForwards();
   else if (key === "terminal-settings") openTerminalSettings();
@@ -974,11 +1049,22 @@ function handleConfigurationAction(key: string | number) {
   else if (key === "import") configurationInput.value?.click();
 }
 
-const favoriteHosts = computed(() => hosts.value.filter((host) => host.favorite));
-const recentHosts = computed(() => hosts.value
-  .filter((host) => host.lastUsedAt)
-  .slice()
-  .sort((left, right) => Date.parse(right.lastUsedAt || "") - Date.parse(left.lastUsedAt || "")));
+function sortHostList(source: SshHost[], recent = false) {
+  const result = source.slice();
+  if (hostSort.mode === "name") {
+    const direction = hostSort.nameDirection === "asc" ? 1 : -1;
+    return result.sort((left, right) => direction * (left.name.localeCompare(right.name, "zh-CN", { numeric: true, sensitivity: "base" })
+      || left.host.localeCompare(right.host, "zh-CN", { numeric: true, sensitivity: "base" })));
+  }
+  if (recent) {
+    const direction = hostSort.addedDirection === "asc" ? 1 : -1;
+    return result.sort((left, right) => direction * (Date.parse(left.lastUsedAt || "") - Date.parse(right.lastUsedAt || "")));
+  }
+  return hostSort.addedDirection === "asc" ? result.reverse() : result;
+}
+
+const favoriteHosts = computed(() => sortHostList(hosts.value.filter((host) => host.favorite)));
+const recentHosts = computed(() => sortHostList(hosts.value.filter((host) => host.lastUsedAt), true));
 const hostViewOptions = computed(() => [
   { label: "全部", value: "all" as const, count: hosts.value.length },
   { label: "收藏", value: "favorites" as const, count: favoriteHosts.value.length },
@@ -992,7 +1078,7 @@ const hostEmptyText = computed(() => {
 });
 const filteredHosts = computed(() => {
   const query = keyword.value.trim().toLowerCase();
-  const source = hostView.value === "favorites" ? favoriteHosts.value : hostView.value === "recent" ? recentHosts.value : hosts.value;
+  const source = hostView.value === "favorites" ? favoriteHosts.value : hostView.value === "recent" ? recentHosts.value : sortHostList(hosts.value);
   if (!query) return source;
   return source.filter((host) => [host.name, host.host, host.username, host.group || "", jumpHostName(host)].some((part) => part.toLowerCase().includes(query)));
 });
@@ -1210,8 +1296,9 @@ function openHostEditor(host?: SshHost) {
 }
 
 async function saveHost() {
-  if (!hostDraft.name.trim() || !hostDraft.host.trim() || (!isTelnet(hostDraft) && !hostDraft.username.trim())) {
-    message.warning(isTelnet(hostDraft) ? "名称和主机不能为空" : "名称、主机和用户名不能为空");
+  const hostAddress = hostDraft.host.trim();
+  if (!hostAddress || (!isTelnet(hostDraft) && !hostDraft.username.trim())) {
+    message.warning(isTelnet(hostDraft) ? "请填写主机地址" : "请填写主机地址和用户名");
     return;
   }
   saving.value = true;
@@ -1220,8 +1307,8 @@ async function saveHost() {
       ...hostDraft,
       protocol: isTelnet(hostDraft) ? "telnet" : "ssh",
       id: editingId.value || createId(),
-      name: hostDraft.name.trim(),
-      host: hostDraft.host.trim(),
+      name: hostDraft.name.trim() || hostAddress,
+      host: hostAddress,
       username: hostDraft.username.trim(),
       group: hostDraft.group.trim(),
       port: Math.max(1, Math.min(65535, Number(hostDraft.port) || (isTelnet(hostDraft) ? 23 : 22))),
@@ -1229,7 +1316,7 @@ async function saveHost() {
       jumpHostId: isTelnet(hostDraft) ? "" : hostDraft.jumpHostId || "",
       hostKeySha256: isTelnet(hostDraft) ? "" : hostDraft.hostKeySha256,
     };
-    const next = editingId.value ? hosts.value.map((host) => (host.id === editingId.value ? value : host)) : [...hosts.value, value];
+    const next = editingId.value ? hosts.value.map((host) => (host.id === editingId.value ? value : host)) : [value, ...hosts.value];
     if (value.jumpHostId === value.id) {
       message.warning("不能将当前主机设置为自己的跳板机");
       return;
@@ -1992,6 +2079,7 @@ function handleTerminalSplitAction(key: string | number) {
   else if (key === "close-all") terminalSplit.closeSplit();
   else if (key === "columns" || key === "rows") terminalSplit.split(key);
   activePane.value = "terminal";
+  focusTerminalAfterUi();
 }
 
 function finishTerminalSplitResize(event: PointerEvent) {
@@ -2119,6 +2207,7 @@ function reconnectTab(tab: TerminalTab) {
   tab.intentionalClose = false;
   tab.socket = socket;
   bindTerminalSocket(tab, socket);
+  focusTerminalAfterUi(tab);
 }
 
 function searchTerminal(previous: boolean, incremental = false) {
@@ -2239,6 +2328,7 @@ function toggleRecording(tab: TerminalTab) {
   tab.recordingSizeBytes = 0;
   tab.recordingLimitReached = false;
   message.success("录制已停止并下载");
+  focusTerminalAfterUi(tab);
 }
 
 function startRecording() {
@@ -2253,8 +2343,25 @@ function startRecording() {
   tab.recordingTimestamps = recordingDraft.timestamps;
   tab.recordingSizeBytes = 0;
   tab.recordingLimitReached = false;
+  (document.activeElement as HTMLElement | null)?.blur();
   showRecordingOptions.value = false;
   message.success("会话录制已开始");
+  focusTerminalAfterUi(tab);
+}
+
+function focusRecordingTarget() {
+  focusTerminalAfterUi(tabs.value.find((item) => item.id === recordingTargetId.value));
+}
+
+function focusTerminalAfterUi(tab = activeTab.value) {
+  if (!tab) return;
+  const tabId = tab.id;
+  void nextTick(() => {
+    window.requestAnimationFrame(() => {
+      if (activePane.value !== "terminal" || showRecordingOptions.value) return;
+      tabs.value.find((item) => item.id === tabId)?.terminal?.focus();
+    });
+  });
 }
 
 function stripAnsi(value: string) {
@@ -2468,6 +2575,7 @@ function toggleQuickSnippets() {
   localStorage.setItem("ssh-show-quick-snippets", String(showQuickSnippets.value));
   nextTick(() => {
     activeTab.value?.terminalView?.fit();
+    activeTab.value?.terminal?.focus();
   });
 }
 
@@ -2475,7 +2583,10 @@ function toggleCommandComposer() {
   terminalSettings.showCommandComposer = !terminalSettings.showCommandComposer;
   terminalSettingsDraft.showCommandComposer = terminalSettings.showCommandComposer;
   saveTerminalPreferences(terminalSettings);
-  nextTick(() => activeTab.value?.terminalView?.fit());
+  nextTick(() => {
+    activeTab.value?.terminalView?.fit();
+    activeTab.value?.terminal?.focus();
+  });
 }
 
 function sendCommand(tab: TerminalTab) {
@@ -2738,7 +2849,15 @@ function disposeTab(tab: TerminalTab) {
 .ssh-split-trigger { display: inline-flex; }
 .ssh-search-bar { top: 47px; }
 .ssh-config-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -7px; }
-.ssh-config-actions > :deep(.n-button), .ssh-config-actions > :deep(.n-dropdown) { flex: 1 1 0; }
+.ssh-host-sort { height: 30px; padding: 2px; display: inline-flex; align-items: stretch; gap: 2px; border: 1px solid #41515d; border-radius: 6px; background: #1c252b; }
+.ssh-host-sort button { min-width: 28px; height: 24px; padding: 0 6px; display: grid; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #83939d; cursor: pointer; }
+.ssh-host-sort button:hover { background: #304049; color: #f0f7f9; }
+.ssh-host-sort button.active { background: #47625f; color: #f2fffe; box-shadow: inset 0 0 0 1px #70928e; }
+.ssh-host-sort button:focus-visible { outline: 2px solid #9bc7c4; outline-offset: 1px; }
+.ssh-host-sort .ssh-host-sort-alpha { min-width: 36px; font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.03em; }
+.ssh-host-sort .ssh-host-sort-direction { position: relative; margin-left: 2px; color: #b6c4cc; }
+.ssh-host-sort .ssh-host-sort-direction::before { position: absolute; top: 4px; bottom: 4px; left: -2px; width: 1px; background: #3c4a53; content: ""; }
+.ssh-config-actions > :deep(.n-button), .ssh-config-actions > :deep(.n-dropdown) { flex: 0 0 auto; }
 .ssh-config-actions :deep(.n-button) { color: #d5dfe5; background: #26323a; border-color: #41515d; }
 .ssh-config-actions :deep(.n-button:not(.n-button--disabled):hover) { color: #101418; background: #9bc7c4; border-color: #9bc7c4; }
 .ssh-config-actions :deep(.n-button:not(.n-button--disabled):focus) { color: #ffffff; background: #34434e; border-color: #78909d; }
@@ -2782,6 +2901,8 @@ function disposeTab(tab: TerminalTab) {
 .ssh-welcome-action { margin-top: 20px; }
 .ssh-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ssh-form-grid--connection { grid-template-columns: 140px 1fr; }
+.ssh-form-required-hint { margin: 0 0 14px; color: #687783; font-size: 12px; }
+.ssh-form-required-hint span { color: #d03050; font-weight: 800; }
 .ssh-dialog-actions { display: flex; align-items: center; gap: 10px; }
 .ssh-dialog-spacer { flex: 1; }
 .ssh-dialog-actions--end { justify-content: flex-end; }

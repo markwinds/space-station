@@ -239,7 +239,7 @@
               :show-composer="terminalSettings.showCommandComposer"
               :snippets="pinnedSnippets"
               label="发送框"
-              @toggle-quick="showQuickSnippets = !showQuickSnippets"
+              @toggle-quick="toggleQuickSnippets"
               @toggle-composer="toggleCommandComposer"
               @use-snippet="useSnippet(view, $event)"
             >
@@ -344,7 +344,7 @@
       </n-tabs>
     </n-modal>
 
-    <n-modal v-model:show="showRecordingOptions" preset="card" title="开始串口录制" :style="dialogStyle">
+    <n-modal v-model:show="showRecordingOptions" preset="card" title="开始串口录制" :style="dialogStyle" @after-leave="focusRecordingTarget">
       <div class="serial-recording-options">
         <n-checkbox v-model:checked="recordingDraft.stripAnsi">过滤 ANSI 颜色和控制字符</n-checkbox>
         <n-checkbox v-model:checked="recordingDraft.timestamps">为每个数据块添加时间戳</n-checkbox>
@@ -1354,6 +1354,7 @@ function handleTerminalData(view: SerialView, data: string) {
 function activateView(viewId: string) {
   activeViewId.value = viewId;
   mobileSetup.value = false;
+  focusTerminalAfterUi(views.find((view) => view.id === viewId));
 }
 
 function handleViewDragStart(event: DragEvent, viewId: string) {
@@ -1396,6 +1397,7 @@ function handleTerminalSplitAction(key: string | number) {
   if (key === "close-pane") terminalSplit.closeFocusedPane();
   else if (key === "close-all") terminalSplit.closeSplit();
   else if (key === "columns" || key === "rows") terminalSplit.split(key);
+  focusTerminalAfterUi();
 }
 
 function finishTerminalSplitResize(event: PointerEvent) {
@@ -1464,6 +1466,7 @@ function closeBrowserPluginBridge(session: SerialSession) {
 async function reconnectActive() {
   const session = activeSession.value;
   if (!session) return;
+  focusTerminalAfterUi();
   await reconnectSession(session);
 }
 
@@ -1659,7 +1662,15 @@ function saveTerminalSettings() {
 function toggleCommandComposer() {
   terminalSettings.showCommandComposer = !terminalSettings.showCommandComposer;
   saveTerminalPreferences(terminalSettings);
-  nextTick(() => activeView.value?.terminalView?.fit());
+  nextTick(() => {
+    activeView.value?.terminalView?.fit();
+    activeView.value?.terminalView?.focus();
+  });
+}
+
+function toggleQuickSnippets() {
+  showQuickSnippets.value = !showQuickSnippets.value;
+  activeView.value?.terminalView?.focus();
 }
 
 function persistSnippets() { persistCommandSnippets(snippets.value); }
@@ -1812,7 +1823,9 @@ function startRecording() {
   view.recordingTimestamps = recordingDraft.timestamps;
   view.recordingSizeBytes = 0;
   view.recordingLimitReached = false;
+  (document.activeElement as HTMLElement | null)?.blur();
   showRecordingOptions.value = false;
+  focusTerminalAfterUi(view);
 }
 
 function stopRecording(view: SerialView) {
@@ -1829,6 +1842,22 @@ function stopRecording(view: SerialView) {
   view.recordingEntries = [];
   view.recordingDecoder = undefined;
   view.recordingSizeBytes = 0;
+  focusTerminalAfterUi(view);
+}
+
+function focusRecordingTarget() {
+  focusTerminalAfterUi(views.find((view) => view.id === recordingTargetId.value));
+}
+
+function focusTerminalAfterUi(view = activeView.value) {
+  if (!view) return;
+  const viewId = view.id;
+  void nextTick(() => {
+    window.requestAnimationFrame(() => {
+      if (showRecordingOptions.value) return;
+      views.find((item) => item.id === viewId)?.terminalView?.focus();
+    });
+  });
 }
 
 function stripAnsi(value: string) {
