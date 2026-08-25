@@ -301,6 +301,7 @@
             :theme="currentTerminalTheme"
             :show-line-numbers="terminalSettings.showLineNumbers"
             :show-line-timestamps="terminalSettings.showLineTimestamps"
+            :copy-on-select="terminalSettings.copyOnSelect"
             :visible="terminalSplit.isPaneVisible(tab.id) && activePane === 'terminal'"
             :restore-buffer="tab.restoreBuffer"
             :search-highlight-limit="searchHighlightLimit"
@@ -310,6 +311,7 @@
             @renderer="updateRenderer(tab, $event)"
             @search-results="updateSearchResults(tab, $event)"
             @user-selection-start="cancelPendingSearch"
+            @copy-error="warnClipboardAccess('浏览器不允许复制终端选区，请检查站点剪贴板权限')"
           />
           <terminal-special-key-bar
             :ctrl="tab.ctrlModifier"
@@ -1589,6 +1591,11 @@ function handleTerminalReady(tab: TerminalTab, event: WebTerminalReadyEvent) {
       event.preventDefault();
       return false;
     }
+    if (key === "g" && terminalSettings.showLineNumbers) {
+      tab.terminalView?.openGotoLine();
+      event.preventDefault();
+      return false;
+    }
     if (key === "c" && terminal.hasSelection()) {
       event.preventDefault();
       const selection = terminal.getSelection();
@@ -2294,6 +2301,10 @@ function handleGlobalShortcut(event: KeyboardEvent) {
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && activeTab.value && activePane.value === "terminal") {
     event.preventDefault();
     toggleSearch();
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "g" && activeTab.value && activePane.value === "terminal" && terminalSettings.showLineNumbers) {
+    event.preventDefault();
+    event.stopPropagation();
+    activeTab.value.terminalView?.openGotoLine();
   }
 }
 

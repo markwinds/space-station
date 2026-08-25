@@ -33,6 +33,7 @@ export interface WebTerminalHandle {
     regex?: boolean,
   ): boolean;
   jumpToSearchIndex(index: number): boolean;
+  openGotoLine(): boolean;
   clearSearch(): void;
   setAppearance(options: { fontFamily?: string; fontSize?: number; lineHeight?: number; letterSpacing?: number; theme?: ITheme }): void;
   getTerminal(): Terminal | undefined;

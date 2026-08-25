@@ -5,24 +5,66 @@
   >
     <div
       v-if="gutterVisible"
+      ref="gutterElement"
       class="web-terminal__gutter"
       :style="{ fontFamily: props.fontFamily, fontSize: `${props.fontSize}px` }"
-      aria-hidden="true"
+      :aria-hidden="props.showLineNumbers ? undefined : 'true'"
+      :aria-label="props.showLineNumbers ? '终端行号' : undefined"
     >
       <div class="web-terminal__gutter-rows" :style="{ transform: `translateY(${gutterOffsetTop}px)` }">
         <div
           v-for="row in gutterRows"
           :key="row.key"
           class="web-terminal__gutter-row"
-          :class="{ 'web-terminal__gutter-row--wrapped': row.wrapped }"
+          :class="{
+            'web-terminal__gutter-row--wrapped': row.wrapped,
+            'web-terminal__gutter-row--selected': isGutterLineSelected(row.number),
+          }"
           :style="{ height: `${gutterRowHeight}px`, lineHeight: `${gutterRowHeight}px` }"
         >
-          <span v-if="props.showLineNumbers" class="web-terminal__line-number">{{ row.visible ? row.number : "" }}</span>
+          <button
+            v-if="props.showLineNumbers && row.visible"
+            class="web-terminal__line-number"
+            type="button"
+            :aria-label="`选择第 ${row.number} 行`"
+            :title="`选择第 ${row.number} 行；拖动或 Shift+单击选择多行`"
+            @pointerdown="beginGutterLineSelection($event, row.number)"
+            @keydown.enter.prevent="selectGutterLineFromKeyboard($event, row.number)"
+            @keydown.space.prevent="selectGutterLineFromKeyboard($event, row.number)"
+          >{{ row.number }}</button>
+          <span v-else-if="props.showLineNumbers" class="web-terminal__line-number" />
           <span v-if="props.showLineTimestamps" class="web-terminal__line-time">{{ row.visible ? row.timestamp : "" }}</span>
         </div>
       </div>
     </div>
     <div ref="mountElement" class="web-terminal__mount" />
+    <div
+      v-if="gotoLineOpen"
+      class="web-terminal__goto-line-backdrop"
+      @pointerdown.self="closeGotoLine"
+    >
+      <form class="web-terminal__goto-line" role="dialog" aria-label="跳转或选择指定行" @submit.prevent="submitGotoLine">
+        <label :for="gotoLineInputId">跳转或选择行</label>
+        <input
+          :id="gotoLineInputId"
+          ref="gotoLineInput"
+          v-model="gotoLineValue"
+          type="text"
+          inputmode="text"
+          autocomplete="off"
+          placeholder="例如 120 或 120-180"
+          @input="gotoLineError = ''"
+          @keydown.esc.prevent.stop="closeGotoLine"
+        />
+        <span class="web-terminal__goto-line-range">共 {{ gotoLineMax }} 行</span>
+        <span v-if="gotoLineError" class="web-terminal__goto-line-error">{{ gotoLineError }}</span>
+        <div class="web-terminal__goto-line-actions">
+          <button type="button" @click="closeGotoLine">取消</button>
+          <button type="button" @click="selectAndCopyGotoLine">选择并复制</button>
+          <button type="submit" class="primary">跳转/选择</button>
+        </div>
+      </form>
+    </div>
     <div
       v-if="mobileSelectionToolbar"
       class="web-terminal__selection-toolbar"
@@ -46,7 +88,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type IDisposable, type IMarker, type ITheme } from "@xterm/xterm";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { translateText } from "@/i18n";
 import { writeClipboard } from "@/utils/clipboard";
 import type {
@@ -74,6 +116,7 @@ const props = withDefaults(defineProps<{
   enableWebgl?: boolean;
   showLineNumbers?: boolean;
   showLineTimestamps?: boolean;
+  copyOnSelect?: boolean;
   visible?: boolean;
 }>(), {
   scrollback: 50000,
@@ -91,6 +134,7 @@ const props = withDefaults(defineProps<{
   enableWebgl: true,
   showLineNumbers: false,
   showLineTimestamps: false,
+  copyOnSelect: false,
   visible: true,
 });
 
@@ -101,9 +145,11 @@ const emit = defineEmits<{
   renderer: [renderer: TerminalRenderer];
   searchResults: [event: WebTerminalSearchResult];
   userSelectionStart: [];
+  copyError: [];
 }>();
 
 const mountElement = ref<HTMLElement>();
+const gutterElement = ref<HTMLElement>();
 const effectiveTheme = computed<ITheme>(() => {
   const theme = props.theme ?? {
     background: props.background,
@@ -130,6 +176,12 @@ const gutterOffsetTop = ref(0);
 const gutterRowHeight = ref(0);
 const mobileSelectionToolbar = ref<{ left: number; top: number }>();
 const mobileCopyLabel = ref("复制");
+const gotoLineOpen = ref(false);
+const gotoLineInputId = useId();
+const gotoLineValue = ref("");
+const gotoLineMax = ref(1);
+const gotoLineError = ref("");
+const gotoLineInput = ref<HTMLInputElement>();
 let terminal: Terminal | undefined;
 let fitAddon: FitAddon | undefined;
 let searchAddon: SearchAddon | undefined;
@@ -165,6 +217,13 @@ let userSelectionEventActive = false;
 let restoringUserSelection = false;
 let searchSelectionRestoreTimer = 0;
 let protectedSelection: { startX: number; startY: number; endX: number; endY: number } | undefined;
+let lineSelectionMode = false;
+let lineSelectionAnchor: number | undefined;
+let gutterSelectionAnchor: number | undefined;
+let gutterSelectionPointerId: number | undefined;
+let gutterSelectionPointerType = "";
+const selectedLineStart = ref<number>();
+const selectedLineEnd = ref<number>();
 
 // Leave enough time for xterm's second click to turn an empty first-click
 // selection into a word selection before restoring the active search match.
@@ -391,6 +450,232 @@ function focus() {
   if (document.hasFocus()) terminal?.focus();
 }
 
+function lastNumberedLine(instance: Terminal) {
+  const buffer = instance.buffer.active;
+  const cursorLine = buffer.baseY + buffer.cursorY;
+  for (let row = buffer.length - 1; row > cursorLine; row -= 1) {
+    const line = buffer.getLine(row);
+    if (line?.isWrapped || line?.translateToString(true)) return row + 1;
+  }
+  return Math.max(1, cursorLine + 1);
+}
+
+function isGutterLineSelected(line: number) {
+  return lineSelectionMode
+    && selectedLineStart.value !== undefined
+    && selectedLineEnd.value !== undefined
+    && line >= Math.min(selectedLineStart.value, selectedLineEnd.value)
+    && line <= Math.max(selectedLineStart.value, selectedLineEnd.value);
+}
+
+function updateSelectedLineRange(instance: Terminal) {
+  if (!lineSelectionMode) return;
+  const range = instance.getSelectionPosition();
+  if (!range) {
+    selectedLineStart.value = undefined;
+    selectedLineEnd.value = undefined;
+    return;
+  }
+  selectedLineStart.value = range.start.y + 1;
+  selectedLineEnd.value = range.end.y + 1;
+}
+
+function applyLineSelection(startLine: number, endLine: number, scroll = true, begin = true) {
+  const instance = terminal;
+  if (!instance) return false;
+  const max = lastNumberedLine(instance);
+  const start = Math.max(1, Math.min(max, Math.trunc(startLine)));
+  const end = Math.max(1, Math.min(max, Math.trunc(endLine)));
+  const first = Math.min(start, end);
+  const last = Math.max(start, end);
+  if (begin) beginUserSelection(instance, false);
+  lineSelectionMode = true;
+  selectedLineStart.value = first;
+  selectedLineEnd.value = last;
+  userSelectionEventActive = true;
+  try {
+    instance.selectLines(first - 1, last - 1);
+    captureUserSelection(instance);
+  } finally {
+    userSelectionEventActive = false;
+  }
+  if (scroll) {
+    const target = last - first + 1 > instance.rows
+      ? first - 1
+      : Math.floor((first + last) / 2) - 1 - Math.floor(instance.rows / 2);
+    instance.scrollToLine(Math.max(0, target));
+    scheduleGutterUpdate();
+  }
+  return true;
+}
+
+function parseGotoLineValue(instance: Terminal) {
+  gotoLineMax.value = lastNumberedLine(instance);
+  const match = gotoLineValue.value.match(/^\s*(\d+)\s*(?:[-–—:]\s*(\d+)\s*)?$/u);
+  if (!match) {
+    gotoLineError.value = "请输入单个行号或范围，例如 120-180";
+    return undefined;
+  }
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : start;
+  if (start < 1 || start > gotoLineMax.value || end < 1 || end > gotoLineMax.value) {
+    gotoLineError.value = `请输入 1 到 ${gotoLineMax.value} 之间的行号`;
+    return undefined;
+  }
+  return { start, end, range: match[2] !== undefined };
+}
+
+function showMobileSelectionToolbarAt(clientX: number, clientY: number) {
+  const element = mountElement.value;
+  if (!element) return;
+  const bounds = element.getBoundingClientRect();
+  const rootBounds = element.parentElement?.getBoundingClientRect() ?? bounds;
+  const left = Math.max(58, Math.min(rootBounds.width - 58, clientX - rootBounds.left));
+  const pointY = clientY - bounds.top;
+  const top = pointY >= 58 ? pointY - 48 : Math.min(bounds.height - 40, pointY + 24);
+  mobileSelectionToolbar.value = { left, top: Math.max(8, top) };
+}
+
+async function copyCurrentSelection() {
+  const selection = terminal?.getSelection() ?? "";
+  if (!selection) return undefined;
+  return writeClipboard(selection);
+}
+
+function gutterLineFromPoint(clientY: number) {
+  const instance = terminal;
+  const gutter = gutterElement.value;
+  if (!instance || !gutter || gutterRowHeight.value <= 0) return undefined;
+  const bounds = gutter.getBoundingClientRect();
+  const viewportRow = Math.max(0, Math.min(
+    instance.rows - 1,
+    Math.floor((clientY - bounds.top - gutterOffsetTop.value) / gutterRowHeight.value),
+  ));
+  return Math.min(lastNumberedLine(instance), instance.buffer.active.viewportY + viewportRow + 1);
+}
+
+function finishGutterLineSelection(event: PointerEvent, canceled = false) {
+  if (gutterSelectionPointerId === undefined || event.pointerId !== gutterSelectionPointerId) return;
+  document.removeEventListener("pointermove", moveGutterLineSelection, true);
+  document.removeEventListener("pointerup", finishGutterLineSelection, true);
+  document.removeEventListener("pointercancel", cancelGutterLineSelection, true);
+  gutterSelectionPointerId = undefined;
+  gutterSelectionAnchor = undefined;
+  finishUserSelection();
+  if (!canceled && gutterSelectionPointerType === "touch" && !props.copyOnSelect) {
+    showMobileSelectionToolbarAt(event.clientX, event.clientY);
+  }
+  gutterSelectionPointerType = "";
+  if (!canceled && props.copyOnSelect) {
+    void copyCurrentSelection().then((success) => { if (success === false) emit("copyError"); });
+  }
+  terminal?.focus();
+}
+
+function cancelGutterLineSelection(event: PointerEvent) {
+  finishGutterLineSelection(event, true);
+}
+
+function moveGutterLineSelection(event: PointerEvent) {
+  if (gutterSelectionPointerId === undefined || event.pointerId !== gutterSelectionPointerId || gutterSelectionAnchor === undefined) return;
+  event.preventDefault();
+  const line = gutterLineFromPoint(event.clientY);
+  if (line !== undefined) applyLineSelection(gutterSelectionAnchor, line, false, false);
+}
+
+function beginGutterLineSelection(event: PointerEvent, line: number) {
+  if (event.button !== 0 || gutterSelectionPointerId !== undefined || !terminal) return;
+  event.preventDefault();
+  event.stopPropagation();
+  mobileSelectionToolbar.value = undefined;
+  const anchor = event.shiftKey && lineSelectionAnchor !== undefined ? lineSelectionAnchor : line;
+  if (!event.shiftKey) lineSelectionAnchor = line;
+  gutterSelectionAnchor = anchor;
+  gutterSelectionPointerId = event.pointerId;
+  gutterSelectionPointerType = event.pointerType;
+  applyLineSelection(anchor, line, false);
+  document.addEventListener("pointermove", moveGutterLineSelection, { passive: false, capture: true });
+  document.addEventListener("pointerup", finishGutterLineSelection, true);
+  document.addEventListener("pointercancel", cancelGutterLineSelection, true);
+}
+
+function selectGutterLineFromKeyboard(event: KeyboardEvent, line: number) {
+  const anchor = event.shiftKey && lineSelectionAnchor !== undefined ? lineSelectionAnchor : line;
+  if (!event.shiftKey) lineSelectionAnchor = line;
+  applyLineSelection(anchor, line);
+  finishUserSelection();
+  if (props.copyOnSelect) {
+    void copyCurrentSelection().then((success) => { if (success === false) emit("copyError"); });
+  }
+  terminal?.focus();
+}
+
+function openGotoLine() {
+  const instance = terminal;
+  if (!instance || !props.showLineNumbers) return false;
+  gotoLineMax.value = lastNumberedLine(instance);
+  gotoLineValue.value = "";
+  gotoLineError.value = "";
+  gotoLineOpen.value = true;
+  void nextTick(() => gotoLineInput.value?.focus());
+  return true;
+}
+
+function closeGotoLine() {
+  gotoLineOpen.value = false;
+  gotoLineError.value = "";
+  void nextTick(focus);
+}
+
+function submitGotoLine() {
+  const instance = terminal;
+  if (!instance) return;
+  const target = parseGotoLineValue(instance);
+  if (!target) {
+    gotoLineInput.value?.focus();
+    return;
+  }
+  if (target.range) {
+    lineSelectionAnchor = target.start;
+    applyLineSelection(target.start, target.end);
+    finishUserSelection();
+  } else {
+    instance.scrollToLine(Math.max(0, target.start - 1 - Math.floor(instance.rows / 2)));
+    scheduleGutterUpdate();
+  }
+  gotoLineOpen.value = false;
+  gotoLineError.value = "";
+  void nextTick(focus);
+}
+
+async function selectAndCopyGotoLine() {
+  const instance = terminal;
+  if (!instance) return;
+  const target = parseGotoLineValue(instance);
+  if (!target) {
+    gotoLineInput.value?.focus();
+    return;
+  }
+  lineSelectionAnchor = target.start;
+  applyLineSelection(target.start, target.end);
+  finishUserSelection();
+  const copied = await copyCurrentSelection();
+  if (copied === undefined) {
+    gotoLineError.value = "所选行没有可复制的文本";
+    gotoLineInput.value?.focus();
+    return;
+  }
+  if (!copied) {
+    gotoLineError.value = "复制失败，请检查浏览器剪贴板权限";
+    gotoLineInput.value?.focus();
+    emit("copyError");
+    return;
+  }
+  gotoLineOpen.value = false;
+  gotoLineError.value = "";
+  void nextTick(focus);
+}
+
 function disposeDecorations(items: IDisposable[]) {
   items.splice(0).forEach((item) => item.dispose());
 }
@@ -508,7 +793,7 @@ function cancelSearchSelectionRestore() {
   searchSelectionRestoreTimer = 0;
 }
 
-function beginUserSelection(instance: Terminal) {
+function beginUserSelection(instance: Terminal, resetLineAnchor = true) {
   // A second press must be allowed to complete xterm's double-click word
   // selection before an empty first press can navigate back to the match.
   cancelSearchSelectionRestore();
@@ -523,6 +808,10 @@ function beginUserSelection(instance: Terminal) {
   disposeDecorations(jumpDecorations);
   disposeDecorations(nearbyDecorations);
   protectedSelection = undefined;
+  lineSelectionMode = false;
+  if (resetLineAnchor) lineSelectionAnchor = undefined;
+  selectedLineStart.value = undefined;
+  selectedLineEnd.value = undefined;
   instance.clearSelection();
   emit("userSelectionStart");
 }
@@ -561,6 +850,10 @@ function allowSearchSelection() {
   userSelectionPointerActive = false;
   userSelectionEventActive = false;
   protectedSelection = undefined;
+  lineSelectionMode = false;
+  lineSelectionAnchor = undefined;
+  selectedLineStart.value = undefined;
+  selectedLineEnd.value = undefined;
 }
 
 function preserveUserSelection(instance: Terminal) {
@@ -824,6 +1117,7 @@ const terminalHandle: WebTerminalHandle = {
   focus,
   search,
   jumpToSearchIndex,
+  openGotoLine,
   clearSearch,
   setAppearance,
   getTerminal,
@@ -901,14 +1195,6 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
       userSelectionEventActive = false;
     }
   };
-  const showSelectionToolbar = (clientX: number, clientY: number) => {
-    const bounds = element.getBoundingClientRect();
-    const rootBounds = element.parentElement?.getBoundingClientRect() ?? bounds;
-    const left = Math.max(58, Math.min(rootBounds.width - 58, clientX - rootBounds.left));
-    const pointY = clientY - bounds.top;
-    const top = pointY >= 58 ? pointY - 48 : Math.min(bounds.height - 40, pointY + 24);
-    mobileSelectionToolbar.value = { left, top: Math.max(8, top) };
-  };
   const beginSelection = (clientX: number, clientY: number) => {
     const range = wordRangeAt(clientX, clientY);
     if (!range) return;
@@ -918,7 +1204,7 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     selectionStart = range.start;
     selectionEnd = range.end;
     selectRange(selectionStart, selectionEnd);
-    showSelectionToolbar(clientX, clientY);
+    showMobileSelectionToolbarAt(clientX, clientY);
   };
   const extendSelection = (clientX: number, clientY: number) => {
     const position = bufferCellFromPoint(clientX, clientY);
@@ -1037,7 +1323,7 @@ function setupTouchScrolling(element: HTMLElement, instance: Terminal) {
     // Safari. Focusing while the touch gesture is still active also lets the
     // software keyboard open. Do not steal focus after an intentional scroll.
     if (selecting) {
-      if (lastX !== null && lastY !== null) showSelectionToolbar(lastX, lastY);
+      if (lastX !== null && lastY !== null) showMobileSelectionToolbarAt(lastX, lastY);
       startX = null;
       startY = null;
       lastX = null;
@@ -1203,7 +1489,10 @@ onMounted(() => {
   terminal.loadAddon(serializeAddon);
   terminal.open(element);
   if (props.showLineTimestamps) addLineTimestamp(terminal);
-  terminal.onSelectionChange(() => preserveUserSelection(terminal!));
+  terminal.onSelectionChange(() => {
+    preserveUserSelection(terminal!);
+    updateSelectedLineRange(terminal!);
+  });
   terminal.onLineFeed(() => {
     addLineTimestamp(terminal);
     scheduleGutterUpdate();
@@ -1291,6 +1580,7 @@ watch(() => props.showLineTimestamps, async (enabled) => {
 watch(effectiveTheme, (theme) => setAppearance({ theme }));
 
 watch(() => props.showLineNumbers, async () => {
+  if (!props.showLineNumbers) gotoLineOpen.value = false;
   if (!gutterVisible.value) gutterRows.value = [];
   await nextTick();
   fit();
@@ -1316,6 +1606,9 @@ onBeforeUnmount(() => {
   window.clearTimeout(searchCountTimer);
   cancelSearchSelectionRestore();
   window.clearTimeout(mobileCopyLabelTimer);
+  document.removeEventListener("pointermove", moveGutterLineSelection, true);
+  document.removeEventListener("pointerup", finishGutterLineSelection, true);
+  document.removeEventListener("pointercancel", cancelGutterLineSelection, true);
   searchCountRequestId += 1;
   searchWorker?.terminate();
   searchWorker = undefined;
@@ -1352,7 +1645,6 @@ defineExpose(terminalHandle);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   user-select: none;
-  pointer-events: none;
 }
 .web-terminal__gutter-rows { will-change: transform; }
 .web-terminal__gutter-row {
@@ -1362,7 +1654,23 @@ defineExpose(terminalHandle);
   overflow: hidden;
 }
 .web-terminal__gutter-row--wrapped { font-style: italic; }
-.web-terminal__line-number { display: inline-block; width: 6ch; text-align: right; }
+.web-terminal__gutter-row--selected { background: color-mix(in srgb, var(--terminal-gutter-foreground, #d8dee9) 22%, transparent); }
+.web-terminal__line-number {
+  box-sizing: content-box;
+  width: 6ch;
+  height: 100%;
+  padding: 0;
+  display: inline-block;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+  text-align: right;
+  cursor: default;
+  touch-action: none;
+}
+.web-terminal__line-number:focus-visible { color: #ffffff; outline: 1px solid #8fc8c4; outline-offset: -1px; }
 .web-terminal__line-time { display: inline-block; width: 8ch; text-align: left; }
 .web-terminal__mount { flex: 1 1 auto; width: 0; height: 100%; min-width: 0; min-height: 0; }
 .web-terminal__mount :deep(.xterm) {
@@ -1379,6 +1687,55 @@ defineExpose(terminalHandle);
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
 }
+.web-terminal__goto-line-backdrop {
+  position: absolute;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: start center;
+  padding-top: min(18%, 96px);
+  background: rgba(5, 10, 14, 0.32);
+}
+.web-terminal__goto-line {
+  box-sizing: border-box;
+  width: min(390px, calc(100% - 28px));
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  color: #dce7ec;
+  background: rgba(31, 42, 50, 0.98);
+  border: 1px solid #526773;
+  border-radius: 9px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.48);
+}
+.web-terminal__goto-line label { grid-column: 1 / -1; font-size: 14px; font-weight: 700; }
+.web-terminal__goto-line input {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  color: #ecf5f7;
+  background: #111a20;
+  border: 1px solid #607783;
+  border-radius: 5px;
+  font: 13px/1 monospace;
+  outline: none;
+}
+.web-terminal__goto-line input:focus { border-color: #8fc8c4; box-shadow: 0 0 0 2px rgba(143, 200, 196, 0.2); }
+.web-terminal__goto-line-range { align-self: center; color: #9aadb7; font-size: 12px; white-space: nowrap; }
+.web-terminal__goto-line-error { grid-column: 1 / -1; color: #ffad9f; font-size: 12px; }
+.web-terminal__goto-line-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+.web-terminal__goto-line button {
+  min-width: 58px;
+  height: 30px;
+  color: #d9e3e7;
+  background: #344650;
+  border: 1px solid #536873;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.web-terminal__goto-line button.primary { color: #102027; background: #91c5c1; border-color: #91c5c1; font-weight: 700; }
 .web-terminal__selection-toolbar {
   position: absolute;
   z-index: 8;

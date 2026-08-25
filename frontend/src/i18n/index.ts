@@ -64,6 +64,15 @@ export function translateText(source: string): string {
     const labels: Record<string, string> = { 不同: "Different", 仅左: "Left only", 仅右: "Right only", 相同: "Same" };
     return preserveOuterWhitespace(source, `${labels[simpleCount[1]]} ${simpleCount[2]}`);
   }
+  const totalLines = trimmed.match(/^共\s*(\d+)\s*行$/u);
+  if (totalLines) return preserveOuterWhitespace(source, `${totalLines[1]} lines total`);
+  const lineNumberRange = trimmed.match(/^请输入\s*1\s*到\s*(\d+)\s*之间的行号$/u);
+  if (lineNumberRange) return preserveOuterWhitespace(source, `Enter a line number from 1 to ${lineNumberRange[1]}`);
+  const selectLine = trimmed.match(/^选择第\s*(\d+)\s*行(?:；拖动或 Shift\+单击选择多行)?$/u);
+  if (selectLine) {
+    const hint = trimmed.includes("拖动") ? "; drag or Shift-click to select multiple lines" : "";
+    return preserveOuterWhitespace(source, `Select line ${selectLine[1]}${hint}`);
+  }
   const characterCount = trimmed.match(/^([\d,.]+)\s*字符$/u);
   if (characterCount) return preserveOuterWhitespace(source, `${characterCount[1]} characters`);
   const digitCount = trimmed.match(/^(6|8)\s*位$/u);

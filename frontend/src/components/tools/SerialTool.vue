@@ -226,12 +226,14 @@
               :theme="currentTerminalTheme"
               :show-line-numbers="terminalSettings.showLineNumbers"
               :show-line-timestamps="terminalSettings.showLineTimestamps"
+              :copy-on-select="terminalSettings.copyOnSelect"
               :visible="terminalSplit.isPaneVisible(view.id)"
               @ready="handleTerminalReady(view, $event)"
               @data="handleTerminalData(view, $event)"
               @renderer="view.renderer = $event"
               @search-results="updateSearchResults(view, $event)"
               @user-selection-start="cancelPendingSearch"
+              @copy-error="warnClipboardAccess('浏览器不允许复制终端选区，请检查站点剪贴板权限')"
             />
             <div v-if="sessionFor(view)?.error" class="serial-error">{{ sessionFor(view)?.error }}</div>
             <terminal-command-panel
@@ -426,6 +428,7 @@ import { ChevronBackOutline, GridOutline, MenuOutline, RefreshOutline } from "@v
 import { NAlert, NButton, NCheckbox, NDropdown, NForm, NFormItem, NIcon, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NTabPane, NTabs, NTooltip, useMessage } from "naive-ui";
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { fetchBackendSerialPorts, fetchBrowserSerialShares, type BackendSerialPort, type BrowserSerialShare, type SharedCommandSnippet } from "@/api";
+import { writeClipboard } from "@/utils/clipboard";
 import WebTerminal from "../terminal/WebTerminal.vue";
 import TerminalActionBar from "../terminal/TerminalActionBar.vue";
 import TerminalSearchBar from "../terminal/TerminalSearchBar.vue";
@@ -1310,7 +1313,25 @@ function handleTerminalReady(view: SerialView, event: WebTerminalReadyEvent) {
   const session = sessions.get(view.sessionKey);
   if (!session) return;
   view.terminalView = event.handle;
-  event.terminal.attachCustomKeyEventHandler((keyboardEvent) => keyboardEvent.key !== "F12");
+  event.terminal.attachCustomKeyEventHandler((keyboardEvent) => {
+    if (keyboardEvent.key === "F12") return false;
+    if (keyboardEvent.type === "keydown" && (keyboardEvent.ctrlKey || keyboardEvent.metaKey) && keyboardEvent.key.toLowerCase() === "g" && terminalSettings.showLineNumbers) {
+      view.terminalView?.openGotoLine();
+      keyboardEvent.preventDefault();
+      return false;
+    }
+    if (keyboardEvent.type === "keydown" && (keyboardEvent.ctrlKey || keyboardEvent.metaKey) && keyboardEvent.key.toLowerCase() === "c" && event.terminal.hasSelection()) {
+      keyboardEvent.preventDefault();
+      const selection = event.terminal.getSelection();
+      if (selection) {
+        void writeClipboard(selection).then((success) => {
+          if (!success) warnClipboardAccess("浏览器不允许复制终端选区，请检查站点剪贴板权限");
+        });
+      }
+      return false;
+    }
+    return true;
+  });
   view.clipboardCleanup?.();
   view.clipboardCleanup = attachTerminalClipboard(event.terminal, event.element, {
     copyOnSelect: () => terminalSettings.copyOnSelect,
@@ -1628,7 +1649,15 @@ function searchCountText(view: SerialView) {
 }
 
 function handleGlobalShortcut(event: KeyboardEvent) {
-  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f" || !activeView.value) return;
+  if (!(event.ctrlKey || event.metaKey) || !activeView.value) return;
+  const key = event.key.toLowerCase();
+  if (key === "g" && terminalSettings.showLineNumbers) {
+    event.preventDefault();
+    event.stopPropagation();
+    activeView.value.terminalView?.openGotoLine();
+    return;
+  }
+  if (key !== "f") return;
   event.preventDefault();
   event.stopPropagation();
   toggleSearch();
