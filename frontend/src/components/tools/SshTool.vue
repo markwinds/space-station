@@ -210,10 +210,12 @@
           <terminal-action-bar
             v-if="activePane === 'terminal'"
             class="ssh-desktop-action"
+            download
             :recording="activeTab.recording"
             settings
             @search="toggleSearch"
             @snippets="openSnippets"
+            @download="downloadCurrentShell(activeTab)"
             @recording="toggleRecording(activeTab)"
             @settings="openTerminalSettings"
           />
@@ -1133,6 +1135,7 @@ const mobileActionOptions = computed(() => {
     options.push(
       { label: "搜索终端", key: "search" },
       { label: "命令片段", key: "snippets" },
+      { label: "下载当前 Shell 数据", key: "download-shell" },
       { label: tab.recording ? "停止录制" : "开始录制", key: "recording" },
       { label: `渲染：${tab.renderer === "webgl" ? "GPU" : "Canvas"}`, key: "renderer", disabled: true },
     );
@@ -1402,6 +1405,7 @@ function handleMobileAction(key: string) {
   if (key === "reconnect") reconnectTab(tab);
   else if (key === "search") toggleSearch();
   else if (key === "snippets") openSnippets();
+  else if (key === "download-shell") downloadCurrentShell(tab);
   else if (key === "recording") toggleRecording(tab);
 }
 
@@ -2311,6 +2315,19 @@ function handleGlobalShortcut(event: KeyboardEvent) {
 function updateRenderer(tab: TerminalTab, renderer: TerminalRenderer) {
   const reactiveTab = tabs.value.find((item) => item.id === tab.id);
   if (reactiveTab) reactiveTab.renderer = renderer;
+}
+
+function downloadCurrentShell(tab: TerminalTab) {
+  const content = tab.terminalView?.getBufferText() ?? "";
+  if (!content) {
+    message.warning("当前终端没有可下载的数据");
+    focusTerminalAfterUi(tab);
+    return;
+  }
+  const filenameTime = formatFilenameTimestamp(new Date());
+  downloadText(`${safeFilename(tab.host.name)}-shell-${filenameTime}.log`, `${content}\n`, "text/plain;charset=utf-8");
+  message.success("当前 Shell 数据已下载");
+  focusTerminalAfterUi(tab);
 }
 
 function toggleRecording(tab: TerminalTab) {

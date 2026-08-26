@@ -34,6 +34,7 @@ export interface WebTerminalHandle {
   ): boolean;
   jumpToSearchIndex(index: number): boolean;
   openGotoLine(): boolean;
+  getBufferText(): string;
   clearSearch(): void;
   setAppearance(options: { fontFamily?: string; fontSize?: number; lineHeight?: number; letterSpacing?: number; theme?: ITheme }): void;
   getTerminal(): Terminal | undefined;

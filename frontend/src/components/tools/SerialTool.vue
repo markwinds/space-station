@@ -143,10 +143,12 @@
           </n-tooltip>
           <terminal-action-bar
             class="serial-desktop-actions"
+            download
             :recording="Boolean(activeView?.recording)"
             settings
             @search="toggleSearch"
             @snippets="showSnippets = true"
+            @download="activeView && downloadCurrentShell(activeView)"
             @recording="activeView && toggleRecording(activeView)"
             @settings="openTerminalSettings"
           />
@@ -714,6 +716,7 @@ const mobileActionOptions = computed(() => {
   options.push(
     { label: "搜索终端", key: "search" },
     { label: "命令片段", key: "snippets" },
+    { label: "下载当前 Shell 数据", key: "download-shell" },
     { label: view.recording ? "停止录制" : "开始录制", key: "recording" },
     { label: "终端设置", key: "settings" },
     { label: `位置：${locationText(session.location)}`, key: "location", disabled: true },
@@ -1531,6 +1534,7 @@ function handleMobileAction(key: string) {
   if (key === "reconnect") void reconnectActive();
   else if (key === "search") toggleSearch();
   else if (key === "snippets") showSnippets.value = true;
+  else if (key === "download-shell") downloadCurrentShell(view);
   else if (key === "recording") toggleRecording(view);
   else if (key === "settings") openTerminalSettings();
 }
@@ -1828,6 +1832,18 @@ function appendRecording(view: SerialView, data: Uint8Array) {
   view.recordingContent += decoded;
   view.recordingEntries.push({ at: new Date(), data: decoded });
   view.recordingSizeBytes += data.byteLength;
+}
+
+function downloadCurrentShell(view: SerialView) {
+  const content = view.terminalView?.getBufferText() ?? "";
+  if (!content) {
+    message.warning("当前终端没有可下载的数据");
+    focusTerminalAfterUi(view);
+    return;
+  }
+  downloadText(`${safeFilename(view.title)}-shell-${formatFilenameTime(new Date())}.log`, `${content}\n`);
+  message.success("当前 Shell 数据已下载");
+  focusTerminalAfterUi(view);
 }
 
 function toggleRecording(view: SerialView) {

@@ -1089,6 +1089,33 @@ function getElement() {
   return mountElement.value;
 }
 
+function getBufferText() {
+  const instance = terminal;
+  if (!instance) return "";
+  // Export the normal shell buffer even when a full-screen program currently
+  // owns the alternate buffer. xterm has already parsed colors, cursor moves
+  // and other escape sequences, so only readable cell text remains here.
+  const buffer = instance.buffer.normal;
+  const cursorLine = Math.max(0, buffer.baseY + buffer.cursorY);
+  let lastLine = Math.min(buffer.length - 1, cursorLine);
+  for (let row = buffer.length - 1; row > lastLine; row -= 1) {
+    const line = buffer.getLine(row);
+    if (line?.isWrapped || line?.translateToString(true)) {
+      lastLine = row;
+      break;
+    }
+  }
+
+  let result = "";
+  for (let row = 0; row <= lastLine; row += 1) {
+    const line = buffer.getLine(row);
+    if (!line) continue;
+    result += line.translateToString(true);
+    if (row < lastLine && !buffer.getLine(row + 1)?.isWrapped) result += "\n";
+  }
+  return result.replace(/\n+$/u, "");
+}
+
 function clearMobileSelection() {
   window.clearTimeout(mobileCopyLabelTimer);
   mobileCopyLabel.value = "复制";
@@ -1118,6 +1145,7 @@ const terminalHandle: WebTerminalHandle = {
   search,
   jumpToSearchIndex,
   openGotoLine,
+  getBufferText,
   clearSearch,
   setAppearance,
   getTerminal,

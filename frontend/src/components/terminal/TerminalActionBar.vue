@@ -12,6 +12,10 @@
       <template #icon><n-icon><CodeSlashOutline /></n-icon></template>
       片段
     </n-button>
+    <n-button v-if="download" secondary size="tiny" aria-label="下载当前 Shell 数据" title="下载当前 Shell 数据（纯文本）" @click="$emit('download')">
+      <template #icon><n-icon><DownloadOutline /></n-icon></template>
+      下载
+    </n-button>
     <n-button
       v-if="recordingEnabled"
       class="terminal-action-bar__recording"
@@ -38,7 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { CodeSlashOutline, RadioButtonOnOutline, SearchOutline, SettingsOutline, StopOutline } from "@vicons/ionicons5";
+import { CodeSlashOutline, DownloadOutline, RadioButtonOnOutline, SearchOutline, SettingsOutline, StopOutline } from "@vicons/ionicons5";
 import { NButton, NIcon, NTooltip } from "naive-ui";
 import type { TerminalRenderer } from "./WebTerminal.types";
 import TerminalRendererBadge from "./TerminalRendererBadge.vue";
@@ -46,6 +50,7 @@ import TerminalRendererBadge from "./TerminalRendererBadge.vue";
 withDefaults(defineProps<{
   search?: boolean;
   snippets?: boolean;
+  download?: boolean;
   recordingEnabled?: boolean;
   recording?: boolean;
   settings?: boolean;
@@ -53,13 +58,14 @@ withDefaults(defineProps<{
 }>(), {
   search: true,
   snippets: true,
+  download: false,
   recordingEnabled: true,
   recording: false,
   settings: false,
   renderer: undefined,
 });
 
-defineEmits<{ search: []; snippets: []; recording: []; settings: [] }>();
+defineEmits<{ search: []; snippets: []; download: []; recording: []; settings: [] }>();
 </script>
 
 <style scoped>
