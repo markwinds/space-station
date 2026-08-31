@@ -147,6 +147,19 @@ function hiddenValue(html, id, name) {
   return match ? match[1] : "";
 }
 
+function detectChallenge(buffer) {
+  const match = buffer.match(/(?:^|\n)#?[ \t]*([^\r\n]{20,2048})\r?\nPassword:?\s*$/);
+  if (!match) return "";
+
+  const challenge = match[1].trim();
+  // 旧设备使用固定 20 字符挑战串；新设备发送较长的 Base64 二进制载荷。
+  if (challenge.length === 20) return challenge;
+  // 兼容旧提示符在固定长度挑战串后附带的单个分隔字符。
+  if (challenge.length === 21) return challenge.slice(0, 20);
+  if (challenge.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(challenge)) return "";
+  return challenge;
+}
+
 async function loadLoginPage() {
   const maximumAttempts = 3;
   let lastError = null;
@@ -278,9 +291,9 @@ async function getPshToken(challenge) {
   if (typeof payload.data !== "string") {
     throw new Error(`PSH 服务返回的口令类型无效: type=${typeof payload.data}`);
   }
-  const token = payload.data.replace(/\s+/g, "");
-  const isBase64 = /^[A-Za-z0-9+/]+={0,2}$/.test(token);
-  if (token.length < 128 || token.length > 2048 || token.length % 4 !== 0 || !isBase64) {
+  // 服务返回什么口令就原样写入，仅拒绝空值、超长值和会注入额外终端行的控制字符。
+  const token = payload.data;
+  if (!token || token.length > 2048 || /[\r\n\0]/.test(token)) {
     throw new Error(`PSH 服务返回的口令格式无效: length=${token.length}`);
   }
   tokenCache.set(challenge, token);
@@ -297,16 +310,15 @@ async function onTerminalData(event) {
     lastChallenge: "",
     lastAttemptAt: 0,
   };
-  state.buffered = (state.buffered + event.data).slice(-512);
+  state.buffered = (state.buffered + event.data).slice(-4096);
   // 一些串口设备会在提示符后补 NUL，匹配前去掉这些填充字节。
   const matchBuffer = state.buffered.replace(/\0+$/, "");
-  const match = matchBuffer.match(/(?:^|\n)#?\s*([^\r\n]{20}).?\r?\nPassword:?\s*$/);
-  if (!match || state.inFlight) {
+  const challenge = detectChallenge(matchBuffer);
+  if (!challenge || state.inFlight) {
     sessions.set(event.sessionId, state);
     return;
   }
 
-  const challenge = match[1];
   const now = Date.now();
   if (challenge === state.lastChallenge && now - state.lastAttemptAt < 3000) {
     sessions.set(event.sessionId, state);
