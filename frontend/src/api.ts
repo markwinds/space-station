@@ -215,6 +215,7 @@ export interface TimeManagerState {
   tasks: TimeManagerTask[];
   tags: TimeManagerTag[];
   filters: TimeManagerSavedFilter[];
+  collapsedNodeIds: string[];
   settings: TimeManagerSettings;
 }
 

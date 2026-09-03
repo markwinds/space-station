@@ -775,12 +775,23 @@ function cancelAutomaticSearchRefresh() {
   addon?._highlightTimeout?.clear();
 }
 
+function isViewportAtBottom(instance = terminal) {
+  if (!instance) return true;
+  const buffer = instance.buffer.active;
+  return buffer.viewportY >= buffer.baseY;
+}
+
 function guardAutomaticSearchRefresh(addon: SearchAddon) {
   const internals = addon as SearchAddonInternals;
   const updateMatches = internals._updateMatches?.bind(addon);
   if (!updateMatches) return;
   internals._updateMatches = () => {
-    if (protectUserSelection) {
+    // SearchAddon refreshes the active match after every parsed write. Even
+    // with its internal no-scroll option, replacing the active selection can
+    // shift a viewport that the user intentionally left above the bottom.
+    // Keep that viewport completely stable until the user scrolls back to the
+    // bottom or types, which xterm handles through scrollOnUserInput.
+    if (protectUserSelection || !isViewportAtBottom()) {
       internals._highlightTimeout?.clear();
       return;
     }
@@ -1471,6 +1482,7 @@ onMounted(() => {
     lineHeight: props.lineHeight,
     letterSpacing: props.letterSpacing,
     scrollback: props.scrollback,
+    scrollOnUserInput: true,
     // SearchAddon uses xterm's decoration API to highlight all matches.
     allowProposedApi: true,
     theme: effectiveTheme.value,
@@ -1526,7 +1538,12 @@ onMounted(() => {
     scheduleGutterUpdate();
   });
   terminal.onRender(scheduleGutterUpdate);
-  terminal.onScroll(scheduleGutterUpdate);
+  terminal.onScroll(() => {
+    scheduleGutterUpdate();
+    // Also cancel a refresh that was queued while the viewport was still at
+    // the bottom if the user scrolls away before its 200 ms delay expires.
+    if (!isViewportAtBottom()) cancelAutomaticSearchRefresh();
+  });
   terminal.onResize(() => {
     // Reflow can dispose markers in the middle of the list and move the
     // remaining markers. Re-sort only on resize, not on every output chunk.

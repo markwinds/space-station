@@ -5,6 +5,7 @@
       class="tm-canvas-shell"
       @pointerdown.capture="recordCanvasPointer"
       @pointerup.capture="clearSelectionOnBlankTap"
+      @click="captureExpandedNodeState"
     >
       <div ref="mindContainerRef" class="tm-mind-elixir"></div>
     </section>
@@ -394,6 +395,7 @@ const state = reactive<TimeManagerState>({
   tasks: [],
   tags: [],
   filters: [],
+  collapsedNodeIds: [],
   settings: { calendarStartHour: 7, calendarEndHour: 22, openDetailsOnNodeClick: false },
 });
 
@@ -607,6 +609,7 @@ function initMind() {
     },
   }));
   mind.value.bus.addListener("operation", handleMindOperation);
+  mind.value.bus.addListener("expandNode", syncCollapsedNodeIdsFromMind);
   mind.value.bus.addListener("selectNodes", (nodes) => {
     const selected = nodes.at(-1);
     selectedTaskId.value = selected?.id === rootId ? null : selected?.id ?? null;
@@ -690,7 +693,7 @@ function buildMindData(tasks: TimeManagerTask[]): MindElixirData {
     nodeData: {
       id: rootId,
       topic: "space-station",
-      expanded: true,
+      expanded: !state.collapsedNodeIds.includes(rootId),
       children,
     },
     direction: RIGHT,
@@ -715,7 +718,7 @@ function taskToNode(task: TimeManagerTask): NodeObj<TaskNodeMeta> {
   return {
     id: task.id,
     topic: task.title,
-    expanded: true,
+    expanded: !state.collapsedNodeIds.includes(task.id),
     style: nodeStyle(task),
     tags: nodeTags(task),
     icons: task.icon ? [task.icon, ...statusIcons] : statusIcons,
@@ -917,6 +920,7 @@ function deleteTask(id: string) {
 function removeTaskIds(ids: string[]) {
   const removeSet = new Set(ids);
   state.tasks = state.tasks.filter((task) => !removeSet.has(task.id));
+  state.collapsedNodeIds = state.collapsedNodeIds.filter((id) => !removeSet.has(id));
   if (selectedTaskId.value && removeSet.has(selectedTaskId.value)) {
     selectedTaskId.value = null;
   }
@@ -1195,6 +1199,39 @@ function clearSelectionOnBlankTap(event: PointerEvent) {
   }
 }
 
+function captureExpandedNodeState(event: MouseEvent) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest("me-epd")) {
+    syncCollapsedNodeIdsFromMind();
+  }
+}
+
+function syncCollapsedNodeIdsFromMind() {
+  if (!mind.value) {
+    return;
+  }
+  const visibleNodeIds = new Set<string>();
+  const collapsedVisibleNodeIds: string[] = [];
+  const visit = (node: NodeObj<TaskNodeMeta>) => {
+    visibleNodeIds.add(node.id);
+    if (node.expanded === false) {
+      collapsedVisibleNodeIds.push(node.id);
+    }
+    node.children?.forEach((child) => visit(child as NodeObj<TaskNodeMeta>));
+  };
+  visit(mind.value.getData().nodeData as NodeObj<TaskNodeMeta>);
+  const collapsedNodeIds = [
+    ...state.collapsedNodeIds.filter((id) => !visibleNodeIds.has(id)),
+    ...collapsedVisibleNodeIds,
+  ];
+  const previousNodeIds = new Set(state.collapsedNodeIds);
+  if (collapsedNodeIds.length === previousNodeIds.size && collapsedNodeIds.every((id) => previousNodeIds.has(id))) {
+    return;
+  }
+  skipNextMindRefresh.value = true;
+  state.collapsedNodeIds = collapsedNodeIds;
+}
+
 function undo() {
   mind.value?.undo?.();
   if (mind.value) {
@@ -1262,6 +1299,12 @@ function dateValue(value: string | boolean) {
 }
 
 function normalizeState(input: TimeManagerState): TimeManagerState {
+  const validNodeIds = new Set([
+    rootId,
+    ...(Array.isArray(input.tasks)
+      ? input.tasks.map((task) => task.id).filter((id): id is string => typeof id === "string")
+      : []),
+  ]);
   return {
     tasks: Array.isArray(input.tasks)
       ? input.tasks.map((task, index) => ({
@@ -1280,6 +1323,9 @@ function normalizeState(input: TimeManagerState): TimeManagerState {
       : [],
     tags: Array.isArray(input.tags) ? input.tags : [],
     filters: Array.isArray(input.filters) ? input.filters : [],
+    collapsedNodeIds: Array.isArray(input.collapsedNodeIds)
+      ? [...new Set(input.collapsedNodeIds.filter((id): id is string => typeof id === "string" && validNodeIds.has(id)))]
+      : [],
     settings: {
       calendarStartHour: input.settings?.calendarStartHour ?? 7,
       calendarEndHour: input.settings?.calendarEndHour ?? 22,

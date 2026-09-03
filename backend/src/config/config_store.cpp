@@ -798,6 +798,10 @@ nlohmann::json ConfigStore::LoadTimeManagerState()
     {
         state["filters"] = nlohmann::json::array();
     }
+    if (!state.contains("collapsedNodeIds") || !state["collapsedNodeIds"].is_array())
+    {
+        state["collapsedNodeIds"] = nlohmann::json::array();
+    }
     if (!state.contains("settings") || !state["settings"].is_object())
     {
         state["settings"] = BuildDefaultTimeManagerStateJson()["settings"];
@@ -835,6 +839,10 @@ void ConfigStore::SaveTimeManagerState(const nlohmann::json& json)
     if (!state["filters"].is_array())
     {
         state["filters"] = nlohmann::json::array();
+    }
+    if (!state["collapsedNodeIds"].is_array())
+    {
+        state["collapsedNodeIds"] = nlohmann::json::array();
     }
     if (!state["settings"].is_object())
     {
@@ -1204,6 +1212,7 @@ nlohmann::json ConfigStore::BuildDefaultTimeManagerStateJson() const
              {{"id", "life"}, {"name", "生活"}, {"color", "#16a34a"}},
          })},
         {"filters", nlohmann::json::array()},
+        {"collapsedNodeIds", nlohmann::json::array()},
         {"settings",
          {
              {"calendarStartHour", 7},
