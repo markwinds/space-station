@@ -404,6 +404,7 @@ void SshSession::Start(SshConnectOptions options)
     worker_ = std::jthread([this, options = std::move(options)](std::stop_token token) mutable {
         Run(token, std::move(options));
     });
+    stop_source_ = worker_.get_stop_source();
 }
 
 void SshSession::Write(std::string data)
@@ -500,12 +501,21 @@ bool SshSession::DetachedFor(std::chrono::steady_clock::duration duration) const
     return detached_at_.has_value() && std::chrono::steady_clock::now() - *detached_at_ >= duration;
 }
 
+void SshSession::RequestStop()
+{
+    {
+        // Synchronize with the host-key wait so cancellation cannot lose its wakeup.
+        std::lock_guard lock(mutex_);
+        stop_source_.request_stop();
+    }
+    condition_.notify_all();
+}
+
 void SshSession::Stop()
 {
+    RequestStop();
     if (worker_.joinable())
     {
-        worker_.request_stop();
-        condition_.notify_all();
         worker_.join();
     }
     if (plugin_service_ && !plugin_session_id_.empty())
@@ -517,6 +527,16 @@ void SshSession::Stop()
 
 void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
 {
+    const auto started = std::chrono::steady_clock::now();
+    std::string stage = "transport";
+    const auto log_stage = [&](const char* next) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        const auto message = "SSH connection progress: host=" + options.host_id + " stage=" + next +
+                             " elapsedMs=" + std::to_string(elapsed);
+        logI(message.c_str());
+        stage = next;
+    };
     try
     {
         EnsureLibssh2Initialized();
@@ -588,6 +608,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             logI(route_message.c_str());
             socket = ConnectSocket(options.host, options.port, stop_token, NewDeadline());
         }
+        log_stage("handshake");
         SessionPtr session(options.jump_host_id.empty()
                                ? libssh2_session_init()
                                : libssh2_session_init_ex(nullptr, nullptr, nullptr, jump_channel.get()));
@@ -624,6 +645,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         }
         if (options.expected_fingerprint.empty())
         {
+            log_stage("host-key-confirmation");
             SendEvent({
                 {"type", "host-key"},
                 {"fingerprint", fingerprint},
@@ -632,15 +654,17 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
             });
             std::unique_lock lock(mutex_);
             condition_.wait(lock, [&] { return trust_answered_ || stop_token.stop_requested(); });
-            if (stop_token.stop_requested() || !host_trusted_)
+            const bool trusted = host_trusted_;
+            lock.unlock();
+            if (stop_token.stop_requested() || !trusted)
             {
                 SendEvent({{"type", "status"}, {"status", "closed"}, {"message", "未信任主机密钥。"}});
                 return;
             }
-            lock.unlock();
             config_store_.SaveSshHostFingerprint(options.host_id, fingerprint);
         }
 
+        log_stage("authentication");
         SendEvent({{"type", "status"}, {"status", "authenticating"}, {"message", "正在认证…"}});
         const auto auth_result = Authenticate(session.get(), socket.value, stop_token, options.username,
                                               options.password, options.private_key, options.passphrase,
@@ -719,6 +743,7 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
         libssh2_session_set_blocking(session.get(), 0);
         if (jump_session) libssh2_session_set_blocking(jump_session.get(), 0);
         libssh2_keepalive_config(session.get(), 1, 20);
+        log_stage("connected");
         SendEvent({{"type", "status"}, {"status", "connected"},
                    {"message", jump_host_name.empty() ? "已连接" : "已通过 " + jump_host_name + " 连接"}});
 
@@ -856,7 +881,10 @@ void SshSession::Run(std::stop_token stop_token, SshConnectOptions options)
     }
     catch (const std::exception& error)
     {
-        const auto log_message = "SSH session failed: host=" + options.host_id + " error=" + error.what();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        const auto log_message = "SSH session failed: host=" + options.host_id + " stage=" + stage +
+                                 " elapsedMs=" + std::to_string(elapsed) + " error=" + error.what();
         logE(log_message.c_str());
         SendEvent({{"type", "error"}, {"message", error.what()}});
     }

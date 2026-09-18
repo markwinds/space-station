@@ -1009,11 +1009,13 @@ void ConfigStore::SaveSshHosts(const nlohmann::json& json)
     auto vault = LoadBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), nlohmann::json::object());
     if (vault.is_object())
     {
+        const auto previous_size = vault.size();
         for (auto item = vault.begin(); item != vault.end();)
         {
             item = ids.contains(item.key()) ? std::next(item) : vault.erase(item);
         }
-        SaveBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), vault);
+        if (vault.size() != previous_size)
+            SaveBusinessJsonUnlocked(std::string(kSshCredentialVaultKey), vault);
     }
 }
 

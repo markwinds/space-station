@@ -105,6 +105,14 @@ int main()
         Expect(hosts[0].value("lastUsedAt", "") == "2026-07-26T12:34:56.000Z", "SSH recent-use timestamp was not persisted");
         Expect(hosts[1].value("jumpHostId", "") == "jump-1", "jump host setting was not persisted");
 
+        store.SaveSshCredential("target-1", {{"method", "password"}, {"password", "retained-secret"}});
+        store.SaveSshHosts(hosts);
+        Expect(store.LoadSshCredential("target-1")->value("password", "") == "retained-secret",
+               "saving existing hosts changed their credential");
+        store.SaveSshHosts(nlohmann::json::array({hosts[0]}));
+        Expect(!store.HasSshCredential("target-1"), "removing a host did not remove its credential");
+        store.SaveSshHosts(hosts);
+
         const auto saved_snippet = store.SaveCommandSnippet({
             {"id", "snippet-1"},
             {"name", "Disk usage"},

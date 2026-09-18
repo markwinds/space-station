@@ -66,8 +66,58 @@ std::string CloseFrameDescription(const std::string& message)
 
 SshWebSocketController::SshWebSocketController(ConfigStore& config_store,
                                                plugins::TerminalPluginService& plugin_service)
-    : config_store_(config_store), plugin_service_(plugin_service)
+    : config_store_(config_store), plugin_service_(plugin_service),
+      cleanup_worker_([this](std::stop_token token) { CleanupSessions(token); })
 {
+}
+
+SshWebSocketController::~SshWebSocketController()
+{
+    StopAll();
+}
+
+void SshWebSocketController::QueueStop(std::shared_ptr<SshSession> session)
+{
+    session->RequestStop();
+    {
+        std::lock_guard lock(cleanup_mutex_);
+        cleanup_queue_.push_back(std::move(session));
+    }
+    cleanup_condition_.notify_one();
+}
+
+void SshWebSocketController::CleanupSessions(std::stop_token token)
+{
+    while (true)
+    {
+        std::shared_ptr<SshSession> session;
+        {
+            std::unique_lock lock(cleanup_mutex_);
+            cleanup_condition_.wait(lock, [&] { return token.stop_requested() || !cleanup_queue_.empty(); });
+            if (cleanup_queue_.empty()) return;
+            session = std::move(cleanup_queue_.front());
+            cleanup_queue_.pop_front();
+        }
+        // Joining and final destruction of a running session must never block
+        // an HTTP event loop. Keep ownership here until the worker exits.
+        session->Stop();
+    }
+}
+
+void SshWebSocketController::StopAll()
+{
+    if (!cleanup_worker_.joinable()) return;
+    {
+        std::lock_guard lock(sessions_mutex_);
+        for (auto& [token, session] : resumable_sessions_) QueueStop(std::move(session));
+        resumable_sessions_.clear();
+    }
+    {
+        std::lock_guard lock(cleanup_mutex_);
+        cleanup_worker_.request_stop();
+    }
+    cleanup_condition_.notify_one();
+    cleanup_worker_.join();
 }
 
 void SshWebSocketController::handleNewConnection(const drogon::HttpRequestPtr& request,
@@ -275,13 +325,15 @@ void SshWebSocketController::HandleConnect(const drogon::WebSocketConnectionPtr&
     {
         std::lock_guard lock(sessions_mutex_);
         resumable_sessions_[resume_token] = session;
+        state->session = session;
+        state->resume_token = resume_token;
+        connection->send(nlohmann::json({{"type", "session"},
+                                         {"resumeToken", resume_token},
+                                         {"resumeWindowSeconds", kResumeWindow.count()}}).dump());
+        // An HTTP terminate request must not reach this session until Start
+        // has initialized the worker and its cancellation source.
+        session->Start(std::move(options));
     }
-    state->session = session;
-    state->resume_token = resume_token;
-    connection->send(nlohmann::json({{"type", "session"},
-                                     {"resumeToken", resume_token},
-                                     {"resumeWindowSeconds", kResumeWindow.count()}}).dump());
-    session->Start(std::move(options));
 }
 
 void SshWebSocketController::HandleResume(const drogon::WebSocketConnectionPtr& connection,
@@ -347,7 +399,7 @@ void SshWebSocketController::HandleTerminate(const drogon::WebSocketConnectionPt
     if (session)
     {
         session->Detach(state->connection_id);
-        session->Stop();
+        QueueStop(session);
     }
     state->resume_token.clear();
     connection->send(nlohmann::json({{"type", "terminated"}}).dump());
@@ -364,7 +416,7 @@ bool SshWebSocketController::TerminateSession(const std::string& resume_token)
         session = found->second;
         resumable_sessions_.erase(found);
     }
-    session->Stop();
+    QueueStop(std::move(session));
     return true;
 }
 
@@ -379,6 +431,6 @@ void SshWebSocketController::ExpireDetachedSession(const std::string& resume_tok
         resumable_sessions_.erase(found);
     }
     logI("Detached SSH session expired after 90 seconds; stopping session");
-    session->Stop();
+    QueueStop(session);
 }
 } // namespace spacestation::ssh

@@ -397,6 +397,7 @@ void HttpServer::Stop()
     {
         server_thread_.join();
     }
+    ssh_websocket_controller_->StopAll();
     terminal_plugin_service_.Stop();
 }
 
@@ -915,7 +916,13 @@ void HttpServer::RegisterRoutes()
             }
             try
             {
+                const auto started = std::chrono::steady_clock::now();
                 config_store_.SaveSshHosts(hosts);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started).count();
+                const auto message = "SSH hosts saved: count=" + std::to_string(hosts.size()) +
+                                     " elapsedMs=" + std::to_string(elapsed);
+                logI(message.c_str());
                 callback(JsonResponse({{"ok", true}}));
             }
             catch (const std::exception& error)

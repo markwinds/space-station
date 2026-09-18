@@ -70,6 +70,7 @@ class SshSession : public std::enable_shared_from_this<SshSession>
     bool Detach(const std::string& connection_id);
     bool IsAttachedTo(const std::string& connection_id) const;
     bool DetachedFor(std::chrono::steady_clock::duration duration) const;
+    void RequestStop();
     void Stop();
 
   private:
@@ -109,6 +110,7 @@ class SshSession : public std::enable_shared_from_this<SshSession>
     std::uint64_t next_output_sequence_ = 1;
     std::size_t output_buffer_bytes_ = 0;
     std::jthread worker_;
+    std::stop_source stop_source_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<Command> commands_;
