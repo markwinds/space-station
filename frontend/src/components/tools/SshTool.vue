@@ -16,7 +16,16 @@
         </n-button>
       </div>
 
-      <n-input v-model:value="keyword" clearable size="small" placeholder="搜索名称、地址或分组" />
+      <!-- Keep credential autofill from treating the host filter as a username. -->
+      <form role="search" autocomplete="off" @submit.prevent>
+        <n-input
+          v-model:value="keyword"
+          :input-props="{ type: 'search', name: 'host-search', autocomplete: 'off', 'aria-label': '搜索主机' }"
+          clearable
+          size="small"
+          placeholder="搜索名称、地址或分组"
+        />
+      </form>
 
       <div class="ssh-host-view-switch" role="tablist" aria-label="主机视图">
         <button
