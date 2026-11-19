@@ -1,0 +1,112 @@
+name: Build Orange Pi Zero 3 (ARM64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: "Run backend CTest after build"
+        type: boolean
+        default: false
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      VCPKG_ROOT: ${{ runner.temp }}/vcpkg
+      VCPKG_CACHE_DIR: ${{ runner.temp }}/vcpkg-cache
+      VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/vcpkg-cache,readwrite
+      VCPKG_FORCE_SYSTEM_BINARIES: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            autoconf \
+            automake \
+            libtool \
+            bison \
+            flex \
+            perl \
+            curl \
+            zip \
+            unzip \
+            tar
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_CACHE_DIR }}
+          key: vcpkg-arm64-linux-${{ hashFiles('backend/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-arm64-linux-
+
+      - name: Setup vcpkg
+        run: |
+          mkdir -p "${VCPKG_CACHE_DIR}"
+          git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
+          "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Build frontend and backend
+        run: |
+          args=(--release --install-frontend)
+          if [[ "${{ inputs.run_tests }}" == "true" ]]; then
+            args+=(--test)
+          fi
+          bash backend/scripts/build-linux.sh "${args[@]}"
+
+      - name: Verify and package artifacts
+        run: |
+          BUILD_DIR="backend/out/build/linux-release-vcpkg"
+          STAGE_DIR="${RUNNER_TEMP}/package/space-station-orange-pi-zero3-arm64"
+          mkdir -p "${STAGE_DIR}"
+
+          echo "==> Binary architecture"
+          file "${BUILD_DIR}/space-station"
+          echo "==> Shared library dependencies"
+          ldd "${BUILD_DIR}/space-station"
+
+          cp -a "${BUILD_DIR}/space-station" "${STAGE_DIR}/"
+          for extra_bin in space-transfer-server space-transfer-client; do
+            if [[ -x "${BUILD_DIR}/${extra_bin}" ]]; then
+              cp -a "${BUILD_DIR}/${extra_bin}" "${STAGE_DIR}/"
+            fi
+          done
+
+          if [[ -d "${BUILD_DIR}/data/plugins" ]]; then
+            mkdir -p "${STAGE_DIR}/data"
+            cp -a "${BUILD_DIR}/data/plugins" "${STAGE_DIR}/data/"
+          fi
+
+          mkdir -p "${RUNNER_TEMP}/dist"
+          tar -C "${RUNNER_TEMP}/package" -czf \
+            "${RUNNER_TEMP}/dist/space-station-orange-pi-zero3-linux-arm64.tar.gz" \
+            space-station-orange-pi-zero3-arm64
+
+          (
+            cd "${RUNNER_TEMP}/dist"
+            sha256sum space-station-orange-pi-zero3-linux-arm64.tar.gz > SHA256SUMS.txt
+            cat SHA256SUMS.txt
+          )
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: space-station-orange-pi-zero3-linux-arm64
+          path: ${{ runner.temp }}/dist/*
+          retention-days: 30
