@@ -7,15 +7,19 @@ on:
         description: "Run backend CTest after build"
         type: boolean
         default: false
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-orange-pi.yml"
 
 jobs:
   build-arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     env:
-      VCPKG_ROOT: ${{ runner.temp }}/vcpkg
-      VCPKG_CACHE_DIR: ${{ runner.temp }}/vcpkg-cache
-      VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/vcpkg-cache,readwrite
+      VCPKG_ROOT: /tmp/vcpkg
+      VCPKG_CACHE_DIR: /tmp/vcpkg-cache
+      VCPKG_BINARY_SOURCES: clear;files,/tmp/vcpkg-cache,readwrite
       VCPKG_FORCE_SYSTEM_BINARIES: "1"
 
     steps:
